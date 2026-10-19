@@ -8,7 +8,7 @@ const questions = ["request_user_input", "wait_for_user_input"];
 const subagents = ["spawn_subagent", "list_subagents", "wait_for_subagents", "end_subagent", "list_models"];
 const communication = ["send_agent_message", "wait_for_agent_message"];
 const skills = ["load_skill", "read_skill_reference"];
-const execution = ["create_skill", "write_file", "replace_in_file", "apply_patch", "delete_file", "run_command", "read_command_output",
+const execution = ["generate_images", "create_skill", "write_file", "replace_in_file", "apply_patch", "delete_file", "run_command", "read_command_output",
   "list_background_commands", "stop_command", "list_project_operations", "wait_for_project_operation", "terminal_control", "browser_control", "computer_use", "web_search", "present_html"];
 
 const roleTools = {

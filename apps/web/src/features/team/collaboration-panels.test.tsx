@@ -327,7 +327,9 @@ it("edits the latest group message in the ordinary composer and sends a linked r
   const post = vi.spyOn(client, "postTeamChat"); const container = mount();
   await act(() => Promise.resolve().then(() => { root?.render(<TooltipProvider><TeamChatWorkspace agentClient={client} instance={instance} sessions={sessions} projects={[]}
     onSessionUpdated={() => undefined} active onOpenConversation={() => undefined} /></TooltipProvider>); }));
-  expect(container.querySelector('[aria-label="对话 Agent"]')?.textContent).toContain("默认 Agent");
+  const agentTrigger = container.querySelector('[aria-label="对话 Agent"]');
+  expect(agentTrigger?.textContent).toBe("");
+  expect(agentTrigger?.getAttribute("aria-description")).toBe("当前 Agent：默认 Agent");
   await act(() => Promise.resolve().then(() => { container.querySelector<HTMLButtonElement>('[aria-label="编辑并重新生成"]')!.click(); }));
   const composer = container.querySelector<HTMLTextAreaElement>('[aria-label="输入任务"]')!;
   expect(composer.value).toBe("旧问题");

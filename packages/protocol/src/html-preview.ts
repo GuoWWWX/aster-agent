@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { artifactDisplayRefSchema } from "./artifact-reference.js";
 import { relativeProjectPathSchema } from "./project.js";
 export const codePreviewLanguageSchema = z.enum(["html", "react", "vue"]);
 export type CodePreviewLanguage = z.infer<typeof codePreviewLanguageSchema>;
@@ -35,7 +36,7 @@ export const presentHtmlInputSchema = z.object({
   .refine(input => input.actions.every(action => action.action !== "click" || (action.x < input.width && action.y < input.height)), "Click coordinates must be inside the inspection viewport.");
 export const htmlPresentationResultSchema = z.object({
   ok: z.literal(true),
-  value: z.object({ presentation: z.discriminatedUnion("kind", [
+  value: z.object({ displayRef: artifactDisplayRefSchema.optional(), presentation: z.discriminatedUnion("kind", [
     z.object({ kind: z.literal("html"), path: presentationPathSchema }).strict(),
     z.object({ kind: z.literal("code"), html: z.string().min(1).max(1_000_000), language: codePreviewLanguageSchema }).strict(),
     z.object({ kind: z.literal("html_gallery"), pages: presentationPagesSchema }).strict(),

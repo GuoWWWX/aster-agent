@@ -48,6 +48,7 @@ import {
 } from "./agent-runtime.js";
 import type { ManagedContextSourceMessage } from "./context-manager.js";
 import { SkillRuntime } from "./skill-runtime.js";
+import { BROWSER_USE_SKILL } from "./prompts/prompt-assets.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -805,10 +806,14 @@ class RepeatingCommandFixtureModel implements ModelProviderAdapter {
 
 class BrowserOpenFixtureModel implements ModelProviderAdapter {
   private turn = 0;
+  public constructor(private readonly skillId: string) {}
 
   public completeTurn(input: CompleteTurnInput): Promise<ModelTurnResult> {
     this.turn += 1;
     if (this.turn === 1) {
+      return Promise.resolve({ content: "", finishReason: "tool_calls", toolCalls: [{ id: "load-browser", name: "load_skill", arguments: JSON.stringify({ skillId: this.skillId }) }] });
+    }
+    if (this.turn === 2) {
       return Promise.resolve({
         content: "",
         finishReason: "tool_calls",
@@ -826,11 +831,14 @@ class BrowserOpenFixtureModel implements ModelProviderAdapter {
 
 class BrowserScreenshotFixtureModel implements ModelProviderAdapter {
   public readonly requests: CompleteTurnInput[] = [];
-  public constructor(private readonly background = false) {}
+  public constructor(private readonly background: boolean, private readonly skillId: string) {}
 
   public completeTurn(input: CompleteTurnInput): Promise<ModelTurnResult> {
     this.requests.push({ ...input, messages: structuredClone(input.messages) });
     if (this.requests.length === 1) {
+      return Promise.resolve({ content: "", finishReason: "tool_calls", toolCalls: [{ id: "load-browser", name: "load_skill", arguments: JSON.stringify({ skillId: this.skillId }) }] });
+    }
+    if (this.requests.length === 2) {
       return Promise.resolve({
         content: "",
         finishReason: "tool_calls",
@@ -841,7 +849,7 @@ class BrowserScreenshotFixtureModel implements ModelProviderAdapter {
         }],
       });
     }
-    if (this.requests.length === 2) {
+    if (this.requests.length === 3) {
       return Promise.resolve({
         content: "",
         finishReason: "tool_calls",
@@ -7611,6 +7619,9 @@ describe("AgentRuntime", () => {
   it("resumes a browser approval interrupt without rejecting its permission tool", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "agent-runtime-browser-approval-"));
     temporaryDirectories.push(root);
+    const { runtime: skills, documents } = await createRuntimeSkillFixture(root);
+    documents.ensureManagedDocument(BROWSER_USE_SKILL);
+    const skillId = skills.getCatalog().find(skill => skill.name === "browser-use")!.id;
     const database = new AgentDatabase(":memory:");
     const projects = new ProjectRegistry(database);
     const project = await projects.registerDirectory(root);
@@ -7662,13 +7673,13 @@ describe("AgentRuntime", () => {
       },
       projects,
       new ProjectToolRegistry(projects),
-      new BrowserOpenFixtureModel(),
+      new BrowserOpenFixtureModel(skillId),
       undefined,
       undefined,
       null,
       null,
       null,
-      null,
+      skills,
       null,
       undefined,
       null,
@@ -7712,6 +7723,9 @@ describe("AgentRuntime", () => {
   it.each([false, true])("returns browser screenshots as vision and cleans up background=%s", async (background) => {
     const root = await mkdtemp(path.join(os.tmpdir(), "agent-runtime-browser-screenshot-"));
     temporaryDirectories.push(root);
+    const { runtime: skills, documents } = await createRuntimeSkillFixture(root);
+    documents.ensureManagedDocument(BROWSER_USE_SKILL);
+    const skillId = skills.getCatalog().find(skill => skill.name === "browser-use")!.id;
     const database = new AgentDatabase(":memory:");
     const projects = new ProjectRegistry(database);
     const project = await projects.registerDirectory(root);
@@ -7749,7 +7763,7 @@ describe("AgentRuntime", () => {
       tabs.confirmOpened({ requestId: request.requestId, resolvedName: "Example" });
       return true;
     });
-    const model = new BrowserScreenshotFixtureModel(background);
+    const model = new BrowserScreenshotFixtureModel(background, skillId);
     const screenshotStore = new ConversationAttachmentStore(database, projects, path.join(root, "managed"));
     const runtime = new AgentRuntime(
       database,
@@ -7770,7 +7784,7 @@ describe("AgentRuntime", () => {
       null,
       screenshotStore,
       null,
-      null,
+      skills,
       null,
       undefined,
       null,
@@ -7818,7 +7832,7 @@ describe("AgentRuntime", () => {
     const resolved = screenshotStore.resolveThreadLogPaths(forkImage);
     expect(resolved.storedPath).toBe(database.getConversationAttachment(fork.id, forkImage.id).storedPath);
     expect(browser.close).toHaveBeenCalledTimes(background ? 1 : 0);
-    expect(model.requests[2]?.messages).toEqual(expect.arrayContaining([
+    expect(model.requests[3]?.messages).toEqual(expect.arrayContaining([
       expect.objectContaining({
         attachments: [expect.objectContaining({
           data: "YnJvd3Nlci1waXhlbHM=",

@@ -25,6 +25,38 @@ async function createThreadLog(): Promise<ThreadLog> {
 }
 
 describe("ThreadLog", () => {
+  it("restores successful Skill activation metadata across compaction and restart without retaining bodies", async () => {
+    const log = await createThreadLog();
+    const snapshot = { id: "browser-use", version: "1", contentHash: "a".repeat(64) };
+    log.append(conversationId, { type: "tool_result", payload: { toolName: "load_skill", status: "completed", runId: "run-1", toolCallId: "load-1", content: JSON.stringify({ ok: true, value: { loaded: true, skill: snapshot, references: ["references/input.md"] } }) } });
+    log.append(conversationId, { type: "context_checkpoint", payload: { summary: "Browser opened", coveredThroughContextSequence: 1 } });
+    expect(log.readSkillSnapshots(conversationId)).toEqual([snapshot]);
+    const read = vi.spyOn(fs, "readSync");
+    log.readSkillSnapshots(conversationId);
+    const indexReads = read.mock.calls.length;
+    read.mockClear();
+    expect(log.readSkillSnapshots(conversationId)).toEqual([snapshot]);
+    expect(read).toHaveBeenCalledTimes(indexReads);
+    const restored = new ThreadLog(path.dirname(path.dirname(log.getPath(conversationId))));
+    expect(restored.readSkillSnapshots(conversationId)).toEqual([snapshot]);
+    restored.append(conversationId, { type: "run_superseded", payload: { runId: "run-1" } });
+    expect(restored.readSkillSnapshots(conversationId)).toEqual([]);
+  });
+
+  it("ignores failed, malformed and unrelated tool results when restoring Skills", async () => {
+    const log = await createThreadLog();
+    const snapshot = { id: "imagegen", version: "1", contentHash: "a".repeat(64) };
+    for (const payload of [
+      { toolName: "load_skill", status: "failed", content: JSON.stringify({ ok: true, value: { loaded: true, skill: snapshot } }) },
+      { toolName: "load_skill", status: "completed", content: JSON.stringify({ ok: false, value: { loaded: true, skill: snapshot } }) },
+      { toolName: "load_skill", status: "completed", content: "invalid json" },
+      { toolName: "read_file", status: "completed", content: JSON.stringify({ ok: true, value: { loaded: true, skill: snapshot } }) },
+    ]) log.append(conversationId, { type: "tool_result", payload });
+    expect(log.readSkillSnapshots(conversationId)).toEqual([]);
+    for (const version of ["1", "2"]) log.append(conversationId, { type: "tool_result", payload: { toolName: "load_skill", status: "completed", content: JSON.stringify({ ok: true, value: { loaded: true, skill: { ...snapshot, version } } }) } });
+    expect(log.readSkillSnapshots(conversationId)).toEqual([{ ...snapshot, version: "2" }]);
+  });
+
   it("uses provider usage only from requests after the last compaction, including after restart", async () => {
     const log = await createThreadLog();
     const providerState = { apiFormat: "openai-responses", baseUrl: "https://example.test/v1", modelId: "test-model", payload: { opaque: "large" },

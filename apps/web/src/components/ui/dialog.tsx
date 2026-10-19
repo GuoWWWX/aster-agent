@@ -1,6 +1,6 @@
 import * as DialogPrimitive from "@radix-ui/react-dialog";
 import { X } from "lucide-react";
-import type { ComponentProps, ReactElement, ReactNode } from "react";
+import type { ComponentProps, CSSProperties, ReactElement, ReactNode } from "react";
 
 import { cn } from "../../lib/cn.js";
 import { useNativeOverlayContainer } from "./native-overlay-provider.js";
@@ -32,15 +32,17 @@ export function DialogContent({
   children,
   className,
   overlayClassName,
+  overlayStyle,
   showCloseButton = true,
   ...props
 }: ComponentProps<typeof DialogPrimitive.Content> & {
   overlayClassName?: string;
+  overlayStyle?: CSSProperties;
   showCloseButton?: boolean;
 }): ReactElement {
   return (
     <DialogPortal>
-      <DialogOverlay className={overlayClassName} />
+      <DialogOverlay className={overlayClassName} style={overlayStyle} />
       <DialogPrimitive.Content
         className={cn(
           "fixed left-1/2 top-1/2 z-[101] grid w-[calc(100vw-2rem)] max-w-lg -translate-x-1/2 -translate-y-1/2 rounded-[var(--app-radius)] bg-[var(--app-panel)] text-[var(--app-foreground)] shadow-2xl outline-none",

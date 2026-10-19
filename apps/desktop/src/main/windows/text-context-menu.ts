@@ -14,10 +14,19 @@ export function textContextMenuItems(
   ];
 }
 
-export function installTextContextMenu(window: BrowserWindow): void {
-  window.webContents.on("context-menu", (_event, params) => {
+export function installTextContextMenu(window: BrowserWindow): () => void {
+  const contents = window.webContents;
+  const showMenu = (_event: Electron.Event, params: ContextMenuParams): void => {
     const items = textContextMenuItems(params);
+    if (params.mediaType === "image" && params.hasImageContents) {
+      if (items.length > 0) items.unshift({ type: "separator" });
+      items.unshift({ label: "复制图片", click: () => {
+        if (!contents.isDestroyed()) contents.copyImageAt(params.x, params.y);
+      } });
+    }
     if (items.length === 0) return;
     Menu.buildFromTemplate(items).popup({ window });
-  });
+  };
+  contents.on("context-menu", showMenu);
+  return () => { contents.removeListener("context-menu", showMenu); };
 }

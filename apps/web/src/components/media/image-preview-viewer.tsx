@@ -58,6 +58,7 @@ export function ImagePreviewViewer({
   onPrevious: () => void;
 }): ReactElement {
   const [naturalSize, setNaturalSize] = useState({ height: 0, width: 0 });
+  const [viewportSize, setViewportSize] = useState({ height: 0, width: 0 });
   const [isDraggingImage, setIsDraggingImage] = useState(false);
   const [revealedNavigation, setRevealedNavigation] = useState<"next" | "previous" | null>(null);
   const [zoomPercent, setZoomPercent] = useState<number | null>(null);
@@ -65,6 +66,20 @@ export function ImagePreviewViewer({
   const imageRef = useRef<HTMLImageElement>(null);
   const viewportRef = useRef<HTMLDivElement>(null);
   const zoomPercentRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    const viewport = viewportRef.current;
+    if (viewport === null) return;
+    const update = () => {
+      const style = viewport.ownerDocument.defaultView!.getComputedStyle(viewport);
+      setViewportSize({ width: Math.max(0, viewport.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight)),
+        height: Math.max(0, viewport.clientHeight - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom)) });
+    };
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(viewport);
+    return () => observer.disconnect();
+  }, []);
 
   const commitZoomPercent = (value: number | null): void => {
     zoomPercentRef.current = value;
@@ -184,12 +199,15 @@ export function ImagePreviewViewer({
     setRevealedNavigation((current) => current === next ? current : next);
   };
 
-  const imageStyle = zoomPercent !== null && naturalSize.width > 0 && naturalSize.height > 0
+  const fitScale = naturalSize.width > 0 && naturalSize.height > 0
+    ? Math.min(1, viewportSize.width / naturalSize.width, viewportSize.height / naturalSize.height) : 0;
+  const scale = zoomPercent === null ? fitScale : zoomPercent / 100;
+  const imageStyle = scale > 0 && naturalSize.width > 0 && naturalSize.height > 0
     ? {
-        height: `${naturalSize.height * zoomPercent / 100}px`,
+        height: `${naturalSize.height * scale}px`,
         maxHeight: "none",
         maxWidth: "none",
-        width: `${naturalSize.width * zoomPercent / 100}px`,
+        width: `${naturalSize.width * scale}px`,
       }
     : undefined;
   const overlay = appearance === "overlay";
@@ -250,14 +268,14 @@ export function ImagePreviewViewer({
         <div
           ref={viewportRef}
           className={cn(
-            "h-full min-h-0 overflow-auto p-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--app-focus-ring)]",
-            overlay ? "bg-transparent" : "bg-[var(--app-canvas)]",
+            "h-full min-h-0 p-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--app-focus-ring)]",
+            overlay ? "overflow-hidden bg-transparent pb-16" : zoomPercent === null ? "overflow-hidden bg-[var(--app-canvas)]" : "overflow-auto bg-[var(--app-canvas)]",
           )}
           role="group"
           tabIndex={0}
           onKeyDown={handleKeyboardNavigation}
         >
-          <div className="flex h-max min-h-full w-max min-w-full items-center justify-center">
+          <div className={zoomPercent === null ? "flex h-full w-full items-center justify-center" : "flex h-max min-h-full w-max min-w-full items-center justify-center"}>
             <img
               ref={imageRef}
               alt={fileName}

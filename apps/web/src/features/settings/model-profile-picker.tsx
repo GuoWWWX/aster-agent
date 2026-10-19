@@ -1,3 +1,4 @@
+import { isImageGenerationModel } from "@agent/protocol";
 import {
   ArrowDownAZ,
   ArrowDownUp,
@@ -88,6 +89,7 @@ export function ModelProfilePicker({
   const providerGroups = useMemo(() => {
     const groups = new Map<string, ProviderModelGroup>();
     for (const model of models) {
+      if (isImageGenerationModel(model)) continue;
       const existing = groups.get(model.providerId);
       if (existing !== undefined) {
         existing.models.push(model);

@@ -7,7 +7,20 @@ type DeliveryAnchor = {
   continuationMessages?: readonly { runId: string | null }[];
 };
 
-type HtmlDelivery = { id: string } & ({ path: string } | { pages: HtmlPresentationPage[] } | { code: string; language: "html" | "react" | "vue" });
+export type HtmlDelivery = { id: string; displayRef?: string } & ({ path: string } | { pages: HtmlPresentationPage[] } | { code: string; language: "html" | "react" | "vue" });
+
+export function htmlPresentationDelivery(item: ConversationTimelineItem): HtmlDelivery | null {
+  if (item.kind !== "tool" || item.name !== "present_html" || item.status !== "completed" || item.result === null) return null;
+  let value: unknown;
+  try { value = JSON.parse(item.result); } catch { return null; }
+  const parsed = htmlPresentationResultSchema.safeParse(value);
+  if (!parsed.success) return null;
+  const { presentation, displayRef } = parsed.data.value;
+  const identity = { id: item.id, ...(displayRef === undefined ? {} : { displayRef }) };
+  return presentation.kind === "html" ? { ...identity, path: presentation.path }
+    : presentation.kind === "code" ? { ...identity, code: presentation.html, language: presentation.language }
+    : { ...identity, pages: presentation.pages };
+}
 
 export function htmlPresentationDeliveries(timeline: readonly ConversationTimelineItem[], anchors: readonly DeliveryAnchor[], activeRunId: string | null): ReadonlyMap<string, HtmlDelivery[]> {
   const deliveries = new Map<string, HtmlDelivery[]>();
@@ -15,14 +28,10 @@ export function htmlPresentationDeliveries(timeline: readonly ConversationTimeli
   for (const item of timeline) {
     if (item.kind !== "tool" || item.name !== "present_html" || item.status !== "completed" || item.result === null
       || item.runId === null || item.runId === activeRunId) continue;
-    let value: unknown;
-    try { value = JSON.parse(item.result); } catch { continue; }
-    const parsed = htmlPresentationResultSchema.safeParse(value);
-    if (!parsed.success) continue;
-    const presentation = parsed.data.value.presentation;
-    if (presentation.kind === "html") latestByPath.set(JSON.stringify(["file", presentation.path]), { id: item.id, path: presentation.path, runId: item.runId });
-    else if (presentation.kind === "code") latestByPath.set(JSON.stringify(["code", item.runId]), { id: item.id, code: presentation.html, language: presentation.language, runId: item.runId });
-    else latestByPath.set(JSON.stringify(["gallery", item.id]), { id: item.id, pages: presentation.pages, runId: item.runId });
+    const delivery = htmlPresentationDelivery(item);
+    if (delivery === null) continue;
+    const key = "path" in delivery ? ["file", delivery.path] : "code" in delivery ? ["code", item.runId] : ["gallery", item.id];
+    latestByPath.set(JSON.stringify(key), { ...delivery, runId: item.runId });
   }
   for (const { runId, ...delivery } of latestByPath.values()) {
     const anchor = anchors.findLast(candidate => candidate.runId === runId || candidate.runIds?.includes(runId)

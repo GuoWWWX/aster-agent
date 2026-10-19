@@ -1,3 +1,8 @@
+import { isImageGenerationModel } from "@agent/protocol";
+import { GeneratedImagesResult, ImageGenerationVisibilityProvider } from "./generated-images-result.js";
+import { imageGenerationDeliveries } from "./image-generation-deliveries.js";
+import { conversationArtifacts, HtmlDeliveryPreview } from "./conversation-artifacts.js";
+import { MarkdownArtifactScope, standaloneArtifactReferences } from "../../components/markdown/artifact-references.js";
 import type { ChatReference } from "@agent/protocol";
 import { ChatReferenceScope } from "../../components/markdown/chat-reference-scope.js";
 import { MessageReferenceQuote } from "../../components/markdown/message-reference-quote.js";
@@ -6,8 +11,7 @@ import { LoadingState, Spinner } from "../../components/ui/loading.js";
 import { ConversationWorkIndicator, toolWorkPhase } from "./conversation-work-state.js";
 import { ConversationChangesBadge, ConversationChangesCard } from "./conversation-file-changes.js";
 import { htmlPresentationDeliveries } from "./html-presentations.js";
-import { HtmlPreviewCard, HtmlPreviewScope } from "../../components/html-preview/html-preview-card.js";
-import { HtmlPreviewGallery } from "../../components/html-preview/html-preview-gallery.js";
+import { HtmlPreviewScope } from "../../components/html-preview/html-preview-card.js";
 import { QueryTextarea } from "./query-textarea.js";
 import { UserMessageContent } from "./user-message-content.js";
 import { TeamChatSourceContent, TeamChatSourceHeader } from "../team/team-chat-source-content.js";
@@ -72,7 +76,6 @@ import {
   Terminal,
   Trash2,
   UsersRound,
-  Workflow,
   Wrench,
   X,
 } from "lucide-react";
@@ -170,7 +173,6 @@ import {
   SelectContent,
   SelectItem,
   SelectTrigger,
-  SelectValue,
 } from "../../components/ui/select.js";
 import { getUserErrorMessage, type AgentClient } from "../../runtime/index.js";
 import {
@@ -1135,7 +1137,7 @@ export function ConversationWorkspace({
   const isEditingComposerMessage = editingMessageId !== null || editingPendingMessageId !== null;
   const modelOptions: readonly ModelProfile[] =
     modelStatus?.models.length
-      ? modelStatus.models
+      ? modelStatus.models.filter(model => !isImageGenerationModel(model))
       : isMockRuntime
         ? [{
           connectionStatus: "unknown",
@@ -3160,6 +3162,12 @@ export function ConversationWorkspace({
     displayTimeline = combineAutomaticContinuationDurations(displayTimeline);
   }
   const htmlDeliveries = htmlPresentationDeliveries(timeline, displayTimeline, activeRunId);
+  const imageDeliveries = imageGenerationDeliveries(timeline, displayTimeline);
+  const artifacts = useMemo(() => conversationArtifacts(timeline, agentClient, { cacheTtlMs: CONVERSATION_WORKSPACE_CACHE_TTL_MS, onResize: handleHtmlGalleryResize }), [timeline, agentClient, handleHtmlGalleryResize]);
+  const artifactContents = useMemo(() => new Map([...artifacts].map(([ref, artifact]) => [ref, artifact.content])), [artifacts]);
+  const referencedArtifactTools = new Set(displayTimeline.flatMap(item => item.kind !== "message" || item.role !== "assistant" ? []
+    : (item.continuationMessages ?? [item]).flatMap(message => [...standaloneArtifactReferences(message.content, message.status === "streaming")]
+      .flatMap(ref => artifacts.has(ref) ? [artifacts.get(ref)!.toolId] : []))));
   const hasHtmlGallery = [...htmlDeliveries.values()].some(deliveries => deliveries.some(delivery => "pages" in delivery));
   const locateQuestion = async (question: UserQuestion): Promise<void> => {
     try {
@@ -3427,19 +3435,17 @@ export function ConversationWorkspace({
           ) : displayTimeline.length === 0 && runProgresses.length === 0 && modelActivity === null ? (
             <div className="conversation-workspace__blank">等待任务</div>
           ) : (
-            <ToolDisclosureContext.Provider value={toolDisclosureChoices}>
+            <ImageGenerationVisibilityProvider><ToolDisclosureContext.Provider value={toolDisclosureChoices}>
               <ToolRevealContext.Provider value={locateTimelineItem}>
               {displayTimeline.map((item, index) => {
                 const answerQuestion = item.kind === "message" ? questionForAnswer(item, userQuestions) : null;
-                const deliveries = htmlDeliveries.get(item.id) ?? [];
+                const deliveries = (htmlDeliveries.get(item.id) ?? []).filter(delivery => !referencedArtifactTools.has(delivery.id));
+                const images = (imageDeliveries.get(item.id) ?? []).filter(image => !referencedArtifactTools.has(image.id));
                 const changes = changeCards.get(item.id) ?? [];
-                const beforeMessage = deliveries.length === 0 ? null : (
+                const beforeMessage = deliveries.length === 0 && images.length === 0 ? null : (
                   <div className="chat-message-group gap-[5px]" data-role="assistant">
-                    {deliveries.map(delivery => (
-                      <div data-html-delivery={delivery.id} key={delivery.id}>
-                        {"pages" in delivery ? <HtmlPreviewGallery pages={delivery.pages} cacheTtlMs={CONVERSATION_WORKSPACE_CACHE_TTL_MS} onResize={handleHtmlGalleryResize} /> : "code" in delivery ? <HtmlPreviewCard source={{ kind: "code", html: delivery.code, language: delivery.language }} /> : <HtmlPreviewCard source={{ kind: "file", path: delivery.path }} />}
-                      </div>
-                    ))}
+                    {images.map(image => <GeneratedImagesResult key={image.id} agentClient={agentClient} item={image} />)}
+                    {deliveries.map(delivery => <HtmlDeliveryPreview key={delivery.id} delivery={delivery} cacheTtlMs={CONVERSATION_WORKSPACE_CACHE_TTL_MS} onResize={handleHtmlGalleryResize} />)}
                   </div>
                 );
                 const afterMessage = changes.length === 0 ? null : (
@@ -3483,6 +3489,7 @@ export function ConversationWorkspace({
                         && item.continuationMessages !== undefined ? undefined : item.id}
                     >
                       {item.kind === "message" ? beforeMessage : null}
+                      <MarkdownArtifactScope artifacts={item.kind === "message" && item.role === "assistant" ? artifactContents : undefined}>
                       <TimelineItem
                         agentClient={agentClient}
                         afterMessage={item.kind === "message" ? afterMessage : null}
@@ -3556,6 +3563,7 @@ export function ConversationWorkspace({
                         onSessionSelected={onSessionSelected}
                         liveToolOutputs={liveToolOutputs}
                       />
+                      </MarkdownArtifactScope>
                     </div>
                   )}
                   {item.kind === "message" ? null : <>{beforeMessage}{afterMessage}</>}
@@ -3593,7 +3601,7 @@ export function ConversationWorkspace({
                 <ModelActivityIndicator activity={modelActivity} />
               ) : null}
               </ToolRevealContext.Provider>
-            </ToolDisclosureContext.Provider>
+            </ToolDisclosureContext.Provider></ImageGenerationVisibilityProvider>
           )}
           {sentSteerMessages.map((message) => (
             <div className="chat-message-group" data-role="user" data-sent-steer={message.id} key={message.id}>
@@ -4038,20 +4046,15 @@ export function ConversationWorkspace({
                       saveConversationAgentSelection(groupChat?.instanceId ?? session.id, agentId);
                     }}
                   >
-                    <SelectTrigger
-                      aria-label="对话 Agent"
-                      className="conversation-workspace__composer-select conversation-workspace__composer-select--agent"
-                      title={canChangeAgent
+                    <TooltipAnchor side="top" disabled={!canChangeAgent}
+                      content={canChangeAgent
                         ? `当前 Agent：${selectedAgent.name}`
-                        : `对话已由 ${selectedAgent.name} 接管`}
-                    >
-                      <AgentAvatar avatar={selectedAgent.avatar} size="compact" />
-                      <SelectValue>
-                        <span className="conversation-agent-select-value">
-                          {selectedAgent.name}
-                        </span>
-                      </SelectValue>
-                    </SelectTrigger>
+                        : `对话已由 ${selectedAgent.name} 接管`}>
+                      <SelectTrigger aria-label="对话 Agent" aria-description={`当前 Agent：${selectedAgent.name}`} showIndicator={false}
+                        className="conversation-workspace__composer-select conversation-workspace__composer-select--agent size-8! justify-center! px-0!">
+                        <AgentAvatar avatar={selectedAgent.avatar} size="compact" />
+                      </SelectTrigger>
+                    </TooltipAnchor>
                     <SelectContent
                       align="start"
                       className="conversation-workspace__agent-select-content"
@@ -4076,20 +4079,23 @@ export function ConversationWorkspace({
                   </Select>
                 )}
                 <ConversationPermissionSelect value={permissionMode}
-                  disabled={isEndedSubagent || isSavingTeamPermission || isSavingCoordinationMode}
+                  disabled={isEndedSubagent || isSavingTeamPermission} busy={isSavingCoordinationMode}
                   deferred={teamManaged && activeRunId !== null} onChange={selectPermissionMode} />
                 {!teamManaged && session.parentConversationId == null && session.teamId == null ? (
-                  <button
+                  <IconButton
                     type="button"
+                    label="快速协作"
+                    tooltipSide="top"
+                    size="compact"
+                    variant="quiet"
                     aria-pressed={coordinationMode === "parallel_queue"}
                     disabled={isSavingCoordinationMode || (coordinationMode === "direct" && activeRunId !== null)}
-                    title="快速协作使用完全访问权限；新消息进入持久队列，主对话协调子代理并跟踪结果。请在当前执行结束后开启。"
-                    className="inline-flex items-center gap-1 rounded-[var(--app-radius)] px-2 py-1 text-[length:var(--app-font-size-control)] text-[var(--app-muted-foreground)] hover:bg-[var(--app-hover)] aria-pressed:bg-[var(--app-hover)] aria-pressed:text-[var(--app-foreground)] disabled:opacity-50"
+                    tooltip={`快速协作（${coordinationMode === "parallel_queue" ? "已开启" : "已关闭"}）：使用完全访问权限；新消息进入持久队列，主对话协调子代理并跟踪结果。请在当前执行结束后开启。`}
+                    className="aria-pressed:bg-[var(--app-hover)] aria-pressed:text-[var(--app-foreground)]"
                     onClick={() => void toggleCoordinationMode()}
                   >
-                    <Workflow aria-hidden="true" size={14} />
-                    快速协作
-                  </button>
+                    <UsersRound aria-hidden="true" size={16} />
+                  </IconButton>
                 ) : null}
               </div>
               <div className="conversation-workspace__composer-actions">
@@ -7260,7 +7266,7 @@ function ToolTimelineItem({
       ) : item.status === "awaiting_approval" ? (
         <footer className="tool-timeline-item__approval">
           <span>
-            {terminalApprovalLabel ?? (isExternalRead
+            {item.name === "generate_images" ? "等待确认后生成图片" : terminalApprovalLabel ?? (isExternalRead
               ? "读取工作区外文件前需要确认"
               : isCommand
               ? "等待确认后执行命令"
@@ -7368,6 +7374,7 @@ function ToolTypeIcon({ name }: { name: string }): ReactElement {
       return <MessageCircleQuestion aria-hidden="true" size={15} />;
     case "view_attachments":
     case "view_image":
+    case "generate_images":
       return <Images aria-hidden="true" size={15} />;
     case "write_file":
     case "replace_in_file":
@@ -7515,6 +7522,18 @@ function toolActivityLabel(item: ConversationToolItem, teamManaged = false): str
       return completed ? "已读取附件" : "读取附件";
     case "view_image":
       return `${completed ? "已查看图片" : "查看图片"} ${path === null ? "" : fileNameFromPath(path)}`.trim();
+    case "generate_images": {
+      const result = item.result === null ? null : parseToolPayload(item.result);
+      const value = isRecord(result?.value) ? result.value : null;
+      const count = completed && typeof value?.count === "number" ? value.count : typeof argumentsValue?.count === "number" ? argumentsValue.count : 1;
+      return `${completed ? "已生成" : "生成"} ${count} 张图片`;
+    }
+    case "load_skill": {
+      const result = item.result === null ? null : parseToolPayload(item.result);
+      const value = isRecord(result?.value) ? result.value : null;
+      const skill = isRecord(value?.skill) ? value.skill : null;
+      return `${completed ? "已加载技能" : "加载技能"}${typeof skill?.name === "string" ? ` · ${skill.name}` : ""}`;
+    }
     case "present_html": {
       const language = argumentsValue?.language === "react" ? "React" : argumentsValue?.language === "vue" ? "Vue" : "HTML";
       if (argumentsValue?.action === "inspect") return `${completed ? "已检查" : "检查"} ${language} 预览`;
@@ -7949,6 +7968,12 @@ function ToolDetail({
   onOpenSubagent: ((conversationId: string) => void) | undefined;
   onOpenProjectFile: ((path: string) => void) | undefined;
 }): ReactElement {
+  if (item.name === "generate_images") return <div className="ml-5 min-w-0 py-[5px]">
+    <GeneratedImagesResult agentClient={agentClient} item={item} placement="tool" />
+  </div>;
+  if (item.name === "load_skill") return <StructuredToolResult summary={toolActivityLabel(item)}>
+    {item.status === "failed" ? <ToolResultNotice result={item.result} status={item.status} /> : <p className="m-0">{item.status === "completed" ? "技能使用说明已载入本轮对话。" : "正在读取技能使用说明。"}</p>}
+  </StructuredToolResult>;
   const screenshot = ["browser_control", "computer_use", "present_html"].includes(item.name) && item.result !== null ? parseBrowserScreenshot(item.result) : null;
   if (screenshot !== null) return <StructuredToolResult summary={item.name === "computer_use" ? "窗口截图" : "网页截图"}>
     <div className="grid gap-[5px]">{screenshot.images.map(image => <BrowserScreenshotResult key={image.id} agentClient={agentClient} image={image} />)}</div>
@@ -8108,7 +8133,7 @@ function parseBrowserScreenshot(payload: string): { width: number; height: numbe
 export function toolHasDisplayableDetails(item: ConversationToolItem): boolean {
   if (item.status === "failed" || item.status === "awaiting_approval" || item.diff !== null
     || (item.result !== null && parseToolError(item.result) !== null)) return true;
-  if (item.name === "run_command") return true;
+  if (item.name === "run_command" || item.name === "generate_images" || item.name === "load_skill") return true;
   // File reads display their requested path and line range even before a result arrives.
   if (item.name === "read_file" || item.name === "read_external_file") return true;
   if (item.name === "request_user_input") {

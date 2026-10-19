@@ -20,7 +20,7 @@ Translate the user's real goal into observable acceptance criteria before implem
 
 # HTML Presentations
 
-Use a complete, closed html, react/jsx/tsx or vue fence for a self-contained preview; HTML/SVG fragments need no document wrappers or file. React uses a default-exported component (or one JSX expression); Vue uses a self-contained SFC. Only bundled React/Vue imports are available, not arbitrary project packages. Use the application's own isolated preview server, not an ad hoc static server. Place the final preview before short explanatory text.
+Use a complete, closed html, react/jsx/tsx or vue fence for a self-contained preview; HTML/SVG fragments need no document wrappers or file. React uses a default-exported component (or one JSX expression); Vue uses a self-contained SFC. Only bundled React/Vue imports are available, not arbitrary project packages. Use the application's own isolated preview server, not an ad hoc static server. Place previews between complete paragraphs. For tool-delivered images/UI, use the returned displayRef once as a standalone Markdown link; never invent references or repeat the source.
 
 File-edit tool records show only their diffs. To deliver an existing HTML file, call present_html with its workspace-relative path. For requested alternatives, use pages in one comparison card with matching intended heights; do not group unrelated work. Choose one delivery channel per result. Inspect important visual results through rendered pixels, correct problems, then deliver the final version; do not claim a visual check based on source alone.
 

@@ -1,3 +1,6 @@
+import { imageGenerationResultSchema, isImageGenerationModel } from "@agent/protocol";
+import { ImageGenerationTool } from "../tools/image-generation-tool.js";
+import path from "node:path";
 import type { PostTeamChatInput, TeamChatMessage } from "@agent/protocol";
 import { CollaborationTool } from "./collaboration-tool.js";
 import { HtmlPresentationTool } from "../tools/html-presentation-tool.js";
@@ -90,7 +93,7 @@ import type { PluginCatalogRecord } from "../plugins/plugin-catalog.js";
 import { ConversationAttachmentStore } from "../storage/conversation-attachment-store.js";
 import { ConversationLifecycleService } from "../storage/conversation-lifecycle-service.js";
 import { EventProjector } from "../storage/event-projector.js";
-import { ThreadLog, type ThreadLogEventInput } from "../storage/thread-log.js";
+import { ThreadLog, skillSnapshotFromResult, type ThreadLogEventInput } from "../storage/thread-log.js";
 import { ThreadLogLegacyImporter } from "../storage/thread-log-legacy-importer.js";
 import { RunCoordinator } from "./run-coordinator.js";
 import { ModelGateway } from "./model-gateway.js";
@@ -143,6 +146,7 @@ import {
   type LangGraphInterrupt,
 } from "./langgraph-executor.js";
 import {
+  requiredSkillForTool,
   resolveActiveSkillContextBudget,
   SkillRuntime,
   type SkillRuntimeContext,
@@ -838,7 +842,7 @@ const langChainToolResultEnvelopeSchema = z
       name: z.string().min(1),
       projectPath: z.string().nullable(),
       readState: z.enum(["full", "metadata_only", "preview"]),
-      source: z.enum(["browser", "project", "upload", "computer"]),
+      source: z.enum(["browser", "project", "upload", "computer", "generated"]),
       truncated: z.boolean(),
     }).strict()).max(4).optional(),
     status: z.literal("rejected").optional(),
@@ -1015,6 +1019,7 @@ export class AgentRuntime {
   >();
 
   private readonly activeSkillRefsByRun = new Map<string, Map<string, SkillSnapshotRef>>();
+  private readonly modelVisibleSkillsByRun = new Map<string, SkillSnapshotRef[]>();
 
   /** Reused when ToolNode re-enters a tool after an interrupt resume. */
   private readonly startedToolsByRunCall = new Map<string, ConversationToolItem>();
@@ -1052,6 +1057,7 @@ export class AgentRuntime {
   private readonly taskListTool: TaskListTool;
 
   private readonly attachmentTool: ConversationAttachmentTool | null;
+  private readonly imageGenerationTool: ImageGenerationTool | null;
 
   private readonly agentCommunicationTool: AgentCommunicationTool;
   private readonly referenceHistory: ConversationReferenceHistory;
@@ -1149,6 +1155,10 @@ export class AgentRuntime {
       return this.teamWorkItemDispatcher.resizeWorkers(input);
     });
     const getModelStatus = credentials.getStatus;
+    this.imageGenerationTool = attachments === null || getModelStatus === undefined ? null : new ImageGenerationTool({
+      getStatus: () => getModelStatus.call(credentials),
+      getConfiguration: (providerId, modelId) => credentials.getConfiguration(providerId, modelId),
+    }, attachments);
     this.subagentTool = new SubagentTool(
       database,
       getModelStatus === undefined ? undefined : () => getModelStatus.call(credentials),
@@ -1554,6 +1564,30 @@ export class AgentRuntime {
           return this.skillRuntime.getExecutionPolicy(toolName);
         },
         isAvailable: () => true,
+      });
+    }
+    if (this.imageGenerationTool !== null) {
+      handlers.push({
+        getDefinitions: () => this.imageGenerationTool?.getDefinitions() ?? [],
+        isAvailable: () => true,
+        getExecutionPolicy: () => ({ kind: "serial" }),
+        execute: ({ context, rawArguments }) => {
+          const images: ConversationAttachment[] = [];
+          const result = this.imageGenerationTool?.prepare(rawArguments, context.conversationId, context.providerId ?? null, context.signal, async (image, metadata) => {
+            const key = `${context.runId}:${context.toolCallId}`;
+            const tool = this.startedToolsByRunCall.get(key);
+            if (tool === undefined || this.attachments === null) throw new Error("生图调用已失效。");
+            const attachment = await this.attachments.saveGeneratedImage(context.conversationId, tool.id, image);
+            images.push(attachment);
+            const progress = { ...tool, result: JSON.stringify({ ok: true, value: { ...metadata, images, count: images.length,
+              readPaths: images.map(saved => `attachments/${path.basename(this.attachments!.resolveThreadLogPaths(saved).storedPath)}`) } }) };
+            this.startedToolsByRunCall.set(key, progress);
+            this.persistRuntimeActivity(progress, context.emit);
+            return attachment;
+          });
+          if (result === undefined) throw new Error("生图工具不可用。");
+          return Promise.resolve(result);
+        },
       });
     }
     handlers.push({
@@ -2140,6 +2174,7 @@ export class AgentRuntime {
       input.providerId,
       input.modelId
     );
+    if (isImageGenerationModel(storedConfiguration)) throw new Error("生图模型不能作为对话模型，请选用对话模型并通过 imagegen 技能生成图片。");
     const configuration = {
       ...storedConfiguration,
       modelId: input.modelId ?? storedConfiguration.modelId
@@ -2973,6 +3008,18 @@ export class AgentRuntime {
       const graphResult = await this.graphExecutor.invoke({
         callbacks: {
           beforeAgent: async () => {
+            const previousSkills = this.skillRuntime === null ? [] : this.threadLog?.readSkillSnapshots(conversationId)
+              ?? this.database.listTimeline(conversationId).flatMap(item => {
+                if (item.kind !== "tool" || item.name !== "load_skill" || item.status !== "completed" || item.result === null) return [];
+                const snapshot = skillSnapshotFromResult(item.result);
+                return snapshot === null ? [] : [snapshot];
+              });
+            const activeSkills = this.skillRuntime?.restoreActiveSkills(
+              previousSkills,
+              this.skillRuntimeContext(conversation, workspace?.id),
+              resolveActiveSkillContextBudget(configuration.contextWindow ?? 0),
+            ) ?? [];
+            this.activeSkillRefsByRun.set(runId, new Map(activeSkills.map(snapshot => [snapshot.id, snapshot])));
             const unreadAgentMessages = this.database.listUnreadAgentMessages(conversationId)
               .filter(message => message.deliveryMode !== "queue");
             const preparedContext = await this.prepareContext(
@@ -3003,7 +3050,7 @@ export class AgentRuntime {
               agentMessageIdsPreparedInInitialContext.add(message.id);
               preparedUserMessageContents.set(content, count - 1);
             }
-            return { messages: preparedContext.messages };
+            return { messages: preparedContext.messages, activeSkills };
           },
           beforeModel: async (state) => {
             const additions: ModelMessage[] = [];
@@ -3034,6 +3081,8 @@ export class AgentRuntime {
               this.skillRuntimeContext(conversation, workspace?.id),
               resolveActiveSkillContextBudget(configuration.contextWindow ?? 0),
             );
+            // A load in this tool batch is not permission to act before the model has read the body.
+            this.modelVisibleSkillsByRun.set(runId, activeSkillContext == null ? [] : [...state.activeSkills]);
             const taskListContext = activeTaskListContextMessage(
               this.database.getTaskList(conversationId),
             );
@@ -3428,6 +3477,7 @@ export class AgentRuntime {
       this.agentInputsForSummaryByRun.delete(runId);
       this.claimedPendingMessagesByRun.delete(runId);
       this.activeSkillRefsByRun.delete(runId);
+      this.modelVisibleSkillsByRun.delete(runId);
       for (const key of this.startedToolsByRunCall.keys()) {
         if (key.startsWith(`${runId}:`)) this.startedToolsByRunCall.delete(key);
       }
@@ -4786,6 +4836,15 @@ export class AgentRuntime {
     const toolImageRefs: ConversationAttachment[] = [];
     try {
       const unavailableReason = this.unavailableToolReason(input.toolCall.name);
+      if (unavailableReason === null && requiredSkillForTool(input.toolCall.name, input.toolCall.arguments) !== null) {
+        if (this.skillRuntime === null) throw new Error("Skill Runtime 不可用，操作未执行。");
+        this.skillRuntime.requireActiveSkill(
+          input.toolCall.name,
+          input.toolCall.arguments,
+          this.modelVisibleSkillsByRun.get(input.runId) ?? [],
+          this.skillRuntimeContext(this.database.getConversation(input.conversationId), input.projectId),
+        );
+      }
       if (unavailableReason !== null) {
         execution = {
           content: JSON.stringify({ error: unavailableReason, ok: false }),
@@ -4860,10 +4919,14 @@ export class AgentRuntime {
               })
           : proposal;
       }
+      if (input.toolCall.name === "generate_images") {
+        const result = imageGenerationResultSchema.safeParse(JSON.parse(execution.content));
+        if (result.success) toolImageRefs.push(...result.data.value.images);
+      }
       if (!execution.isError && this.attachments !== null && ["browser_control", "computer_use", "present_html"].includes(input.toolCall.name)) {
         const screenshots = execution.modelAttachments?.filter((image) => (image.source === "browser" || image.source === "computer") && image.kind === "image") ?? [];
         for (const screenshot of screenshots) if (screenshot.kind === "image" && screenshot.data !== null) {
-          const image = await this.attachments.saveToolScreenshot(input.conversationId, startedTool.id, { ...screenshot, data: screenshot.data });
+          const image = await this.attachments.saveToolScreenshot(input.conversationId, startedTool.id, { ...screenshot, source: screenshot.source === "computer" ? "computer" : "browser", data: screenshot.data });
           toolImageRefs.push(image);
         }
         if (toolImageRefs.length > 0) {
@@ -4876,6 +4939,9 @@ export class AgentRuntime {
       // suspend/resume or terminate the run. Other tool failures are turned
       // into a bounded ToolMessage and persisted as a failed tool row.
       if (input.controller.signal.aborted || isAbortError(error) || isGraphInterrupt(error)) {
+        if (input.toolCall.name === "generate_images" && !isGraphInterrupt(error)) {
+          this.persistRuntimeActivity({ ...(this.startedToolsByRunCall.get(key) ?? startedTool), status: "cancelled" }, input.emit);
+        }
         throw error;
       }
       execution = {
@@ -4998,6 +5064,7 @@ export class AgentRuntime {
   }
 
   private permissionPolicyFor(toolName: string): PermissionPolicy {
+    if (toolName === "generate_images") return "ask";
     if (toolName === "web_search") return "ask";
     const policies = this.applicationSettings?.getConfiguration().permissionPolicies
       ?? DEFAULT_APPLICATION_PERMISSION_POLICIES;
@@ -5679,7 +5746,7 @@ export class AgentRuntime {
         ...(toolNames.has("submit_team_work_item") ? this.teamDispatchContext(conversation) : []),
         ...(toolNames.has("load_skill") || (executionTools && this.skillRuntime === null) ? [this.skillRuntime === null
           ? "A Skill is a task instruction and capability bundle injected from SKILL.md. No Skill Runtime is currently available, so do not label general abilities as Skills."
-          : "A Skill is a task instruction and capability bundle injected from SKILL.md, not a built-in tool, Agent role, or command-line program. Use load_skill when catalog details match the task. Skill bodies enter only the current model context, never the chat Timeline, and cannot expand permissions or bypass approval."] : []),
+          : "Skills are independent instruction bundles, all activated through load_skill(skillId). Load only a matching Skill's SKILL.md, then use read_skill_reference for needed references, never the whole directory. Reuse instructions already in the active context across turns; valid activations are restored automatically after compaction. Read a reference again only when needed content is absent or changed. Follow the prerequisite Skill named by an available tool's description; read its body on the next model turn before operating. Status, listing and cleanup remain available. Skill bodies enter only the current model context, never the chat Timeline, and cannot expand permissions or bypass approval."] : []),
         !executionTools
           ? "Use only the permitted reference, coordination and delivery tools. Execution is handled by the assigned workers; a workspace reference does not grant command or file-change tools."
           : workspace === null
@@ -5937,8 +6004,9 @@ export class AgentRuntime {
     tool: ConversationToolItem,
     emit: RunEventEmitter,
   ): void {
+    const generated = tool.name === "generate_images" && tool.result !== null ? imageGenerationResultSchema.safeParse(JSON.parse(tool.result)) : null;
     const event = {
-      payload: { runId: tool.runId, tool, toolId: tool.id },
+      payload: { runId: tool.runId, tool, toolId: tool.id, ...(generated?.success ? { attachmentRefs: generated.data.value.images } : {}) },
       type: "runtime_activity_updated" as const,
     };
     if (this.threadLog !== null && this.eventProjector !== null) {

@@ -4,6 +4,13 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { HtmlPresentationTool } from "./html-presentation-tool.js";
 import { ToolArgumentsError } from "../model/tool-arguments.js";
+import { htmlPresentationResultSchema } from "@agent/protocol";
+
+function deliveryValue(content: string) {
+  const { displayRef, ...value } = htmlPresentationResultSchema.parse(JSON.parse(content)).value;
+  expect(displayRef).toMatch(/^artifact:[0-9a-f-]{36}$/u);
+  return value;
+}
 
 describe("HTML presentation tool", () => {
   it("reports invalid component source as correctable arguments instead of an internal service failure", async () => {
@@ -46,7 +53,7 @@ describe("HTML presentation tool", () => {
     expect(tool.getDefinitions()).toEqual([expect.objectContaining({ name: "present_html" })]);
     const result = await tool.execute(conversationId, '{"path":"pages/demo.html"}', signal());
     expect(result).toMatchObject({ kind: "completed", isError: false });
-    expect(JSON.parse(result.content)).toEqual({ ok: true, value: { presentation: { kind: "html", path: "pages/demo.html" } } });
+    expect(deliveryValue(result.content)).toEqual({ presentation: { kind: "html", path: "pages/demo.html" } });
     expect(result.content).not.toContain(root);
     expect(result.content).not.toContain("<h1>");
     expect(await readFile(path.join(root, "pages/demo.html"), "utf8")).toBe("<h1>最终交付</h1>");
@@ -67,7 +74,7 @@ describe("HTML presentation tool", () => {
     const pages = [{ title: "A", kind: "code", html: "<div>A</div>" }, { title: "B", kind: "code", html: "<button>B</button>" }];
     const result = await tool.execute(conversationId, JSON.stringify({ pages }), signal());
     expect(result.isError).toBe(false);
-    expect(JSON.parse(result.content)).toEqual({ ok: true, value: { presentation: { kind: "html_gallery", pages } } });
+    expect(deliveryValue(result.content)).toEqual({ presentation: { kind: "html_gallery", pages } });
     expect(resolve).not.toHaveBeenCalled();
   });
 
@@ -75,7 +82,7 @@ describe("HTML presentation tool", () => {
     const pages = [{ title: "文件方案", kind: "file", path: "pages/demo.html" }, { title: "片段方案", kind: "code", html: "<div>B</div>" }];
     const result = await tool.execute(conversationId, JSON.stringify({ pages }), signal());
     expect(result.isError).toBe(false);
-    expect(JSON.parse(result.content)).toEqual({ ok: true, value: { presentation: { kind: "html_gallery", pages } } });
+    expect(deliveryValue(result.content)).toEqual({ presentation: { kind: "html_gallery", pages } });
     const failed = await tool.execute(conversationId, JSON.stringify({ pages: [...pages, { title: "缺失", kind: "file", path: "missing.html" }] }), signal());
     expect(failed.isError).toBe(true);
     expect(failed.content).not.toContain('"presentation"');

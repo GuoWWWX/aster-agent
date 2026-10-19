@@ -11,17 +11,17 @@ const modes = {
   full_access: { label: "完全访问", description: "直接执行已授权的文件、命令和网络操作；应用禁用项与系统边界仍生效。", icon: ShieldAlert, color: "text-[var(--app-status-warning-fg)]!" },
 };
 
-export function ConversationPermissionSelect({ value, disabled, deferred, onChange }: {
-  value: ConversationPermissionMode; disabled: boolean; deferred: boolean; onChange: (value: string) => void;
+export function ConversationPermissionSelect({ value, disabled, deferred, onChange, busy = false }: {
+  value: ConversationPermissionMode; disabled: boolean; deferred: boolean; onChange: (value: string) => void; busy?: boolean;
 }) {
   const reviewer = useApplicationSettingsStore(state => state.approvalReviewer);
   const selectedMode = value === "ask_before_changes" ? reviewer === "auto_review" ? "auto_review" : "request_approval" : value;
   const selected = modes[selectedMode];
   const Icon = selected.icon;
-  return <Select value={selectedMode} disabled={disabled} onValueChange={onChange}>
+  return <Select value={selectedMode} disabled={disabled || busy} onValueChange={onChange}>
     <TooltipAnchor side="top" content={`${selected.label}：${selected.description}${deferred ? " 已保存到团队工作项，将在下一次执行生效。" : ""}`}>
-      <SelectTrigger aria-label="权限模式" data-permission-mode={selectedMode} showIndicator={false}
-        className={`conversation-workspace__composer-select conversation-workspace__composer-select--permission size-8! justify-center! px-0! ${selected.color}`}>
+      <SelectTrigger aria-label="权限模式" aria-busy={busy || undefined} data-permission-mode={selectedMode} showIndicator={false}
+        className={`conversation-workspace__composer-select conversation-workspace__composer-select--permission size-8! justify-center! px-0! ${selected.color} ${busy && !disabled ? "disabled:opacity-100!" : ""}`}>
         <Icon aria-hidden="true" size={16} />
       </SelectTrigger>
     </TooltipAnchor>

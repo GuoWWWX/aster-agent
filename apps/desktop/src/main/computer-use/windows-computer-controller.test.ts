@@ -34,6 +34,36 @@ function fixture(permissions: ConstructorParameters<typeof WindowsComputerContro
   return { controller, requests, disconnect: () => peer?.destroy(), failOperation: (index: number, code: string) => peer?.write(`${JSON.stringify({ id: requests[index]?.id, ok: false, code })}\n`), reply: (index: number, value: unknown = { windows: [] }) => peer?.write(`${JSON.stringify({ id: requests[index]?.id, ok: true, value })}\n`), set: (value: Partial<ComputerUseConfiguration>) => { configuration = { ...configuration, ...value }; } };
 }
 describe.runIf(process.platform === "win32")("Windows computer transport", () => {
+  it("lets the agent start the configured session and stop without settings-page actions", async () => {
+    const f = fixture(); const signal = new AbortController().signal;
+    expect(await f.controller.execute({ action: "status" }, signal)).toMatchObject({ ok: true, value: { running: false } });
+    expect(await f.controller.execute({ action: "start" }, signal)).toMatchObject({ ok: true, value: { running: true, elevated: false } });
+    expect(await f.controller.execute({ action: "start" }, signal)).toMatchObject({ ok: true });
+    expect(native.spawn).toHaveBeenCalledOnce();
+    expect(await f.controller.execute({ action: "stop" }, signal)).toMatchObject({ ok: true, value: { running: false } });
+    expect(await f.controller.execute({ action: "start" }, signal)).toMatchObject({ ok: false, code: "COMPUTER_CONTROL_STOPPED" });
+    expect(native.spawn).toHaveBeenCalledOnce();
+    expect(await f.controller.execute({ action: "start" }, new AbortController().signal)).toMatchObject({ ok: true });
+    expect(native.spawn).toHaveBeenCalledTimes(2);
+  });
+  it("cannot rejoin or restart a session after emergency stop in the same run", async () => {
+    const f = fixture(); const signal = new AbortController().signal;
+    await f.controller.execute({ action: "start" }, signal); f.disconnect();
+    await vi.waitFor(() => expect(f.controller.getStatus().running).toBe(false));
+    expect(await f.controller.execute({ action: "start" }, signal)).toMatchObject({ ok: false, code: "COMPUTER_CONTROL_STOPPED" });
+    await f.controller.start();
+    expect(await f.controller.execute({ action: "list" }, signal)).toMatchObject({ ok: false, code: "COMPUTER_CONTROL_STOPPED" });
+    expect(await f.controller.execute({ action: "start" }, signal)).toMatchObject({ ok: false, code: "COMPUTER_CONTROL_STOPPED" });
+    expect(native.spawn).toHaveBeenCalledTimes(2);
+  });
+  it("cancels agent startup while waiting for the native handshake", async () => {
+    const f = fixture(); const abort = new AbortController();
+    native.spawn.mockImplementation(() => Object.assign(new EventEmitter(), { kill: vi.fn() }));
+    const starting = f.controller.execute({ action: "start" }, abort.signal);
+    const rejected = expect(starting).rejects.toMatchObject({ code: "PROCESS_CANCELLED" });
+    await vi.waitFor(() => expect(native.spawn).toHaveBeenCalledOnce()); abort.abort(); await rejected;
+    expect(f.controller.getStatus().running).toBe(false); expect(native.spawn).toHaveBeenCalledOnce();
+  });
   it("serializes all callers and transfers only current allowlist facts", async () => {
     const f = fixture(); await f.controller.start();
     expect(f.controller.getStatus()).toMatchObject({ running: true, elevated: false });
@@ -46,7 +76,7 @@ describe.runIf(process.platform === "win32")("Windows computer transport", () =>
     expect(await f.controller.execute({ action: "list" }, new AbortController().signal)).toEqual({ ok: false, code: "COMPUTER_START_REQUIRED" });
     expect(native.spawn).toHaveBeenCalledOnce();
   });
-  it("denies revoked configuration and never lets a model trigger UAC", async () => {
+  it("denies revoked configuration and never starts implicitly from a read operation", async () => {
     const f = fixture(); f.set({ enabled: false });
     expect(await f.controller.execute({ action: "list" }, new AbortController().signal)).toEqual({ ok: false, code: "COMPUTER_USE_DISABLED" });
     f.set({ enabled: true, administrator: true });
@@ -88,7 +118,7 @@ describe.runIf(process.platform === "win32")("Windows computer transport", () =>
     const f = fixture(); await f.controller.start();
     for (const code of ["USER_INPUT_ACTIVE", "FOCUS_CHANGED", "WINDOW_OCCLUDED"]) {
       const index = f.requests.length;
-      const operation = f.controller.execute({ action: "click", windowId: "123", x: 12, y: 12, button: "left" }, new AbortController().signal);
+      const operation = f.controller.execute({ action: "click", windowId: "123", x: 12, y: 12, button: "left", count: 1 }, new AbortController().signal);
       await vi.waitFor(() => expect(f.requests).toHaveLength(index + 1)); f.failOperation(index, code);
       expect(await operation).toMatchObject({ ok: false, code }); expect(f.controller.getStatus().running).toBe(true);
     }

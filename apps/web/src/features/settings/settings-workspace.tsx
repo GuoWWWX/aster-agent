@@ -1,3 +1,4 @@
+import { isImageGenerationModel } from "@agent/protocol";
 import { LoadingState, Spinner } from "../../components/ui/loading.js";
 import {
   Archive,
@@ -166,6 +167,7 @@ type ModelTestResultState =
   | { kind: "failed"; message: string };
 
 type ConfiguredModelDraft = {
+  modelType?: "chat" | "image";
   contextCompression: ContextCompressionThreshold;
   contextWindow: string;
   displayName: string;
@@ -844,6 +846,7 @@ function ModelsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
           apiFormat: draft.apiFormat,
           baseUrl: draft.baseUrl,
           models: configuredModelDrafts.map((model) => ({
+            ...(model.modelType === undefined ? {} : { modelType: model.modelType }),
             contextCompression: model.contextCompression,
             contextWindow: parseModelContextWindow(model.contextWindow) ?? 0,
             displayName: model.displayName.trim(),
@@ -934,6 +937,7 @@ function ModelsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
     let disposed = false;
     const providerModels = savedProviderModelsRef.current;
     const modelDrafts = providerModels.map((model) => ({
+      ...(model.modelType === undefined ? {} : { modelType: model.modelType }),
       contextCompression: model.contextCompression
         ?? contextCompressionThreshold(globalContextCompressionRef.current),
       contextWindow: formatModelContextWindow(model.contextWindow),
@@ -1007,6 +1011,7 @@ function ModelsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
   }
 
   function updateModelId(modelDraftId: string, value: string): void {
+    const discoveredType = discoveredModels.find(model => model.modelId === value)?.modelType;
     const shouldApplyReasoningDefaults = newModelReasoningDefaultIdsRef.current.has(modelDraftId);
     const shouldApplyContextWindowDefault = newModelContextDefaultIdsRef.current.has(modelDraftId);
     setConfiguredModelDrafts((current) => current.map((model) => {
@@ -1020,6 +1025,7 @@ function ModelsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
           ? value
           : model.displayName,
         modelId: value,
+        ...(model.modelType === undefined && discoveredType !== undefined ? { modelType: discoveredType } : {}),
         reasoningOptions: shouldApplyReasoningDefaults
           ? value.trim().length === 0 ? [] : defaultReasoningOptions(draft.apiFormat, value, modelCatalog)
           : model.reasoningOptions,
@@ -1533,6 +1539,7 @@ function ModelsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
                         )}
                         <span className="min-w-0 flex-1 truncate" title={model.displayName || model.modelId || "未配置模型"}>
                           {model.displayName || model.modelId || "未配置模型"}
+                          {isImageGenerationModel(model) ? <span className="ml-2 text-[length:var(--app-font-size-caption)] text-[var(--app-accent)]">生图</span> : null}
                         </span>
                         <span className="min-w-0 max-w-[40%] truncate text-[length:var(--app-font-size-auxiliary)] text-[var(--app-muted-foreground)]">
                           {model.modelId || "点击配置模型参数"}
@@ -1561,6 +1568,11 @@ function ModelsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
                         </span>
                       </summary>
                       <div className="settings-model-option">
+                      <Select value={isImageGenerationModel(model) ? "image" : "chat"}
+                        onValueChange={value => { setConfiguredModelDrafts(current => current.map(item => item.id === model.id ? { ...item, modelType: value === "image" ? "image" : "chat" } : item)); markProviderConfigurationChanged(); }}>
+                        <SelectTrigger aria-label={`${model.modelId || "模型"}的用途`} className="w-24"><SelectValue /></SelectTrigger>
+                        <SelectContent><SelectItem value="chat">对话</SelectItem><SelectItem value="image">生图</SelectItem></SelectContent>
+                      </Select>
                       <label className="settings-model-field settings-model-field--name">
                         <input
                           aria-label={`${model.modelId || "模型"}的模型名称`}

@@ -252,6 +252,23 @@ export class ConversationAttachmentStore {
     }
   }
 
+  public async saveGeneratedImage(conversationId: string, toolId: string, image: { data: string; mimeType: string }): Promise<ConversationAttachment> {
+    this.database.getConversation(conversationId);
+    const bytes = Buffer.from(image.data, "base64");
+    const type = await fileTypeFromBuffer(bytes);
+    if (bytes.length === 0 || bytes.length > MAX_ATTACHMENT_BYTES || type?.mime !== image.mimeType || !["image/png", "image/jpeg", "image/webp"].includes(type.mime)) throw new Error("生成图片数据无效。");
+    const id = randomUUID(), directory = this.getAttachmentDirectory(conversationId);
+    await mkdir(directory, { recursive: true });
+    const storedPath = path.join(directory, `${id}.${type.ext}`);
+    try {
+      await writeFile(storedPath, bytes);
+      return this.database.createToolImageAttachment({ id, conversationId, messageId: toolId, pendingMessageId: null,
+        name: `generated-${id}.${type.ext}`, mimeType: type.mime, kind: "image", sizeBytes: bytes.length,
+        source: "generated", projectPath: null, storedPath, extractedTextPath: null, contextTokens: 1024,
+        truncated: false, createdAt: new Date().toISOString() });
+    } catch (error) { await this.removeFile(storedPath); throw error; }
+  }
+
   public readImagePreview(
     conversationId: string,
     attachmentId: string,

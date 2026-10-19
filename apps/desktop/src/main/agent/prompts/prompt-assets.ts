@@ -8,6 +8,8 @@ import debuggingSkillSource from "./skills/debugging/SKILL.md";
 import terminalUseSkillSource from "./skills/terminal-use/SKILL.md";
 import uiVerificationSkillSource from "./skills/ui-verification/SKILL.md";
 import skillCreatorSource from "./skills/skill-creator/SKILL.md";
+import imagegenSource from "./skills/imagegen/SKILL.md";
+import computerUseSource from "./skills/computer-use/SKILL.md";
 
 function normalizePrompt(source: string): string {
   return source.trim().replace(/\r\n/gu, "\n");
@@ -41,6 +43,6 @@ export function baseSystemPromptForTools(names: ReadonlySet<string>): string {
   }).join("").trim();
 }
 export const BROWSER_USE_SKILL = normalizePrompt(browserUseSkillSource);
-export const SYSTEM_SKILLS = [BROWSER_USE_SKILL, imageViewSkillSource, codeReviewSkillSource, debuggingSkillSource, terminalUseSkillSource, uiVerificationSkillSource, skillCreatorSource].map(normalizePrompt);
+export const SYSTEM_SKILLS = [BROWSER_USE_SKILL, imageViewSkillSource, codeReviewSkillSource, debuggingSkillSource, terminalUseSkillSource, uiVerificationSkillSource, skillCreatorSource, imagegenSource, computerUseSource].map(normalizePrompt);
 export const CONTEXT_COMPACTION_PROMPT = normalizePrompt(contextCompactionPromptSource);
 export const TEAM_CHAT_COORDINATOR_PROMPT = normalizePrompt(teamChatCoordinatorSource);

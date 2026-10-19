@@ -5,6 +5,7 @@ import { NATIVE_OVERLAY_BLUR_CHANNEL, NATIVE_OVERLAY_CHANNEL, NATIVE_OVERLAY_FRA
 
 const electron = vi.hoisted(() => ({ on: vi.fn(), removeListener: vi.fn(), appOn: vi.fn(), appRemoveListener: vi.fn(), cursor: { x: 0, y: 0 } }));
 vi.mock("electron", () => ({
+  Menu: { buildFromTemplate: vi.fn() },
   ipcMain: { on: electron.on, removeListener: electron.removeListener },
   app: { on: electron.appOn, removeListener: electron.appRemoveListener },
   screen: { getCursorScreenPoint: () => electron.cursor },

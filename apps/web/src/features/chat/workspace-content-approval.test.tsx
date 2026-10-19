@@ -688,7 +688,13 @@ describe("Automatic continuation answer", () => {
   it("enables quick coordination with full access and persists an explicit mode toggle", async () => {
     const client = new MockAgentClient();
     const conversation = await client.createConversation({ projectId: null });
-    const save = vi.spyOn(client, "setConversationPermissionMode");
+    const update = client.setConversationPermissionMode.bind(client);
+    let finishSave: (() => void) | undefined;
+    const pendingSave = new Promise<void>(resolve => { finishSave = resolve; });
+    const save = vi.spyOn(client, "setConversationPermissionMode").mockImplementationOnce(async input => {
+      await pendingSave;
+      return update(input);
+    });
     const container = document.createElement("div");
     document.body.append(container);
     root = createRoot(container);
@@ -697,16 +703,27 @@ describe("Automatic continuation answer", () => {
         session={session({ id: conversation.id, title: "快速协作验收" })} /></TooltipProvider>);
       await flushConversationWorkspace();
     });
-    const toggle = [...container.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent === "快速协作");
+    let toggle = container.querySelector<HTMLButtonElement>('button[aria-label="快速协作"]');
+    expect(toggle?.textContent).toBe("");
+    expect(toggle?.querySelector(".lucide-users-round")).not.toBeNull();
+    expect(container.querySelector('button[aria-label="对话 Agent"]')?.textContent).toBe("");
+    expect(container.querySelector('button[aria-label="生成图片"]')).toBeNull();
     expect(toggle?.getAttribute("aria-pressed")).toBe("false");
-    await act(async () => { toggle?.click(); await flushConversationWorkspace(); });
+    const permission = container.querySelector<HTMLButtonElement>('[aria-label="权限模式"]');
+    await act(async () => { toggle?.click(); await Promise.resolve(); });
+    expect(container.querySelector('[aria-label="权限模式"]')).toBe(permission);
+    expect(permission?.disabled).toBe(true);
+    expect(permission?.getAttribute("aria-busy")).toBe("true");
+    expect(permission?.className).toContain("disabled:opacity-100!");
+    await act(async () => { finishSave?.(); await flushConversationWorkspace(); });
     expect(save).toHaveBeenLastCalledWith({ conversationId: conversation.id, permissionMode: "full_access", coordinationMode: "parallel_queue" });
-    expect(toggle?.getAttribute("aria-pressed")).toBe("true");
+    expect(container.querySelector('[aria-label="快速协作"]')?.getAttribute("aria-pressed")).toBe("true");
     expect(container.querySelector('[aria-label="权限模式"]')?.textContent).toBe("");
     expect(container.querySelector('[aria-label="权限模式"]')?.getAttribute("data-permission-mode")).toBe("full_access");
+    toggle = container.querySelector<HTMLButtonElement>('button[aria-label="快速协作"]');
     await act(async () => { toggle?.click(); await flushConversationWorkspace(); });
     expect(save).toHaveBeenLastCalledWith({ conversationId: conversation.id, permissionMode: "full_access", coordinationMode: "direct" });
-    expect(toggle?.getAttribute("aria-pressed")).toBe("false");
+    expect(container.querySelector('[aria-label="快速协作"]')?.getAttribute("aria-pressed")).toBe("false");
   });
   it("renders one running work-process status after a team request, never above its bubble", async () => {
     const client = new MockAgentClient();
@@ -1982,7 +1999,8 @@ describe("Conversation Agent identity after a failed Run", () => {
         await flushConversationWorkspace();
       });
       const selector = container.querySelector<HTMLButtonElement>('button[aria-label="对话 Agent"]');
-      expect(selector?.textContent).toContain(lead.name);
+      expect(selector?.textContent).toBe("");
+      expect(selector?.getAttribute("aria-description")).toContain(lead.name);
       expect(selector?.disabled).toBe(true);
       const composer = container.querySelector<HTMLTextAreaElement>('textarea[aria-label="输入任务"]');
       act(() => { setNativeTextValue(composer, "继续"); composer?.dispatchEvent(new InputEvent("input", { bubbles: true })); });
@@ -3334,3 +3352,34 @@ function attachment(
     ...input,
   };
 }
+
+
+it.each(["running", "completed"] as const)("expands image generation details and names the loaded skill (%s)", async status => {
+  const client = new MockAgentClient();
+  const image = { id: WORK_ITEM_ID, conversationId: PARENT_ID, messageId: TOOL_ID, name: "generated.png", source: "generated" as const,
+    mimeType: "image/png", kind: "image" as const, createdAt: "2026-10-19T00:00:00Z", contextTokens: 1024, projectPath: null, sizeBytes: 3, truncated: false };
+  const tool: ConversationToolItem = { id: TOOL_ID, kind: "tool", conversationId: PARENT_ID, runId: RUN_ID, batchId: null,
+    createdAt: "2026-10-19T00:00:01Z", name: "generate_images", arguments: '{"count":2}', diff: null, status,
+    result: JSON.stringify({ ok: true, value: { images: [image], count: 1, requestedCount: 2, modelId: "image", providerId: PARENT_ID } }) };
+  vi.spyOn(client, "listConversationTimeline").mockResolvedValue([
+    { ...tool, id: MESSAGE_ID, name: "load_skill", status: "completed", createdAt: "2026-10-19T00:00:00Z",
+      result: '{"ok":true,"value":{"loaded":true,"skill":{"name":"imagegen"}}}' }, tool,
+  ]);
+  vi.spyOn(client, "readConversationAttachmentPreview").mockResolvedValue({ data: "AQID", mimeType: "image/png" });
+  const container = document.createElement("div"); document.body.append(container); root = createRoot(container);
+  await act(async () => {
+    root?.render(<TooltipProvider><ConversationWorkspace agentClient={client} project={null}
+      session={session({ id: PARENT_ID, title: "图片工具展开", activeRunId: status === "running" ? RUN_ID : null })} /></TooltipProvider>);
+    await flushConversationWorkspace();
+  });
+  expandWorkProcess(container);
+  act(() => container.querySelector<HTMLButtonElement>('[aria-label="展开本轮工具调用"]')?.click());
+  expect(container.textContent).toContain("已加载技能 · imagegen");
+  const row = Array.from(container.querySelectorAll(".tool-activity-row")).find(row => row.textContent?.includes("张图片"))!;
+  expect(row).toBeDefined();
+  await act(async () => { row.querySelector<HTMLButtonElement>('[aria-label="展开调用详情"]')!.click(); await Promise.resolve(); });
+  expect(row.querySelectorAll("img")).toHaveLength(1);
+  expect(container.querySelectorAll("img")).toHaveLength(1);
+  expect(row.textContent).toContain(status === "running" ? "已完成 1/2" : "已生成 1 张图片");
+  if (status === "running") expect(row.textContent).toContain("正在生成 2/2");
+});

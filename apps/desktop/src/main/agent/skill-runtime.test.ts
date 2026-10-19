@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { IntegrationConfigurationStore } from "../settings/integration-configuration-store.js";
 import { SkillDocumentStore } from "../settings/skill-document-store.js";
-import { SkillRuntime } from "./skill-runtime.js";
+import { requiredSkillForTool, SkillRuntime } from "./skill-runtime.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -58,6 +58,52 @@ async function fixture(): Promise<{
 }
 
 describe("SkillRuntime", () => {
+  it.each([
+    ["browser_control", "open", "browser-use"],
+    ["computer_use", "start", "computer-use"],
+    ["computer_use", "click", "computer-use"],
+    ["generate_images", "", "imagegen"],
+    ["create_skill", "", "skill-creator"],
+    ["browser_control", "close_tabs", null],
+    ["computer_use", "stop", null],
+    ["computer_use", "status", null],
+    ["computer_use", "list", null],
+    ["run_command", "", null],
+  ])("applies the common prerequisite to %s/%s", (tool, action, skill) => {
+    expect(requiredSkillForTool(tool, JSON.stringify({ action }))).toBe(skill);
+  });
+
+  it("restores an unchanged Skill but drops disabled, out-of-scope, changed and over-budget activations", async () => {
+    const { runtime, integrations, entryPath } = await fixture();
+    const loaded = runtime.loadSkill("review");
+    const context = { projectId: undefined };
+    expect(runtime.restoreActiveSkills([loaded], context, 1000)).toEqual([expect.objectContaining({ id: "review", contentHash: loaded.contentHash })]);
+    expect(runtime.restoreActiveSkills([loaded], { ...context, allowedSkillIds: [] }, 1000)).toEqual([]);
+    expect(runtime.restoreActiveSkills([loaded], context, 1)).toEqual([]);
+    const config = integrations.getConfiguration();
+    integrations.saveConfiguration({ ...config, skills: config.skills.map(skill => ({ ...skill, enabled: false })) });
+    expect(runtime.restoreActiveSkills([loaded], context, 1000)).toEqual([]);
+    integrations.saveConfiguration(config);
+    await writeFile(entryPath, "---\nname: review\ndescription: Review code.\n---\nChanged instructions.");
+    expect(runtime.restoreActiveSkills([loaded], context, 1000)).toEqual([]);
+    await writeFile(entryPath, "invalid Skill without metadata");
+    expect(runtime.restoreActiveSkills([loaded], context, 1000)).toEqual([]);
+    expect(runtime.execute({ toolName: "load_skill", arguments: '{"skillId":"review"}', context }).isError).toBe(true);
+  });
+
+  it("requires the right active document and rechecks it before operating", async () => {
+    const { runtime, integrations, entryPath } = await fixture();
+    const config = integrations.getConfiguration();
+    integrations.saveConfiguration({ ...config, skills: config.skills.map(skill => ({ ...skill, name: "computer-use" })) });
+    const loaded = runtime.loadSkill("review");
+    const context = { projectId: undefined };
+    expect(() => runtime.requireActiveSkill("computer_use", '{"action":"click"}', [], context)).toThrow("load_skill");
+    expect(() => runtime.requireActiveSkill("computer_use", '{"action":"click"}', [loaded], context)).not.toThrow();
+    await writeFile(entryPath, "---\nname: review\ndescription: Review code.\n---\nChanged instructions.");
+    expect(() => runtime.requireActiveSkill("computer_use", '{"action":"click"}', [loaded], context)).toThrow("内容或版本已变化");
+    expect(() => runtime.requireActiveSkill("computer_use", '{"action":"stop"}', [], context)).not.toThrow();
+  });
+
   it("prepares user skill creation without writing before approval and then exposes the saved skill", async () => {
     const { runtime, integrations } = await fixture();
     const content = "---\nname: explain-sort\ndescription: Explain sorting examples.\n---\n\nTrace the array and verify the output.\n";

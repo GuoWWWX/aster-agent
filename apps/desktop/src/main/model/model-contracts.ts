@@ -29,6 +29,7 @@ export type ModelProviderTokenUsage = {
 };
 
 export type ModelConfiguration = {
+  modelType?: "chat" | "image";
   apiKey: string;
   apiFormat: ModelApiFormat;
   baseUrl: string;
@@ -58,7 +59,7 @@ export type ModelMessageAttachment = {
   name: string;
   projectPath: string | null;
   readState: "full" | "metadata_only" | "preview";
-  source: "browser" | "project" | "upload" | "computer";
+  source: "browser" | "project" | "upload" | "computer" | "generated";
   truncated: boolean;
 } & (
   | { content: string; kind: "text" }
@@ -71,6 +72,7 @@ export function modelImageAttachmentCaption(
   const location = attachment.source === "browser"
     ? "浏览器工具截图"
     : attachment.source === "computer" ? "电脑控制窗口截图"
+    : attachment.source === "generated" ? "已生成图片"
     : attachment.projectPath === null
       ? "用户上传图片"
       : `项目图片 ${attachment.projectPath}`;

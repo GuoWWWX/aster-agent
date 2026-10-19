@@ -24,6 +24,7 @@ import {
   type SetDefaultModelInput
 } from "@agent/protocol";
 import { z } from "zod";
+import { isImageGenerationModel } from "@agent/protocol";
 
 import {
   readJsonDocument,
@@ -38,6 +39,7 @@ export type { ModelConfiguration, ModelContextConfiguration } from "./model-cont
 
 const storedModelBaseSchema = z
   .object({
+    modelType: z.enum(["chat", "image"]).optional(),
     contextCompression: contextCompressionThresholdSchema.optional(),
     contextWindow: z.number().int().min(0).max(10_000_000),
     displayName: z.string().min(1).max(200).optional(),
@@ -306,6 +308,7 @@ function modelProfile(
   model: z.infer<typeof storedModelSchema>
 ): ModelProfile {
     return {
+      ...(model.modelType === undefined ? {} : { modelType: model.modelType }),
       ...(model.contextCompression === undefined
         ? {}
         : { contextCompression: model.contextCompression }),
@@ -372,6 +375,7 @@ function openAiStyleModels(payload: unknown): DiscoveredModel[] {
     if (typeof id !== "string" || id.trim().length === 0) return [];
     return [{
       modelId: id.trim(),
+      ...((candidate as { type?: unknown }).type === "image" ? { modelType: "image" as const } : {}),
       ownedBy: typeof ownedBy === "string" && ownedBy.trim().length > 0
         ? ownedBy.trim()
         : null
@@ -490,6 +494,7 @@ export class ModelCredentialStore {
   private toContextConfiguration(selected: SelectedStoredModel): ModelContextConfiguration {
     const { model, modelId, provider } = selected;
     return {
+      ...(model.modelType === undefined ? {} : { modelType: model.modelType }),
       apiFormat: provider.apiFormat,
       baseUrl: provider.baseUrl,
       ...(model.contextCompression === undefined
@@ -584,6 +589,11 @@ export class ModelCredentialStore {
   ): Promise<{ content: string; modelId: string }> {
     try {
       const configuration = this.getConfiguration(providerId, modelId);
+      if (isImageGenerationModel(configuration)) {
+        const models = await this.discoverModels({ apiKey: configuration.apiKey, apiFormat: configuration.apiFormat, baseUrl: configuration.baseUrl });
+        if (!models.some(model => model.modelId === modelId)) throw new Error("供应商未列出此生图模型。");
+        return { modelId, content: "已在供应商模型列表中找到此生图模型；未执行付费生成。请在对话中生成图片验证实际生图能力。" };
+      }
       let receivedReasoning = false;
       const result = await new ModelAdapterRegistry().completeTurn({
         configuration,
@@ -925,7 +935,7 @@ export class ModelCredentialStore {
   ): ConversationModelSelection | null {
     const provider = stored.providers.find((candidate) => candidate.id === selection.providerId);
     const model = provider?.models.find((candidate) => candidate.modelId === selection.modelId);
-    if (model === undefined) return null;
+    if (model === undefined || isImageGenerationModel(model)) return null;
     if (selection.reasoning === null) return {
       modelId: selection.modelId,
       providerId: selection.providerId,

@@ -132,12 +132,24 @@ export type ThreadLogContext = {
   messages: ThreadLogContextMessage[];
 };
 
+const skillSnapshotResultSchema = z.object({ ok: z.literal(true), value: z.object({ loaded: z.literal(true), skill: z.object({
+  id: z.string().min(1).max(80), version: z.string().min(1).max(120), contentHash: z.string().regex(/^[a-f0-9]{64}$/u),
+}) }) });
+export type ThreadLogSkillSnapshot = z.infer<typeof skillSnapshotResultSchema>["value"]["skill"];
+export function skillSnapshotFromResult(content: string): ThreadLogSkillSnapshot | null {
+  let value: unknown;
+  try { value = JSON.parse(content); } catch { return null; }
+  const result = skillSnapshotResultSchema.safeParse(value);
+  return result.success ? result.data.value.skill : null;
+}
+
 type ContextLocation = { record: ThreadLogRecordLocation; legacyIndex: number };
 type ContextIndex = {
   context: ThreadLogContext;
   checkpointOffset: number;
   locations: ContextLocation[];
   cursor: ThreadLogScanCursor | null;
+  skills: Map<string, ThreadLogSkillSnapshot & { runId: string | null }>;
 };
 
 /**
@@ -509,6 +521,11 @@ export class ThreadLog {
       message.providerState === undefined ? [] : [message.providerState]));
   }
 
+  /** Reuse the existing incremental JSONL index; retain hashes, never Skill bodies or another history copy. */
+  public readSkillSnapshots(conversationId: string): ThreadLogSkillSnapshot[] {
+    return [...(this.contextIndex(conversationId)?.skills.values() ?? [])].map(({ id, version, contentHash }) => ({ id, version, contentHash }));
+  }
+
   /** Older request usage no longer describes the input after a successful compaction. */
   public readUncompactedProviderState(conversationId: string): ModelProviderState | null {
     const index = this.contextIndex(conversationId);
@@ -549,7 +566,7 @@ export class ThreadLog {
     if (!this.hasConversation(id)) return null;
     let index = this.contextIndexes.get(id);
     if (index === undefined || index.cursor === null || !this.canContinueScan(id, index.cursor)) {
-      index = { context: { checkpoint: null, messages: [] }, checkpointOffset: -1, locations: [], cursor: null };
+      index = { context: { checkpoint: null, messages: [] }, checkpointOffset: -1, locations: [], cursor: null, skills: new Map() };
     }
     const target = index;
     try {
@@ -558,6 +575,15 @@ export class ThreadLog {
           : event.type === "run_replaced" ? event.payload.previousRunId : undefined;
         if (typeof replaced === "string" && replaced.length > 0) {
           target.locations = target.locations.filter((_, position) => target.context.messages[position]?.runId !== replaced);
+          for (const [id, snapshot] of target.skills) if (snapshot.runId === replaced) target.skills.delete(id);
+        }
+        if (event.type === "tool_result" && event.payload.toolName === "load_skill" && event.payload.status === "completed" && typeof event.payload.content === "string") {
+          const snapshot = skillSnapshotFromResult(event.payload.content);
+          if (snapshot !== null) {
+            target.skills.delete(snapshot.id);
+            target.skills.set(snapshot.id, { ...snapshot, runId: readNullableString(event.payload.runId) });
+            if (target.skills.size > 200) target.skills.delete(target.skills.keys().next().value!);
+          }
         }
         const oldLength = target.locations.length;
         const checkpoint = target.context.checkpoint;
