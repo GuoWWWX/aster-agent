@@ -60,12 +60,13 @@ import { ToolHandlerRegistry, type ToolExecutionPolicy, type ToolHandler } from 
 import { MAX_PARALLEL_COMMAND_TOOL_CALLS, MAX_PARALLEL_READ_TOOL_CALLS } from "../tools/tool-execution-policy.js";
 import type { BaseCheckpointSaver } from "@langchain/langgraph-checkpoint";
 import { isManualContextCompactionCommand, createTurnSummarySourceMessages, createLocalTurnSummary, shouldGenerateModelTurnSummary } from "./runtime-turn-summary.js";
-import { ToolCallLimitError, ModelToolCallValidationError, ToolApprovalExpiredError, chunkToolCalls, type ToolApprovalInterrupt, type ToolApprovalResume, type LangChainToolResultEnvelope, type CachedGraphToolResult, isToolApprovalInterrupt, hasToolNodeMessages, toolCallIdFromConfig, parseToolArgumentsOrEmpty, parseLangChainToolResult } from "./runtime-tool-results.js";
+import { ToolCallLimitError, ModelToolCallValidationError, ToolApprovalExpiredError, chunkToolCalls, type ToolApprovalInterrupt, type ToolApprovalResume, type LangChainToolResultEnvelope, isToolApprovalInterrupt, hasToolNodeMessages, toolCallIdFromConfig, parseToolArgumentsOrEmpty, parseLangChainToolResult } from "./runtime-tool-results.js";
 import { createRunExecutionSnapshot, assertRunToolManifestMatchesSnapshot, assertRunConfigurationMatchesSnapshot } from "./runtime-execution-snapshot.js";
 import { type PermissionDecision, type SessionPermissionGrant, type AutomaticApprovalReview, AUTOMATIC_APPROVAL_REVIEW_PROMPT, parseAutomaticApprovalReview, requiresManualApprovalReview, DEFAULT_APPLICATION_PERMISSION_POLICIES, runtimeToolPermissionCategory, unavailableRuntimeToolReason, normalizePermissionCandidate, permissionRuleMatches, sessionPermissionGrantMatches, permissionModeLabel } from "./runtime-permission-policy.js";
 import { isAbortError, waitForRetryDelay } from "./runtime-model-retry.js";
 import { createRuntimeModelRetryPolicy } from "./runtime-model-retry-policy.js";
 import { RuntimeContextCompactor, type ContextCompactor } from "./runtime-context-compactor.js";
+import { RuntimeToolCallLedger } from "./runtime-tool-call-ledger.js";
 import { agentResultReceiptContent } from "./runtime-agent-receipts.js";
 import type { RuntimeToolContext } from "./runtime-tool-context.js";
 import { createAttachmentToolHandler, createHtmlPresentationToolHandler, createWorkspaceToolHandlers } from "./runtime-workspace-tool-handlers.js";
@@ -307,30 +308,7 @@ export class AgentRuntime {
   private readonly activeSkillRefsByRun = new Map<string, Map<string, SkillSnapshotRef>>();
   private readonly modelVisibleSkillsByRun = new Map<string, SkillSnapshotRef[]>();
 
-  /** Reused when ToolNode re-enters a tool after an interrupt resume. */
-  private readonly startedToolsByRunCall = new Map<string, ConversationToolItem>();
-
-  /** Completed calls are replayed as messages after an interrupt, never re-executed. */
-  private readonly completedToolsByRunCall = new Map<string, CachedGraphToolResult>();
-
-  /**
-   * A sibling approval interrupt can cause LangGraph's ToolNode to replay a
-   * batch while an already-approved command is still running. Reuse that
-   * promise instead of starting the side effect a second time.
-   */
-  private readonly inFlightToolsByRunCall = new Map<
-    string,
-    Promise<LangChainToolResultEnvelope & { activeSkills: SkillSnapshotRef[] }>
-  >();
-
-  /** Prepared side effects survive an approval interrupt without taking a new file snapshot. */
-  private readonly preparedToolsByRunCall = new Map<string, ToolExecution>();
-
-  /** One durable execution-intent event per Tool Call, including graph replays. */
-  private readonly preparedToolIntentKeys = new Set<string>();
-
-  /** Keeps one UI batch identity while a multi-call ToolNode is resumed. */
-  private readonly toolBatchIdsByRunCalls = new Map<string, string>();
+  private readonly toolCallLedger = new RuntimeToolCallLedger();
 
   private readonly pendingChangeApprovals = new Map<string, PendingChangeApproval>();
 
@@ -832,14 +810,14 @@ export class AgentRuntime {
         execute: ({ context, rawArguments }) => {
           const images: ConversationAttachment[] = [];
           const result = this.imageGenerationTool?.prepare(rawArguments, context.conversationId, context.providerId ?? null, context.signal, async (image, metadata) => {
-            const key = `${context.runId}:${context.toolCallId}`;
-            const tool = this.startedToolsByRunCall.get(key);
+            const identity = { runId: context.runId, callId: String(context.toolCallId) };
+            const tool = this.toolCallLedger.getStarted(identity);
             if (tool === undefined || this.attachments === null) throw new Error("生图调用已失效。");
             const attachment = await this.attachments.saveGeneratedImage(context.conversationId, tool.id, image);
             images.push(attachment);
             const progress = { ...tool, result: JSON.stringify({ ok: true, value: { ...metadata, images, count: images.length,
               readPaths: images.map(saved => `attachments/${path.basename(this.attachments!.resolveThreadLogPaths(saved).storedPath)}`) } }) };
-            this.startedToolsByRunCall.set(key, progress);
+            this.toolCallLedger.rememberStarted(identity, progress);
             this.persistRuntimeActivity(progress, context.emit);
             return attachment;
           });
@@ -2631,24 +2609,7 @@ export class AgentRuntime {
       this.claimedPendingMessagesByRun.delete(runId);
       this.activeSkillRefsByRun.delete(runId);
       this.modelVisibleSkillsByRun.delete(runId);
-      for (const key of this.startedToolsByRunCall.keys()) {
-        if (key.startsWith(`${runId}:`)) this.startedToolsByRunCall.delete(key);
-      }
-      for (const key of this.completedToolsByRunCall.keys()) {
-        if (key.startsWith(`${runId}:`)) this.completedToolsByRunCall.delete(key);
-      }
-      for (const key of this.preparedToolsByRunCall.keys()) {
-        if (key.startsWith(`${runId}:`)) this.preparedToolsByRunCall.delete(key);
-      }
-      for (const key of this.preparedToolIntentKeys) {
-        if (key.startsWith(`${runId}:`)) this.preparedToolIntentKeys.delete(key);
-      }
-      for (const key of this.inFlightToolsByRunCall.keys()) {
-        if (key.startsWith(`${runId}:`)) this.inFlightToolsByRunCall.delete(key);
-      }
-      for (const key of this.toolBatchIdsByRunCalls.keys()) {
-        if (key.startsWith(`${runId}:`)) this.toolBatchIdsByRunCalls.delete(key);
-      }
+      this.toolCallLedger.disposeRun(runId);
       if (this.graphCheckpointer !== null) {
         try {
           await this.graphCheckpointer.deleteThread(runId);
@@ -3575,16 +3536,15 @@ export class AgentRuntime {
     const modelAttachments: ModelMessageAttachment[] = [];
     const policies = new Map<number, ToolExecutionPolicy>();
     let hasSuccessfulToolExecution = false;
-    const toolBatchKey = `${input.runId}:${input.toolCalls.map((toolCall) => toolCall.id).join(",")}`;
-    const toolBatchId = this.toolBatchIdsByRunCalls.get(toolBatchKey) ?? randomUUID();
-    this.toolBatchIdsByRunCalls.set(toolBatchKey, toolBatchId);
+    const batchCallIds = input.toolCalls.map(toolCall => toolCall.id);
+    const toolBatchId = this.toolCallLedger.batchId(input.runId, batchCallIds);
 
     for (let index = 0; index < input.toolCalls.length; index += 1) {
       input.controller.signal.throwIfAborted();
       const toolCall = input.toolCalls[index];
       if (toolCall === undefined) continue;
-      const callKey = `${input.runId}:${toolCall.id}`;
-      const cached = this.completedToolsByRunCall.get(callKey);
+      const identity = { runId: input.runId, callId: toolCall.id };
+      const cached = this.toolCallLedger.getCompleted(identity);
       if (cached !== undefined) {
         messages[index] = cached.message;
         modelAttachments.push(...(cached.envelope.modelAttachments ?? []));
@@ -3601,7 +3561,7 @@ export class AgentRuntime {
         if (input.controller.signal.aborted || isAbortError(error) || isGraphInterrupt(error)) {
           throw error;
         }
-        this.preparedToolsByRunCall.set(callKey, {
+        this.toolCallLedger.rememberPrepared(identity, {
           content: toolErrorContent(error, `tool:${toolCall.name}`),
           isError: true,
           kind: "completed",
@@ -3638,8 +3598,8 @@ export class AgentRuntime {
         index += 1;
         continue;
       }
-      const callKey = `${input.runId}:${toolCall.id}`;
-      if (this.completedToolsByRunCall.has(callKey)) {
+      const identity = { runId: input.runId, callId: toolCall.id };
+      if (this.toolCallLedger.getCompleted(identity) !== undefined) {
         index += 1;
         continue;
       }
@@ -3652,7 +3612,7 @@ export class AgentRuntime {
           const nextPolicy = policies.get(nextIndex);
           if (
             nextCall === undefined
-            || this.completedToolsByRunCall.has(`${input.runId}:${nextCall.id}`)
+            || this.toolCallLedger.getCompleted({ runId: input.runId, callId: nextCall.id }) !== undefined
             || nextPolicy?.kind !== "parallel"
             || nextPolicy.group !== policy.group
           ) {
@@ -3694,12 +3654,12 @@ export class AgentRuntime {
         messages[resultIndex] = message;
         modelAttachments.push(...(result.modelAttachments ?? []));
         hasSuccessfulToolExecution ||= result.successful;
-        this.completedToolsByRunCall.set(`${input.runId}:${call.id}`, { envelope: result, message });
+        this.toolCallLedger.rememberCompleted({ runId: input.runId, callId: call.id }, { envelope: result, message });
       }
       index = nextIndex;
     }
 
-    this.toolBatchIdsByRunCalls.delete(toolBatchKey);
+    this.toolCallLedger.releaseBatch(input.runId, batchCallIds);
     return {
       activeSkills: [...(this.activeSkillRefsByRun.get(input.runId)?.values() ?? [])],
       messages: [
@@ -3729,20 +3689,20 @@ export class AgentRuntime {
   }
 
   private async prepareGraphToolCall(input: GraphToolCallInput): Promise<void> {
-    const key = `${input.runId}:${input.toolCall.id}`;
-    if (this.preparedToolsByRunCall.has(key)) return;
+    const identity = { runId: input.runId, callId: input.toolCall.id };
+    if (this.toolCallLedger.getPrepared(identity) !== undefined) return;
     try {
       const proposal = await this.toolHandlers.execute({
         context: this.runtimeToolContext(input),
         rawArguments: input.toolCall.arguments,
         toolName: input.toolCall.name,
       });
-      this.preparedToolsByRunCall.set(key, proposal);
+      this.toolCallLedger.rememberPrepared(identity, proposal);
     } catch (error) {
       if (input.controller.signal.aborted || isAbortError(error) || isGraphInterrupt(error)) {
         throw error;
       }
-      this.preparedToolsByRunCall.set(key, {
+      this.toolCallLedger.rememberPrepared(identity, {
         content: toolErrorContent(error, `tool:${input.toolCall.name}`),
         isError: true,
         kind: "completed",
@@ -3857,28 +3817,17 @@ export class AgentRuntime {
   private executeGraphToolCall(
     input: GraphToolCallInput,
   ): Promise<LangChainToolResultEnvelope & { activeSkills: SkillSnapshotRef[] }> {
-    const key = `${input.runId}:${input.toolCall.id}`;
-    const completed = this.completedToolsByRunCall.get(key);
-    if (completed !== undefined) return Promise.resolve(completed.envelope);
-    const inFlight = this.inFlightToolsByRunCall.get(key);
-    if (inFlight !== undefined) return inFlight;
-
-    const execution = this.executeGraphToolCallOnce(input);
-    this.inFlightToolsByRunCall.set(key, execution);
-    const clearInFlight = (): void => {
-      if (this.inFlightToolsByRunCall.get(key) === execution) {
-        this.inFlightToolsByRunCall.delete(key);
-      }
-    };
-    void execution.then(clearInFlight, clearInFlight);
-    return execution;
+    return this.toolCallLedger.executeOnce(
+      { runId: input.runId, callId: input.toolCall.id },
+      () => this.executeGraphToolCallOnce(input),
+    );
   }
 
   private async executeGraphToolCallOnce(
     input: GraphToolCallInput,
   ): Promise<LangChainToolResultEnvelope & { activeSkills: SkillSnapshotRef[] }> {
-    const key = `${input.runId}:${input.toolCall.id}`;
-    const startedTool = this.startedToolsByRunCall.get(key)
+    const identity = { runId: input.runId, callId: input.toolCall.id };
+    const startedTool = this.toolCallLedger.getStarted(identity)
       ?? conversationToolItemSchema.parse({
         arguments: input.toolCall.arguments,
         batchId: input.toolBatchId,
@@ -3893,8 +3842,8 @@ export class AgentRuntime {
         status: "running",
         diff: null,
     });
-    if (!this.startedToolsByRunCall.has(key)) {
-      this.startedToolsByRunCall.set(key, startedTool);
+    if (this.toolCallLedger.getStarted(identity) === undefined) {
+      this.toolCallLedger.rememberStarted(identity, startedTool);
       const event = {
         payload: {
           arguments: input.toolCall.arguments,
@@ -3924,7 +3873,7 @@ export class AgentRuntime {
       });
     }
 
-    let proposal: ToolExecution | undefined = this.preparedToolsByRunCall.get(key);
+    let proposal: ToolExecution | undefined = this.toolCallLedger.getPrepared(identity);
     let execution: ToolExecutionResult = {
       content: "",
       isError: true,
@@ -3960,7 +3909,7 @@ export class AgentRuntime {
           || proposal.kind === "external_read"
           || proposal.kind === "approved_action"
         ) {
-          this.preparedToolsByRunCall.set(key, proposal);
+          this.toolCallLedger.rememberPrepared(identity, proposal);
         }
       }
       if (unavailableReason !== null) {
@@ -4037,7 +3986,7 @@ export class AgentRuntime {
       // into a bounded ToolMessage and persisted as a failed tool row.
       if (input.controller.signal.aborted || isAbortError(error) || isGraphInterrupt(error)) {
         if (input.toolCall.name === "generate_images" && !isGraphInterrupt(error)) {
-          this.persistRuntimeActivity({ ...(this.startedToolsByRunCall.get(key) ?? startedTool), status: "cancelled" }, input.emit);
+          this.persistRuntimeActivity({ ...(this.toolCallLedger.getStarted(identity) ?? startedTool), status: "cancelled" }, input.emit);
         }
         throw error;
       }
@@ -4081,8 +4030,7 @@ export class AgentRuntime {
       });
       this.appendShadowThreadLog(input.conversationId, resultEvent);
     }
-    this.startedToolsByRunCall.delete(key);
-    this.preparedToolsByRunCall.delete(key);
+    this.toolCallLedger.releasePreparation(identity);
     const envelope = {
       activeSkills: [...(this.activeSkillRefsByRun.get(input.runId)?.values() ?? [])],
       content: execution.content,
@@ -4103,7 +4051,7 @@ export class AgentRuntime {
     };
     // Persist the replay cache before notifying the renderer. A concurrent
     // ToolNode replay must observe the completed side effect immediately.
-    this.completedToolsByRunCall.set(key, { envelope, message });
+    this.toolCallLedger.rememberCompleted(identity, { envelope, message });
     this.emit(input.emit, {
       conversationId: input.conversationId,
       fileChange:
@@ -4144,8 +4092,8 @@ export class AgentRuntime {
     tool: ConversationToolItem,
     proposal: ToolExecution,
   ): void {
-    const key = `${input.runId}:${input.toolCall.id}`;
-    if (this.preparedToolIntentKeys.has(key)) return;
+    const identity = { runId: input.runId, callId: input.toolCall.id };
+    if (this.toolCallLedger.hasExecutionIntent(identity)) return;
     this.appendShadowThreadLog(input.conversationId, {
       payload: {
         arguments: input.toolCall.arguments,
@@ -4157,7 +4105,7 @@ export class AgentRuntime {
       },
       type: "tool_execution_prepared",
     });
-    this.preparedToolIntentKeys.add(key);
+    this.toolCallLedger.recordExecutionIntent(identity);
   }
 
   private permissionPolicyFor(toolName: string): PermissionPolicy {
