@@ -1,4 +1,6 @@
 @import "tailwindcss";
+/* Native portals share the parent's input method instead of a separate browser heuristic. */
+@custom-variant focus-visible (&:focus-visible:where(:root:not([data-input-modality="pointer"]) *, input, textarea, select, [contenteditable="true"], [contenteditable=""], [role="textbox"]));
 @import "@fontsource-variable/geist";
 @import "./tokens.css";
 @import "./base.css";

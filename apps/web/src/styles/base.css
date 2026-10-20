@@ -1,4 +1,4 @@
-/* CSS trigger #2: global scrollbar and text selection pseudo-elements. */
+/* CSS trigger #2: shared focus, scrollbar and text selection pseudo/attribute selectors. */
 
 * {
   box-sizing: border-box;
@@ -59,6 +59,12 @@ button:not(:disabled) {
 
 button:disabled {
   cursor: default;
+}
+
+/* Keep legacy CSS and browser outlines consistent with the Tailwind keyboard variant.
+ * Editable fields retain their editing focus; selection borders and shadows stay intact. */
+:root[data-input-modality="pointer"] :focus-visible:not(input, textarea, select, [contenteditable="true"], [contenteditable=""], [role="textbox"]) {
+  outline: none !important;
 }
 
 ::selection {

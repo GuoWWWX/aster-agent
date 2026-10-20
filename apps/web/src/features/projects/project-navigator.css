@@ -644,7 +644,7 @@ button.project-navigator__team-member[data-active="true"]
   color: var(--app-selection-foreground);
 }
 
-button.project-navigator__team-member:focus-visible {
+button.project-navigator__team-member:focus-visible:where(:root:not([data-input-modality="pointer"]) *) {
   box-shadow: inset 0 0 0 1px var(--app-focus-ring);
 }
 

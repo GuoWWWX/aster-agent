@@ -180,8 +180,8 @@
 
 .provider-icon-picker__trigger:hover,
 .provider-icon-picker__trigger[aria-expanded="true"] {
-  border-color: color-mix(in srgb, var(--app-accent) 48%, var(--app-border));
-  background: color-mix(in srgb, var(--app-accent) 6%, var(--app-panel));
+  border-color: var(--app-border);
+  background: var(--app-hover);
 }
 
 .provider-icon-picker__trigger:focus-visible,

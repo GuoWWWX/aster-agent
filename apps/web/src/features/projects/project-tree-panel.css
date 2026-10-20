@@ -1,3 +1,4 @@
+/* CSS trigger #2: file-tree state, descendant and focus selectors. */
 .project-tree-panel {
   position: relative;
   display: flex;
@@ -423,8 +424,7 @@ body:has(.app-shell[data-theme="dark"]) .project-tree-panel__sort-menu button:fo
 }
 
 .project-tree-panel__dialog input:focus {
-  border-color: rgba(37, 99, 235, 0.5);
-  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.14);
+  border-color: var(--app-focus-ring);
 }
 
 .project-tree-panel__dialog-error {

@@ -43,6 +43,13 @@ describe("AgentAvatar", () => {
     }
   });
 
+  it("uses a tighter character frame only in the composer toolbar", () => {
+    const avatar = { kind: "preset" as const, preset: "orbit" as const };
+    expect(renderToStaticMarkup(<AgentAvatar avatar={avatar} size="toolbar" />)).toContain('viewBox="6 6 52 52"');
+    expect(renderToStaticMarkup(<AgentAvatar avatar={avatar} size="regular" />)).toContain('viewBox="0 0 64 64"');
+    expect(renderToStaticMarkup(<AgentAvatar avatar={{ kind: "preset", preset: "astro" }} size="toolbar" />)).toContain('viewBox="2 3 60 61"');
+  });
+
   it("creates a stable symmetric pixel identity from the conversation ID", () => {
     const first = createSubagentIdenticon("conversation-a");
     const repeated = createSubagentIdenticon("conversation-a");

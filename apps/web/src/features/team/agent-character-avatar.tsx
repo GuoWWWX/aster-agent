@@ -11,6 +11,12 @@ export const AGENT_AVATAR_PRESET_OPTIONS = [
 ] as const satisfies readonly { id: AgentAvatarPreset; label: string }[];
 
 const INK = "#233047";
+const TOOLBAR_FRAMES: Record<AgentAvatarPreset, string> = {
+  orbit: "6 6 52 52", pixel: "6 6 52 52", sprout: "6 3 52 57",
+  ember: "6 6 52 54", luna: "7 6 50 53", cloud: "4 7 56 53",
+  robot: "3 0 58 58", fox: "7 4 50 56", cat: "5 4 54 56",
+  panda: "3 4 58 57", astro: "2 3 60 61", owl: "6 6 52 55",
+};
 const HEADS: Record<AgentAvatarPreset, ReactNode> = {
   orbit: <path d="M9 32C9 17 18 9 33 9s23 10 23 24S47 57 32 57 9 48 9 32" fill="#F6BD61" />,
   pixel: <rect x="9" y="10" width="46" height="46" rx="13" fill="#8BBBF1" />,
@@ -59,10 +65,10 @@ const HEADS: Record<AgentAvatarPreset, ReactNode> = {
 };
 
 /** Original, static vector characters stay readable at sidebar and mention sizes. */
-export function AgentCharacterAvatar({ preset }: { preset: AgentAvatarPreset }): ReactElement {
+export function AgentCharacterAvatar({ preset, toolbar = false }: { preset: AgentAvatarPreset; toolbar?: boolean }): ReactElement {
   const eyeY = preset === "sprout" ? 35 : 32;
   const animal = preset === "fox" || preset === "cat" || preset === "panda" || preset === "owl";
-  return <svg aria-hidden="true" focusable="false" viewBox="0 0 64 64">
+  return <svg aria-hidden="true" focusable="false" viewBox={toolbar ? TOOLBAR_FRAMES[preset] : "0 0 64 64"}>
     {HEADS[preset]}
     {preset === "astro" ? <g fill="none" stroke={INK} strokeWidth="2"><circle cx="22" cy="33" r="7" /><circle cx="42" cy="33" r="7" /><path d="M29 33h6M9 31l6 1m34 0 6-1" /></g> : null}
     {preset === "owl" ? <><circle cx="22" cy="32" r="8" fill="#FFF9E8" /><circle cx="42" cy="32" r="8" fill="#FFF9E8" /></> : null}

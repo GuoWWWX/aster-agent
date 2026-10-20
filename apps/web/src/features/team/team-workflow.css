@@ -593,7 +593,8 @@
 }
 
 .workflow-canvas-toolbar__palette > button:hover {
-  border-color: var(--app-accent);
+  border-color: var(--app-border);
+  background: var(--app-hover);
 }
 
 .workflow-canvas {
@@ -876,7 +877,8 @@
 }
 
 .workflow-action-editor__heading button:hover {
-  border-color: var(--app-accent);
+  border-color: var(--app-border);
+  background: var(--app-hover);
 }
 
 .workflow-action-editor__hint {

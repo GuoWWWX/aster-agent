@@ -359,7 +359,7 @@
 }
 
 .team-workitem-board__card-main:hover {
-  border-color: var(--app-accent);
+  border-color: var(--app-border);
   background: var(--app-hover);
 }
 

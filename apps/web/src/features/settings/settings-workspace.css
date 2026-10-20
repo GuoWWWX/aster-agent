@@ -426,7 +426,7 @@
 }
 
 .settings-global-model__trigger:not(:disabled):hover {
-  border-color: color-mix(in srgb, var(--app-accent) 48%, var(--app-border));
+  border-color: var(--app-border);
   background: var(--app-hover);
 }
 
@@ -531,7 +531,7 @@
 .settings-draft-form input:focus-visible,
 .settings-select-trigger:focus-visible,
 .settings-permission-select:focus-visible,
-.settings-switch input:focus-visible + span,
+.settings-switch input:focus-visible:where(:root:not([data-input-modality="pointer"]) *) + span,
 .settings-segmented button:focus-visible,
 .settings-icon-text-button:focus-visible {
   outline: 2px solid var(--app-focus-ring);
@@ -936,12 +936,13 @@
 }
 
 .settings-model-reasoning-button:hover {
-  border-color: color-mix(in srgb, var(--app-accent) 42%, var(--app-border));
+  border-color: var(--app-border);
+  background: var(--app-hover);
 }
 
 .settings-model-reasoning-button[data-state="open"] {
-  border-color: color-mix(in srgb, var(--app-accent) 52%, var(--app-border));
-  background: color-mix(in srgb, var(--app-accent) 8%, var(--app-panel));
+  border-color: var(--app-border);
+  background: var(--app-hover);
 }
 
 .settings-model-reasoning-button:focus-visible {
@@ -980,7 +981,8 @@
 }
 
 .settings-model-compression-button:hover {
-  border-color: color-mix(in srgb, var(--app-accent) 42%, var(--app-border));
+  border-color: var(--app-border);
+  background: var(--app-hover);
 }
 
 .settings-model-compression-button:focus-visible {
@@ -3498,9 +3500,9 @@
 }
 
 .settings-provider-list__pagination-controls button:not(:disabled):hover {
-  border-color: color-mix(in srgb, var(--app-accent) 48%, var(--app-border));
-  background: color-mix(in srgb, var(--app-accent) 7%, var(--app-panel));
-  color: var(--app-accent);
+  border-color: var(--app-border);
+  background: var(--app-hover);
+  color: var(--app-foreground);
 }
 
 .settings-provider-list__pagination-controls button:focus-visible {
