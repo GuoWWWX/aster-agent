@@ -413,7 +413,7 @@ async function initializeServices(): Promise<DesktopServices> {
   const htmlPreviews = new HtmlPreviewServer(async (conversationId) => {
     const conversation = database.getConversation(conversationId);
     return (await projectRegistry.ensureWorkspaceRoot(conversation.projectId ?? conversation.id)).rootPath;
-  }, (conversationId, reference) => resolveMessageCodeBlock(database.listTimeline(conversationId)
+  }, (conversationId, reference) => resolveMessageCodeBlock(eventProjector.listTimeline(conversationId)
     .filter(item => item.kind === "message"), reference));
   const managedBrowser = new ManagedBrowserController(
     () => mainWindow,
