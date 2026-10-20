@@ -8,6 +8,7 @@ import { memo, useEffect, useMemo, useRef, type ReactElement } from "react";
 import { highlightCode, isLargeCodeSource } from "./code-highlighter.js";
 import { documentCodeHighlighting } from "../editor/document-code-editor-theme.js";
 import { useWorkbenchUiStore } from "../../stores/workbench-ui-store.js";
+import { mermaidLanguageDescription } from "../editor/cm/mermaid-language.js";
 
 // CodeMirror's viewport and long-line gaps bound DOM size without truncating source.
 const sourceTheme = EditorView.theme({
@@ -44,7 +45,7 @@ function VirtualCodeSource({ source, language }: { source: string; language: str
     ] }) });
     let disposed = false;
     const languageName = /^(ps|ps1|pwsh)$/iu.test(language) ? "powershell" : language;
-    const description = htmlSource ? null : LanguageDescription.matchLanguageName(languages, languageName, false)
+    const description = htmlSource ? null : languageName.toLowerCase() === "mermaid" ? mermaidLanguageDescription : LanguageDescription.matchLanguageName(languages, languageName, false)
       ?? LanguageDescription.matchFilename(languages, `source.${languageName}`);
     if (description !== null) {
       void description.load().then(support => {

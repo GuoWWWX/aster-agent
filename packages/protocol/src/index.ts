@@ -1,5 +1,6 @@
 export { htmlPreviewRequestSchema, htmlPreviewSchema, htmlPreviewResponseSchema, htmlPreviewResizeMessageSchema, presentHtmlInputSchema, presentHtmlToolInputSchema, htmlPresentationResultSchema, htmlPresentationPageSchema, codePreviewLanguageSchema, HTML_PREVIEW_MAX_HEIGHT, type CodePreviewLanguage, type HtmlPreviewRequest, type HtmlPreview, type HtmlPresentationPage } from "./html-preview.js";
 export { capabilitySetSchema } from "./capability.js";
+export { MERMAID_THEME_IDS, MERMAID_DIAGRAM_IDS, DEFAULT_MERMAID_THEMES, mermaidThemeIdSchema, mermaidThemeSettingsSchema, type MermaidThemeId, type MermaidDiagramType, type MermaidThemeSettings, type MermaidThemePreset } from "./mermaid-theme-settings.js";
 export type { CapabilitySet } from "./capability.js";
 export {
   APPLICATION_DATA_DIRECTORY_NAME,

@@ -1,5 +1,13 @@
 import hljs from "highlight.js/lib/common";
 import powershell from "highlight.js/lib/languages/powershell";
+import { highlightTree, tagHighlighter, tags } from "@lezer/highlight";
+import { mermaidLanguage } from "../editor/cm/mermaid-language.js";
+
+const mermaidHighlighter = tagHighlighter([
+  { tag: tags.keyword, class: "hljs-keyword" }, { tag: tags.string, class: "hljs-string" },
+  { tag: tags.comment, class: "hljs-comment" }, { tag: tags.operator, class: "hljs-operator" },
+  { tag: tags.number, class: "hljs-number" }, { tag: tags.typeName, class: "hljs-type" },
+]);
 
 hljs.registerLanguage("powershell", powershell);
 hljs.registerAliases(["ps", "ps1", "pwsh"], { languageName: "powershell" });
@@ -30,6 +38,15 @@ const languageAliases: Record<string, string> = {
 
 export function highlightCode(source: string, language: string): string {
   const normalizedLanguage = languageAliases[language.toLowerCase()] ?? language.toLowerCase();
+  if (normalizedLanguage === "mermaid") {
+    const prefix = source.slice(0, MAX_SYNCHRONOUS_HIGHLIGHT_CHARS);
+    let output = "", offset = 0;
+    highlightTree(mermaidLanguage.parser.parse(prefix), mermaidHighlighter, (from, to, classes) => {
+      output += escapeHtml(prefix.slice(offset, from)) + `<span class="${classes}">${escapeHtml(prefix.slice(from, to))}</span>`;
+      offset = to;
+    });
+    return output + escapeHtml(source.slice(offset));
+  }
   if (normalizedLanguage.length === 0 || !hljs.getLanguage(normalizedLanguage)) {
     return escapeHtml(source);
   }

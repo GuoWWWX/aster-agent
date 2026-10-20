@@ -1,7 +1,7 @@
 # md-king 迁移源清单
 
 > 文档状态：UI 外壳与 Markdown 编辑器迁移记录
-> 最近同步：2026-10-14（历史批次见各节）
+> 最近同步：2026-10-20（历史批次见各节）
 > 源目录：`D:\Code\Project\AI\md-king`  
 > 目标目录：`D:\Code\Project\202608\Agent`
 
@@ -218,3 +218,46 @@ CodeMirror Widget 的公式／列表、图表、图片和行内内容分别归�
 表格阅读态的 DOM、选区和事件监听归 `table-readonly-view.ts`；返回的 disposer 由原 Widget 在 `destroy` 中执行，`updateDOM` 继续转移原清理归属。表格编辑态、草稿、提交与 CodeMirror 状态仍归原 Widget，主题、DOM 类名和键盘／复制行为不变，原有 133 项回归再次通过。
 
 表格行列拖动的临时状态、拖动影像和落点计算归 `table-reorder-interaction.ts`；Widget 保留文档监听注册、草稿提交和销毁时的释放调用。跨行列顺序仍通过原 Markdown 表格操作更新，编辑器和 Markdown 的 133 项回归、类型检查与定向 lint 通过。
+
+
+## 9. Markdown 与 Mermaid 主题同步（2026-10-20）
+
+源快照：`main@87dcfe3`（v1.1.18），源工作区干净；与 §8 的 `726cf666` 逐文件核对，源目录只读。目标 worktree 使用 `codex/markdown-editor-upstream-sync`，从 `origin/develop@49ffa27` 建立。Mermaid 依赖由 11.x 更新为源项目锁定的 12.2.0，以使用新增原生主题。
+
+### 9.1 文件身份与适配
+
+目标简写默认位于 `apps/web/src/`。以下为本次源文件实际字节 SHA-256，不覆盖历史迁移记录。
+
+| 源文件 | SHA-256 | 目标与差异 |
+| --- | --- | --- |
+| `src/components/editor/cm/mermaid-language.ts` | `35CA86F8799B8172D3878AB26A823C1BA447AC58F0F66779EB16A2820F790062` | `components/editor/cm/mermaid-language.ts`；同一源码词法用于文档围栏与对话源码高亮。 |
+| `src/components/editor/live-markdown-editor.tsx` | `12A99F6E8409136F8E70A576704A90980B6F3934A50EC57FC6E2FD582B5B6E66` | `components/editor/live-markdown-editor.tsx`；仅同步语言扩展及配色刷新依赖，保留 Aster 草稿、保存和文件生命周期。 |
+| `src/components/editor/cm/widgets.ts` | `8C2DA53129C9E2F89E8978AFCBEC2A74BE7BE53DF3EA1086A60CDCBF876202B8` | 上游改动为 Tauri 剪贴板读取适配；Aster 保留 Electron Renderer 的 Clipboard API，不迁入 Tauri。图表刷新仍归 `cm/mermaid-widget.ts`，另加异步版本保护。 |
+| `src/lib/mermaid.ts` | `8E9635A2385BF12F6F28336E2D16142E7222D4914B689B5815190136784ED601` | `lib/mermaid.ts`；同步主题缓存身份、串行绘制、原生主题保留、对比度及看板修复；保留严格索引、SVG 尺寸解析和 Aster 图片复制。 |
+| `src/lib/mermaid-config.js` | `04D6E39B7FBA5D4F972F67C9770F1E517A4F2EA99283FD2BF7371EC201C23744` | `lib/mermaid-theme.ts`、`lib/mermaid-layout.ts`、`lib/mermaid-theme-settings.ts`；按配置、附着 SVG 几何与纯主题选择拆为 TypeScript，保持 `securityLevel: strict`。 |
+| `src/lib/mermaid-config.d.ts` | `6DF9912B330F0BEE1A33ECBDB66C96A95659A3EDE5A75E43A170BBB6BD16A6C3` | `packages/protocol/src/mermaid-theme-settings.ts`；以 Zod 验证全局深浅主题、23 类图表覆盖与具名组合，复用应用设置持久化。 |
+| `src/lib/markdown-block-caption.ts` | `C761A6BC6F7523770A1C9BF15C47EC32205A9C289816DF0EA8348625CB7CE161` | `lib/markdown-block-caption.ts`；同步跨空行编号题注和附录字母编号，保留严格索引检查。 |
+| `src/lib/markdown-image-caption.ts` | `F34A16F3BC548C17BE53B838F7FD2BBD0B245606FEB8809A13D7E9DA3877BB72` | `lib/markdown-image-caption.ts`；同步显式编号图片题注的空行关联，普通加粗段落不跨空行吸收。 |
+| `src/components/settings/mermaid-theme-dialog.tsx` | `79535AC3F681879C6CFE2681DF99C055C349F25D576243FFC01C89889D4BB1A2` | `features/settings/appearance/mermaid-theme-settings.tsx` 与 `mermaid-theme-preview.tsx`；使用 Aster 的 Dialog、Select、IconButton 和语义 Token，入口在设置→外观，不迁入源项目窗口或 Word 导出状态。 |
+| `src/components/settings/mermaid-theme-samples.ts` | `8FFF832BC0EE5F43201432B71D4E53C97B528AECE3B966C650BEACF380180232` | 同名文件位于 `features/settings/appearance/`；23 类预览样例仅替换示例产品名。 |
+| `src/index.css` | `D82FEED3736D71B525BEE3F2D58EFC64C1AEB99A2B959553E2D177E393C2EF15` | 重跑 `scripts/extract-md-king-editor-css.mjs`，仍提取 324 条规则；新增设置弹层 CSS 不进入编辑器。脚本显式桥接深色表格菜单底色到 `--app-panel`，保留 Aster 当前主题。 |
+| `src/components/editor/cm/mermaid-language.test.ts` | `B15DA84D8B9D17F006ABB3507DE1D02824A4FB148C295E6E513974008D56A58F` | 迁入 Vitest；保留实际解析树的词法断言。 |
+| `src/lib/markdown-block-caption.test.ts` | `4B014604C248E93EDAC5980B05286F4B7C44D121F597BC6D9FFD96DE15D3F2C0` | 迁入新增编号与附录题注回归，保留 Aster 既有用例。 |
+| `src/lib/markdown-image-caption.test.ts` | `F15DC9F4D6174BCC1731707F834A12F17E75CE848E8A198D3862CC5016028014` | 迁入新增跨空行图片题注回归，保留 Aster 既有用例。 |
+
+### 9.2 接入行为与边界
+
+- 对话正文与侧边 Markdown 共用 Mermaid 渲染队列、主题选择及缓存。浅深画布与每图类型的实际主题都进入缓存键，切换配色保留原 SVG 至新图完成；编辑器不重建，保留正文、选区、undo 与滚动位置。连续刷新用版本标记丢弃过期结果，Widget 更新源码后同步刷新来源。
+- 设置→外观→Mermaid 图表配色支持 11 套主题任意深浅组合、7 组快速搭配、23 类图表分别覆盖、继承/清除覆盖、实时双模式预览、自定义组合新增/更新/应用/删除、恢复默认及取消草稿。应用后走原有应用设置保存通道；恢复默认保留已保存组合。
+- 配置新增 `appearance.mermaidThemes`，旧配置缺失时默认 Redux Color / Redux Dark Color。严格协议验证和 JSONC 存储继续由原模块持有，不新增 IPC、独立配置文件或数据库迁移。
+- Mermaid 源码词法复用于侧边编辑、对话普通/虚拟源码及完整图表源码切换。未闭合的流式围栏继续显示源码，安全 HTML 过滤及源码复制保持原语义。
+- 核对源项目全部新增文件：Word/DOCX 题注自动编号、导出样式、转换输入、更新器及 Tauri 剪贴板/文档打开属于源宿主能力，不迁入 Aster；编辑与对话实际使用的题注识别纯函数已同步。生成 CSS 仅经提取脚本更新，未复制源设置页的全局 `[data-slot]` 覆盖。
+
+### 9.3 验证
+
+- Web 全量 169 个测试文件通过（`--maxWorkers=2`）；最终题注回归另行验证 11 项通过。首轮高并发下两项设置页测试超时，单独 14 项复跑与降低并发的全量均通过，未放宽超时门限。
+- Protocol 全量 28 文件 / 260 项通过；真实 JSONC 应用设置存储 11 项通过，包含新建存储实例后恢复主题、图类型覆盖与自定义组合。
+- 全仓 `pnpm typecheck`、`pnpm build`，全部变更 TS/TSX 的定向 ESLint 与 Protocol lint 通过；未修改或额外运行无关 Agent Runtime 的全套后端行为测试。
+- 真实组件的无界面 Edge 验收：23 类图表 × 2 模式及 11 套主题 × 2 模式共 68 个组合均渲染成功；多行看板标题与任务卡片间距至少 10px。配置弹框支持全部主题、覆盖、组合应用、应用/取消；对话与文档同步刷新，草稿、选区和实际浏览器滚动位置保留。
+- Mermaid 源码高亮与 PNG 转图可用；浅/深主题、1400×1000 与 480px 窄窗口截图检查通过，弹框无整体横向溢出。使用隔离的无界面浏览器，未操作、切换或重启现有桌面窗口，也未连接其数据目录。
+- 编辑器 CSS 提取 324 条规则，重跑字节一致，无源应用外壳选择器泄漏；`git diff --check` 通过，源仓库仍为干净的 `87dcfe3`。

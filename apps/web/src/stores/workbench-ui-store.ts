@@ -1,3 +1,6 @@
+import { setMermaidThemes as configureMermaidThemes } from "../lib/mermaid.js";
+import { normalizeMermaidThemes } from "../lib/mermaid-theme-settings.js";
+import type { MermaidThemeSettings } from "@agent/protocol";
 import type { TaskContextScope } from "@agent/protocol";
 import { create } from "zustand";
 import { teamChatTabId } from "../features/chat/workbench-tabs.js";
@@ -97,6 +100,8 @@ type WorkbenchUiState = {
   openConversationReview: (input: Omit<ConversationReviewViewRequest, "requestId">) => void;
   backgroundCommandViewRequest: { requestId: string; conversationId: string; commandId: string; name: string } | null;
   openBackgroundCommandView: (input: { conversationId: string; commandId: string; name: string }) => void;
+  mermaidThemes: MermaidThemeSettings;
+  setMermaidThemes: (settings: MermaidThemeSettings) => void;
   uiFontSize: number;
   chatFontSize: number;
   codeFontSize: number;
@@ -168,6 +173,12 @@ export const useWorkbenchUiStore = create<WorkbenchUiState>()((set) => ({
     backgroundCommandViewRequest: { ...input, requestId: crypto.randomUUID() },
     filePanelOpenByConversationId: { ...state.filePanelOpenByConversationId, [input.conversationId]: true },
   })),
+  mermaidThemes: DEFAULT_APPLICATION_SETTINGS.appearance.mermaidThemes,
+  setMermaidThemes: (settings) => {
+    const normalized = normalizeMermaidThemes(settings);
+    configureMermaidThemes(normalized);
+    set({ mermaidThemes: normalized });
+  },
   uiFontSize: DEFAULT_APPLICATION_SETTINGS.appearance.uiFontSize,
   chatFontSize: DEFAULT_APPLICATION_SETTINGS.appearance.chatFontSize,
   codeFontSize: DEFAULT_APPLICATION_SETTINGS.appearance.codeFontSize,
@@ -249,23 +260,27 @@ export const useWorkbenchUiStore = create<WorkbenchUiState>()((set) => ({
       },
     })),
   setActiveActivity: (activeActivity) => set({ activeActivity }),
-  hydrateAppearance: (appearance) => set({
-    uiFontSize: appearance.uiFontSize,
-    chatFontSize: appearance.chatFontSize,
-    codeFontSize: appearance.codeFontSize,
-    filePanelWidth: clampWorkbenchPanelWidth(
-      appearance.filePanelWidth,
-      FILE_PANEL_WIDTH_RANGE,
-    ),
-    isFilePanelOpen: appearance.filePanelOpen,
-    isProjectNavigatorOpen: appearance.projectNavigatorOpen,
-    projectNavigatorWidth: clampWorkbenchPanelWidth(
-      appearance.projectNavigatorWidth,
-      PROJECT_NAVIGATOR_WIDTH_RANGE,
-    ),
-    themeMode: appearance.themeMode,
-    settingsNavigationWidth: appearance.settingsNavigationWidth,
-  }),
+  hydrateAppearance: (appearance) => {
+    configureMermaidThemes(appearance.mermaidThemes);
+    set({
+      mermaidThemes: appearance.mermaidThemes,
+      uiFontSize: appearance.uiFontSize,
+      chatFontSize: appearance.chatFontSize,
+      codeFontSize: appearance.codeFontSize,
+      filePanelWidth: clampWorkbenchPanelWidth(
+        appearance.filePanelWidth,
+        FILE_PANEL_WIDTH_RANGE,
+      ),
+      isFilePanelOpen: appearance.filePanelOpen,
+      isProjectNavigatorOpen: appearance.projectNavigatorOpen,
+      projectNavigatorWidth: clampWorkbenchPanelWidth(
+        appearance.projectNavigatorWidth,
+        PROJECT_NAVIGATOR_WIDTH_RANGE,
+      ),
+      themeMode: appearance.themeMode,
+      settingsNavigationWidth: appearance.settingsNavigationWidth,
+    });
+  },
   setProjectNavigatorOpen: (isProjectNavigatorOpen) =>
     set({ isProjectNavigatorOpen }),
   setProjectNavigatorWidth: (projectNavigatorWidth) =>

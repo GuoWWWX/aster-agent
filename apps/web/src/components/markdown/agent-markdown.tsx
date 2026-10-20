@@ -220,7 +220,7 @@ renderer.renderer.rules.fence = (tokens, index, _options, environment: unknown) 
     && isClosedFence(environment.markdown.split("\n")[token.map[1] - 1] ?? "", token.markup)) {
     const captionValue = mermaidFenceCaption(token.info) ?? token.attrGet("data-caption");
     const caption = captionValue == null ? "" : String(captionValue);
-    return `<div class="agent-markdown__mermaid"><div class="agent-markdown__code-header"><span>MERMAID</span><div><button aria-label="放大 Mermaid 图表" title="放大图表" data-action="preview-mermaid" type="button">${expandIcon}</button><button aria-label="复制 Mermaid 源码" title="复制源码" data-action="copy-mermaid" type="button">${copyIcon}</button><button aria-label="查看 Mermaid 源码" title="查看源码" data-action="toggle-mermaid-source" type="button" aria-expanded="false">${sourceIcon}</button></div></div><div class="agent-markdown__mermaid-canvas" data-mermaid-canvas></div>${caption ? `<div class="agent-markdown__mermaid-caption">${renderer.utils.escapeHtml(caption)}</div>` : ""}<pre hidden data-mermaid-source><code>${renderer.utils.escapeHtml(source)}</code></pre></div>\n`;
+    return `<div class="agent-markdown__mermaid"><div class="agent-markdown__code-header"><span>MERMAID</span><div><button aria-label="放大 Mermaid 图表" title="放大图表" data-action="preview-mermaid" type="button">${expandIcon}</button><button aria-label="复制 Mermaid 源码" title="复制源码" data-action="copy-mermaid" type="button">${copyIcon}</button><button aria-label="查看 Mermaid 源码" title="查看源码" data-action="toggle-mermaid-source" type="button" aria-expanded="false">${sourceIcon}</button></div></div><div class="agent-markdown__mermaid-canvas" data-mermaid-canvas></div>${caption ? `<div class="agent-markdown__mermaid-caption">${renderer.utils.escapeHtml(caption)}</div>` : ""}<pre hidden data-mermaid-source><code class="hljs">${highlightCode(source, "mermaid")}</code></pre></div>\n`;
   }
   const label = /^(powershell|pwsh|ps1|ps)$/iu.test(language) ? "PowerShell"
     : language.toLowerCase() === "bash" ? "Bash" : language;
@@ -274,6 +274,7 @@ function AgentMarkdownContent({ content, streaming, scrollHostRef, inlineReferen
   const [artifactMounts, setArtifactMounts] = useState<Array<{ ref: string; mount: Element }>>([]);
   const referenceKey = JSON.stringify(inlineReferences.map(reference => reference.label));
   const theme = useWorkbenchUiStore((state) => state.themeMode);
+  const mermaidThemes = useWorkbenchUiStore(state => state.mermaidThemes);
   const previewContext = useContext(HtmlPreviewContext);
   const workspaceContext = useContext(WorkspaceFileContext);
   const [activePreview, setActivePreview] = useState<{ source: HtmlPreviewSource; mount: Element } | null>(null);
@@ -314,14 +315,14 @@ function AgentMarkdownContent({ content, streaming, scrollHostRef, inlineReferen
       const source = card.querySelector("[data-mermaid-source] code")?.textContent;
       if (canvas === null || source == null) continue;
       if (!canvas.firstChild) canvas.textContent = "正在绘制图表…";
-      void renderMermaid(source, theme === "dark").then((result) => {
+      void renderMermaid(source, theme === "dark", mermaidThemes).then((result) => {
         if (alive && canvas.isConnected) { canvas.innerHTML = result.svg; canvas.removeAttribute("data-error"); }
       }).catch(() => {
         if (alive && canvas.isConnected) { canvas.textContent = "图表语法有误，请查看源码。"; canvas.dataset.error = "true"; }
       });
     }
     return () => { alive = false; };
-  }, [html, theme]);
+  }, [html, theme, mermaidThemes]);
   const handleClick = useCallback((event: MouseEvent<HTMLDivElement>): void => {
     if (!(event.target instanceof Element)) return;
     const link = event.target.closest<HTMLAnchorElement>("a[href]");

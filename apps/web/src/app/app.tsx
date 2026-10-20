@@ -61,6 +61,7 @@ function applicationSettingsSnapshot(): ApplicationSettings {
       teams: structuredClone(directory.teams),
     },
     appearance: {
+      mermaidThemes: structuredClone(workbench.mermaidThemes),
       uiFontSize: workbench.uiFontSize,
       chatFontSize: workbench.chatFontSize,
       codeFontSize: workbench.codeFontSize,
