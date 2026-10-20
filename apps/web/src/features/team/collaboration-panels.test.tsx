@@ -464,6 +464,8 @@ it("follows a new user message after visiting an older group source instead of r
     messages = [original, { ...original, id: crypto.randomUUID(), sequence: 2, content: "新的问题" }];
     await act(() => Promise.resolve().then(() => { listeners.forEach(listener => listener({ type: "collaboration.changed", conversationId: instance.rootConversationId!, teamInstanceId: instance.id })); }));
     expect(scrollIntoView).toHaveBeenCalledTimes(1);
+    expect(viewport.scrollTop).toBe(0);
+    await act(async () => { await new Promise<void>(resolve => window.requestAnimationFrame(() => resolve())); });
     expect(viewport.scrollTop).toBe(500);
   } finally { if (previous === undefined) Reflect.deleteProperty(HTMLElement.prototype, "scrollIntoView"); else Object.defineProperty(HTMLElement.prototype, "scrollIntoView", previous); }
 });
