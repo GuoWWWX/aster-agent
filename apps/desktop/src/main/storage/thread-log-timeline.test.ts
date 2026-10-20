@@ -1,5 +1,6 @@
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
+import * as fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
@@ -7,9 +8,34 @@ import { ThreadLog } from "./thread-log.js";
 import { ThreadLogTimeline } from "./thread-log-timeline.js";
 import { conversationToolItemSchema } from "@agent/protocol";
 
+vi.mock("node:fs", async (importOriginal) => ({ ...await importOriginal<typeof import("node:fs")>() }));
+
 const directories: string[] = [];
 afterEach(async () => {
+  vi.restoreAllMocks();
   await Promise.all(directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
+});
+
+it("uses one read-only descriptor for a page and closes it on success or a stale read", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "timeline-page-descriptor-"));
+  directories.push(directory);
+  const log = new ThreadLog(directory);
+  const conversationId = randomUUID();
+  for (let i = 0; i < 120; i++) log.append(conversationId, {
+    type: "user_message", payload: { messageId: randomUUID(), runId: randomUUID(), content: `message ${i}` },
+  });
+  const timeline = new ThreadLogTimeline(log);
+  await timeline.warm(conversationId);
+  const open = vi.spyOn(fs, "openSync");
+  const close = vi.spyOn(fs, "closeSync");
+  expect(timeline.page({ conversationId, limit: 120 }).items).toHaveLength(120);
+  expect(open).toHaveBeenCalledExactlyOnceWith(log.getPath(conversationId), "r");
+  expect(close).toHaveBeenCalledExactlyOnceWith(open.mock.results[0]?.value);
+  open.mockClear(); close.mockClear();
+  vi.spyOn(fs, "readSync").mockReturnValue(0);
+  expect(() => timeline.page({ conversationId, limit: 120 })).toThrow("no longer available");
+  expect(open).toHaveBeenCalledTimes(1);
+  expect(close).toHaveBeenCalledExactlyOnceWith(open.mock.results[0]?.value);
 });
 
 it("yields between bounded index batches", async () => {
@@ -85,6 +111,7 @@ it("reads a page by stable file locations without hydrating full history", async
   });
   const timeline = new ThreadLogTimeline(log);
   const read = vi.spyOn(log, "readRecord");
+  const reader = vi.spyOn(log, "withRecordReader");
   const fullRead = vi.spyOn(log, "read");
   const scan = vi.spyOn(log, "scan");
   const first = timeline.page({ conversationId: id, limit: 20 });
@@ -92,7 +119,8 @@ it("reads a page by stable file locations without hydrating full history", async
     Array.from({ length: 20 }, (_, i) => `消息 ${i + 40}`),
   );
   expect(first.nextBeforeSequence).toBe(41);
-  expect(read).toHaveBeenCalledTimes(20);
+  expect(reader).toHaveBeenCalledTimes(1);
+  expect(read).not.toHaveBeenCalled();
   expect(fullRead).not.toHaveBeenCalled();
   log.append(id, { type: "assistant_message", payload: {
     messageId: randomUUID(), runId, content: "新回复", modelId: "demo",
@@ -104,11 +132,12 @@ it("reads a page by stable file locations without hydrating full history", async
   const oldest = timeline.page({ conversationId: id, limit: 20, beforeSequence: 21 });
   expect(oldest.hasMore).toBe(false);
   expect(oldest.nextBeforeSequence).toBeNull();
-  read.mockClear();
+  read.mockClear(); reader.mockClear();
   const middleId = older.items[10]!.id;
   const middle = timeline.page({ conversationId: id, aroundItemId: middleId, limit: 20 });
   expect(middle.items).toContainEqual(expect.objectContaining({ id: middleId }));
-  expect(read).toHaveBeenCalledTimes(20);
+  expect(reader).toHaveBeenCalledTimes(1);
+  expect(read).not.toHaveBeenCalled();
   expect(middle.nextAfterSequence).toBe(40);
   const forward = timeline.page({ conversationId: id, afterSequence: middle.nextAfterSequence!, limit: 20 });
   expect(forward.items[0]).toMatchObject({ content: "消息 40" });

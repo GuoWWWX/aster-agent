@@ -66,10 +66,10 @@ export class ThreadLogTimeline {
       end = Math.min(entries.length, start + input.limit);
     }
     const selected = entries.slice(start, end);
-    const read = this.reader(input.conversationId);
     return {
       hasMore: start > 0,
-      items: selected.map(read),
+      items: selected.length === 0 ? [] : this.log.withRecordReader(input.conversationId,
+        read => selected.map(this.reader(input.conversationId, read))),
       nextBeforeSequence: start > 0 ? selected[0]?.sequence ?? null : null,
       nextAfterSequence: end < entries.length ? selected.at(-1)?.sequence ?? null : null,
     };
@@ -87,12 +87,14 @@ export class ThreadLogTimeline {
     }
   }
 
-  private reader(conversationId: string): (entry: Entry) => ConversationTimelineItem {
+  private reader(conversationId: string,
+    readRecord = (location: ThreadLogRecordLocation): ThreadLogEvent => this.log.readRecord(conversationId, location),
+  ): (entry: Entry) => ConversationTimelineItem {
     let offset = -1;
     let decoded: ConversationTimelineItem[] = [];
     return (entry) => {
       if (offset !== entry.location.offset) {
-        decoded = timelineItems(this.log.readRecord(conversationId, entry.location));
+        decoded = timelineItems(readRecord(entry.location));
         offset = entry.location.offset;
       }
       const item = decoded[entry.slot];

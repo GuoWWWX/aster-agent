@@ -12,16 +12,27 @@ import { MarkdownLayoutScope } from "./markdown-layout-scope.js";
 let host: HTMLDivElement, root: Root;
 let targets: Map<Element, IntersectionObserverCallback>;
 let observedRoots: IntersectionObserverInit["root"][];
+let notifyResizes: (() => void)[];
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   targets = new Map();
   observedRoots = [];
+  notifyResizes = [];
   vi.stubGlobal("IntersectionObserver", class {
     constructor(private callback: IntersectionObserverCallback, options?: IntersectionObserverInit) { observedRoots.push(options?.root); }
     observe(target: Element) { targets.set(target, this.callback); }
     disconnect() {}
   });
-  vi.stubGlobal("ResizeObserver", class { observe() {} disconnect() {} });
+  vi.stubGlobal("ResizeObserver", class implements ResizeObserver {
+    private targets = new Set<Element>();
+    constructor(callback: ResizeObserverCallback) {
+      notifyResizes.push(() => callback([...this.targets].map(target => ({ target, contentRect: new DOMRect(0, 0, 200, 100),
+        borderBoxSize: [], contentBoxSize: [], devicePixelContentBoxSize: [] })), this));
+    }
+    observe(target: Element): void { this.targets.add(target); }
+    unobserve(target: Element): void { this.targets.delete(target); }
+    disconnect(): void { this.targets.clear(); }
+  });
   host = document.createElement("div"); document.body.append(host); root = createRoot(host);
 });
 afterEach(() => { act(() => root.unmount()); host.remove(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
@@ -42,7 +53,9 @@ it("does not parse or highlight offscreen Markdown, activates near the viewport 
   await intersect(target, true);
   const content = host.querySelector(".agent-markdown");
   expect(content?.textContent).toContain("const x");
-  expect(resized).toHaveBeenCalled();
+  expect(resized).not.toHaveBeenCalled();
+  act(() => notifyResizes.forEach(notify => notify()));
+  expect(resized).toHaveBeenCalledTimes(1);
   await intersect(target, false);
   expect(host.querySelector(".agent-markdown")).toBe(content);
 });

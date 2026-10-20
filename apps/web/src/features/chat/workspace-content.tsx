@@ -1079,6 +1079,7 @@ export function ConversationWorkspace({
   );
   const isReturningToBottomRef = useRef(false);
   const lastKnownScrollTopRef = useRef<number | null>(null);
+  const programmaticScrollTopRef = useRef<number | null>(null);
   const locatedTimelineRequestIdRef = useRef<number | null>(null);
   const locatedTimelineLoadRequestRef = useRef<number | null>(null);
   const shouldStickToBottomRef = useRef(true);
@@ -1959,6 +1960,8 @@ export function ConversationWorkspace({
   const handleMessagesScroll = useCallback((): void => {
     const messages = messagesRef.current;
     if (messages === null || !active) return;
+    if (messages.scrollTop === programmaticScrollTopRef.current) return;
+    programmaticScrollTopRef.current = null;
     lastKnownScrollTopRef.current = messages.scrollTop;
     const isAtBottom = timelineAfterSequenceRef.current === null && isConversationScrolledToBottom(messages);
     if (isReturningToBottomRef.current) {
@@ -2009,6 +2012,7 @@ export function ConversationWorkspace({
     const messages = messagesRef.current;
     if (!active || messages === null || !shouldStickToBottomRef.current || timelineAfterSequenceRef.current !== null) return;
     scrollConversationToBottom(messages);
+    lastKnownScrollTopRef.current = programmaticScrollTopRef.current = messages.scrollTop;
   }, [active]);
 
   useLayoutEffect(() => {
@@ -2041,11 +2045,12 @@ export function ConversationWorkspace({
         messages.scrollLeft = 0;
         messages.scrollTop = savedScrollTop;
       }
+      lastKnownScrollTopRef.current = programmaticScrollTopRef.current = messages.scrollTop;
       const isAtBottom = isConversationScrolledToBottom(messages);
       shouldStickToBottomRef.current = isAtBottom;
       setIsScrolledAwayFromBottom(!isAtBottom);
     };
-    restoreScrollPosition();
+    // Keep geometry reads out of the React commit when revealing a cached page.
     const animationFrame = window.requestAnimationFrame(restoreScrollPosition);
     return () => window.cancelAnimationFrame(animationFrame);
   }, [active, isLoadingTimeline]);
@@ -2074,9 +2079,11 @@ export function ConversationWorkspace({
     if (!active || messages === null || !shouldStickToBottomRef.current) return;
 
     const scrollToBottom = (): void => {
-      if (shouldStickToBottomRef.current) scrollConversationToBottom(messages);
+      if (shouldStickToBottomRef.current) {
+        scrollConversationToBottom(messages);
+        lastKnownScrollTopRef.current = programmaticScrollTopRef.current = messages.scrollTop;
+      }
     };
-    scrollToBottom();
     const animationFrame = window.requestAnimationFrame(scrollToBottom);
     return () => window.cancelAnimationFrame(animationFrame);
   }, [active, composerOverlayHeight, disclosureRevision, isLoadingTimeline, modelActivity, operationError, pendingMessages, taskList, timeline]);

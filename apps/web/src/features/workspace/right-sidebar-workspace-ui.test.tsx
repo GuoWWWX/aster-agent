@@ -17,7 +17,7 @@ import { teamChatTabId } from "../chat/workbench-tabs.js";
 
 beforeEach(() => {
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
-  vi.stubGlobal("ResizeObserver", class { observe() {} disconnect() {} });
+  vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
   useAgentDirectoryStore.getState().hydrate(structuredClone(DEFAULT_AGENT_DIRECTORY_CONFIGURATION));
   useWorkbenchUiStore.setState({ activeActivity: "conversations", teamChatCoordinationTarget: null,
     filePanelOpenByConversationId: {}, filePanelWidthsByConversationId: {}, isProjectNavigatorOpen: false });

@@ -13,7 +13,7 @@ import { ConversationWorkspace } from "./workspace-content.js";
 let root: Root | undefined;
 beforeEach(() => {
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
-  vi.stubGlobal("ResizeObserver", class { observe() {} disconnect() {} });
+  vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
   useWorkbenchUiStore.setState({ activeActivity: "conversations" });
   useAgentDirectoryStore.getState().hydrate(structuredClone(DEFAULT_AGENT_DIRECTORY_CONFIGURATION));
 });

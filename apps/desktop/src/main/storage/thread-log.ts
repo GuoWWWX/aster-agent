@@ -336,19 +336,24 @@ export class ThreadLog {
   }
 
   public readRecord(conversationId: string, location: ThreadLogRecordLocation): ThreadLogEvent {
-    if (!Number.isSafeInteger(location.offset) || location.offset < 0
-      || !Number.isSafeInteger(location.length) || location.length <= 0) {
-      throw new Error("Invalid ThreadLog record location.");
-    }
+    return this.withRecordReader(conversationId, read => read(location));
+  }
+
+  /** A page shares one read-only handle; neither success nor failure retains it. */
+  public withRecordReader<T>(conversationId: string, visit: (read: (location: ThreadLogRecordLocation) => ThreadLogEvent) => T): T {
     const descriptor = openSync(this.getPath(conversationId), "r");
     try {
-      return this.readRecordFromDescriptor(descriptor, conversationId, location);
+      return visit(location => this.readRecordFromDescriptor(descriptor, conversationId, location));
     } finally {
       closeSync(descriptor);
     }
   }
 
   private readRecordFromDescriptor(descriptor: number, conversationId: string, location: ThreadLogRecordLocation): ThreadLogEvent {
+    if (!Number.isSafeInteger(location.offset) || location.offset < 0
+      || !Number.isSafeInteger(location.length) || location.length <= 0) {
+      throw new Error("Invalid ThreadLog record location.");
+    }
     const bytes = Buffer.allocUnsafe(location.length);
     let consumed = 0;
     while (consumed < bytes.length) {
