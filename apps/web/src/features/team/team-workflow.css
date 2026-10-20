@@ -144,6 +144,7 @@
   align-content: start;
   gap: 5px;
   overflow: auto;
+  scrollbar-gutter: stable;
   background: var(--app-canvas);
   padding: 5px;
 }
@@ -436,6 +437,7 @@
   display: grid;
   max-height: 130px;
   overflow: auto;
+  scrollbar-gutter: stable;
 }
 
 .workflow-event-log article {
@@ -605,6 +607,7 @@
 .workflow-canvas__body {
   min-height: 0;
   overflow: auto;
+  scrollbar-gutter: stable;
   background: var(--app-canvas);
   padding: 5px;
 }
@@ -825,6 +828,7 @@
 .workflow-node-inspector__body {
   min-height: 0;
   overflow: auto;
+  scrollbar-gutter: stable;
 }
 
 .workflow-node-inspector__body > section {
@@ -1131,6 +1135,7 @@
   .workflow-designer {
     grid-template-columns: minmax(430px, 1fr) 250px;
     overflow: auto;
+    scrollbar-gutter: stable;
   }
 
   .workflow-node-inspector {

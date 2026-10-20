@@ -1,3 +1,4 @@
+/* CSS trigger #2: feature scroll containers and interaction selectors. */
 /* Runtime-selected provider classes and the Radix picker need CSS selectors. */
 .provider-logo {
   display: inline-grid;
@@ -221,6 +222,7 @@
   gap: 3px;
   max-height: min(312px, var(--radix-popover-content-available-height));
   overflow-y: auto;
+  scrollbar-gutter: stable;
   padding: 1px;
 }
 

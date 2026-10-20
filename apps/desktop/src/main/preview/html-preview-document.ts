@@ -34,7 +34,7 @@ export function htmlPreviewDocument(source: string, id: string): string {
     function start() {
       // CSS trigger #2: iframe documents cannot inherit the workbench scrollbar pseudo-elements.
       const scrollbar = document.createElement('style');
-      scrollbar.textContent = '@layer aster-preview-defaults { :where(:root) { color-scheme: light dark; } :where(body) { display: flow-root; margin: 0; } }'
+      scrollbar.textContent = '@layer aster-preview-defaults { :where(:root) { color-scheme: light dark; scrollbar-gutter: stable; } :where(body) { display: flow-root; margin: 0; } }'
         + '* { scrollbar-width: thin; scrollbar-color: color-mix(in srgb, var(--app-muted-foreground, currentColor) 30%, transparent) transparent; }'
         + '*::-webkit-scrollbar { width: 10px; height: 10px; }'
         + '*::-webkit-scrollbar-track, *::-webkit-scrollbar-corner { background: transparent; }'

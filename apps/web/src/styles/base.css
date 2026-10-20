@@ -1,9 +1,13 @@
-/* CSS trigger #2: shared focus, scrollbar and text selection pseudo/attribute selectors. */
+/* CSS triggers #2 and #5: shared focus, scrollbar selectors and editor scroller. */
 
 * {
   box-sizing: border-box;
   scrollbar-color: color-mix(in srgb, var(--app-muted-foreground) 30%, transparent) transparent;
   scrollbar-width: thin;
+}
+
+:where(textarea, .cm-scroller) {
+  scrollbar-gutter: stable;
 }
 
 *::-webkit-scrollbar {

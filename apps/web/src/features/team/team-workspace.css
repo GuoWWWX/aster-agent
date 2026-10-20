@@ -270,6 +270,7 @@
   grid-template-columns: repeat(4, minmax(230px, 1fr));
   gap: 5px;
   overflow: auto;
+  scrollbar-gutter: stable;
   background: transparent;
   padding: 0;
 }
@@ -332,6 +333,7 @@
   align-content: start;
   gap: 5px;
   overflow: auto;
+  scrollbar-gutter: stable;
   padding: 5px;
 }
 
@@ -505,6 +507,7 @@
 .team-workitem-list {
   min-height: 0;
   overflow: auto;
+  scrollbar-gutter: stable;
 }
 
 .team-workitem-row {
@@ -858,6 +861,7 @@
   align-content: start;
   gap: 5px;
   overflow: auto;
+  scrollbar-gutter: stable;
   background: var(--app-canvas);
   padding: 5px;
 }
@@ -1146,6 +1150,7 @@
 
 .team-operations {
   overflow: auto;
+  scrollbar-gutter: stable;
 }
 
 .team-supervisor {
@@ -1435,6 +1440,7 @@
 .team-lifecycle-panel__body {
   min-height: 0;
   overflow: auto;
+  scrollbar-gutter: stable;
   padding: 10px;
 }
 
@@ -1546,6 +1552,7 @@
 .team-acceptance-delivery__preview details ol {
   max-height: 180px;
   overflow: auto;
+  scrollbar-gutter: stable;
   padding-right: 6px;
 }
 
@@ -1712,6 +1719,7 @@
   max-height: 220px;
   margin-top: 6px;
   overflow: auto;
+  scrollbar-gutter: stable;
   white-space: pre-wrap;
 }
 
@@ -2033,6 +2041,7 @@
     grid-template-columns: minmax(250px, 0.72fr) minmax(410px, 1.28fr);
     overflow-x: hidden;
     overflow-y: auto;
+    scrollbar-gutter: stable;
   }
 
   .team-command-layout--execution {
@@ -2077,6 +2086,7 @@
     grid-auto-rows: max-content;
     overflow-x: hidden;
     overflow-y: auto;
+    scrollbar-gutter: stable;
   }
 
   .team-workitem-board__columns {
@@ -2084,6 +2094,7 @@
     grid-auto-rows: minmax(280px, 1fr);
     overflow-x: hidden;
     overflow-y: auto;
+    scrollbar-gutter: stable;
   }
 
   .team-command-layout--execution > * {

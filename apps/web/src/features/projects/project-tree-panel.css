@@ -1,4 +1,4 @@
-/* CSS trigger #2: file-tree state, descendant and focus selectors. */
+/* CSS trigger #2: file-tree state, descendant, focus and scroll selectors. */
 .project-tree-panel {
   position: relative;
   display: flex;
@@ -173,6 +173,7 @@ body:has(.app-shell[data-theme="dark"]) .project-tree-panel__sort-menu button:fo
   min-height: 0;
   flex: 1;
   overflow: auto;
+  scrollbar-gutter: stable;
   padding: 4px 0;
 }
 

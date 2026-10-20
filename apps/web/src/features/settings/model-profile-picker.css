@@ -62,6 +62,7 @@
   align-content: start;
   gap: 7px;
   overflow: auto;
+  scrollbar-gutter: stable;
   padding: 1px;
 }
 

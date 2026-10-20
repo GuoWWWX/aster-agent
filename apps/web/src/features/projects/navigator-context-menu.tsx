@@ -82,9 +82,9 @@ export function NavigatorContextMenuView({
         onMouseDown={onClose}
       />
       <div
-        className="project-navigator__context-menu"
+        className="project-navigator__context-menu overflow-y-auto"
         role="menu"
-        style={{ left: menu.x, top: menu.y, maxHeight: `calc(100vh - ${menu.y + 8}px)`, overflowY: "auto" }}
+        style={{ left: menu.x, top: menu.y, maxHeight: `calc(100vh - ${menu.y + 8}px)` }}
       >
         {target.kind !== "team-instance" && (target.kind === "project" || (!target.session.isArchived && !target.session.teamWorkItemId)) ? (
           <button role="menuitem" type="button" disabled={!canCreateTeam}

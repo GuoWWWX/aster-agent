@@ -78,6 +78,7 @@ describe("preview height instrumentation", () => {
       await vi.advanceTimersByTimeAsync(60);
       expect(prependStyle.mock.calls[0]?.[0].textContent).toContain(":where(body) { display: flow-root; margin: 0; }");
       expect(prependStyle.mock.calls[0]?.[0].textContent).toContain("scrollbar-width: thin");
+      expect(prependStyle.mock.calls[0]?.[0].textContent).toContain(":where(:root) { color-scheme: light dark; scrollbar-gutter: stable; }");
       expect(postMessage).not.toHaveBeenCalled();
       width = 720;
       events.get("load")?.();

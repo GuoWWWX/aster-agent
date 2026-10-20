@@ -1050,6 +1050,7 @@
     grid-template-rows: auto max-content;
     align-content: start;
     overflow-y: auto;
+    scrollbar-gutter: stable;
     row-gap: 20px;
   }
 
