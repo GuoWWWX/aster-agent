@@ -431,7 +431,7 @@
   padding: 6px 10px;
   border: 1px solid var(--agent-md-table-border);
   overflow-wrap: anywhere;
-  vertical-align: top;
+  vertical-align: middle;
   word-break: break-word;
 }
 
