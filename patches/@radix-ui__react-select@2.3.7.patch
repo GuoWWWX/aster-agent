@@ -1,0 +1,120 @@
+diff --git a/dist/index.js b/dist/index.js
+index 06d9d5060b10358369b63a2843764be45be9abe9..81fb3b5bb706c04460ec7bd3739d9b20d1bab1f1 100644
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -388,6 +388,7 @@ var SelectContentImpl = /* @__PURE__ */ React.forwardRef(
+     } = props;
+     const context = useSelectContext(CONTENT_NAME, __scopeSelect);
+     const [content, setContent] = React.useState(null);
++    const ownerDocument = content?.ownerDocument ?? globalThis.document;
+     const [viewport, setViewport] = React.useState(null);
+     const composedRefs = (0, import_react_compose_refs.useComposedRefs)(forwardedRef, setContent);
+     const [selectedItem, setSelectedItem] = React.useState(null);
+@@ -405,17 +406,17 @@ var SelectContentImpl = /* @__PURE__ */ React.forwardRef(
+       (candidates) => {
+         const [firstItem, ...restItems] = getItems().map((item) => item.ref.current);
+         const [lastItem] = restItems.slice(-1);
+-        const PREVIOUSLY_FOCUSED_ELEMENT = document.activeElement;
++        const PREVIOUSLY_FOCUSED_ELEMENT = ownerDocument.activeElement;
+         for (const candidate of candidates) {
+           if (candidate === PREVIOUSLY_FOCUSED_ELEMENT) return;
+           candidate?.scrollIntoView({ block: "nearest" });
+           if (candidate === firstItem && viewport) viewport.scrollTop = 0;
+           if (candidate === lastItem && viewport) viewport.scrollTop = viewport.scrollHeight;
+           candidate?.focus();
+-          if (document.activeElement !== PREVIOUSLY_FOCUSED_ELEMENT) return;
++          if (ownerDocument.activeElement !== PREVIOUSLY_FOCUSED_ELEMENT) return;
+         }
+       },
+-      [getItems, viewport]
++      [getItems, viewport, ownerDocument]
+     );
+     const focusSelectedItem = React.useCallback(
+       () => focusFirst([selectedItem, content]),
+@@ -468,7 +469,7 @@ var SelectContentImpl = /* @__PURE__ */ React.forwardRef(
+     }, [onOpenChange]);
+     const [searchRef, handleTypeaheadSearch] = useTypeaheadSearch((search) => {
+       const enabledItems = getItems().filter((item) => !item.disabled);
+-      const currentItem = enabledItems.find((item) => item.ref.current === document.activeElement);
++      const currentItem = enabledItems.find((item) => item.ref.current === ownerDocument.activeElement);
+       const nextItem = findNextItem(enabledItems, search, currentItem);
+       if (nextItem) {
+         setTimeout(() => nextItem.ref.current?.focus());
+@@ -953,7 +954,7 @@ var SelectItem = /* @__PURE__ */ React.forwardRef(
+                   }
+                 }),
+                 onPointerLeave: (0, import_primitive.composeEventHandlers)(itemProps.onPointerLeave, (event) => {
+-                  if (event.currentTarget === document.activeElement) {
++                  if (event.currentTarget === event.currentTarget.ownerDocument.activeElement) {
+                     contentContext.onItemLeave?.();
+                   }
+                 }),
+@@ -1107,7 +1108,7 @@ var SelectScrollButtonImpl = /* @__PURE__ */ React.forwardRef(/* @__PURE__ */ __
+     return () => clearAutoScrollTimer();
+   }, [clearAutoScrollTimer]);
+   (0, import_react_use_layout_effect.useLayoutEffect)(() => {
+-    const activeItem = getItems().find((item) => item.ref.current === document.activeElement);
++    const activeItem = getItems().find((item) => item.ref.current === item.ref.current?.ownerDocument.activeElement);
+     activeItem?.ref.current?.scrollIntoView({ block: "nearest" });
+   }, [getItems]);
+   return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
+diff --git a/dist/index.mjs b/dist/index.mjs
+index d3c861eeb58b610e8fed2eadf48a39a4de7efdac..89a0c5f8bbe28bc148b124292868b8a64f5cd740 100644
+--- a/dist/index.mjs
++++ b/dist/index.mjs
+@@ -318,6 +318,7 @@ var SelectContentImpl = /* @__PURE__ */ React.forwardRef(
+     } = props;
+     const context = useSelectContext(CONTENT_NAME, __scopeSelect);
+     const [content, setContent] = React.useState(null);
++    const ownerDocument = content?.ownerDocument ?? globalThis.document;
+     const [viewport, setViewport] = React.useState(null);
+     const composedRefs = useComposedRefs(forwardedRef, setContent);
+     const [selectedItem, setSelectedItem] = React.useState(null);
+@@ -335,17 +336,17 @@ var SelectContentImpl = /* @__PURE__ */ React.forwardRef(
+       (candidates) => {
+         const [firstItem, ...restItems] = getItems().map((item) => item.ref.current);
+         const [lastItem] = restItems.slice(-1);
+-        const PREVIOUSLY_FOCUSED_ELEMENT = document.activeElement;
++        const PREVIOUSLY_FOCUSED_ELEMENT = ownerDocument.activeElement;
+         for (const candidate of candidates) {
+           if (candidate === PREVIOUSLY_FOCUSED_ELEMENT) return;
+           candidate?.scrollIntoView({ block: "nearest" });
+           if (candidate === firstItem && viewport) viewport.scrollTop = 0;
+           if (candidate === lastItem && viewport) viewport.scrollTop = viewport.scrollHeight;
+           candidate?.focus();
+-          if (document.activeElement !== PREVIOUSLY_FOCUSED_ELEMENT) return;
++          if (ownerDocument.activeElement !== PREVIOUSLY_FOCUSED_ELEMENT) return;
+         }
+       },
+-      [getItems, viewport]
++      [getItems, viewport, ownerDocument]
+     );
+     const focusSelectedItem = React.useCallback(
+       () => focusFirst([selectedItem, content]),
+@@ -398,7 +399,7 @@ var SelectContentImpl = /* @__PURE__ */ React.forwardRef(
+     }, [onOpenChange]);
+     const [searchRef, handleTypeaheadSearch] = useTypeaheadSearch((search) => {
+       const enabledItems = getItems().filter((item) => !item.disabled);
+-      const currentItem = enabledItems.find((item) => item.ref.current === document.activeElement);
++      const currentItem = enabledItems.find((item) => item.ref.current === ownerDocument.activeElement);
+       const nextItem = findNextItem(enabledItems, search, currentItem);
+       if (nextItem) {
+         setTimeout(() => nextItem.ref.current?.focus());
+@@ -883,7 +884,7 @@ var SelectItem = /* @__PURE__ */ React.forwardRef(
+                   }
+                 }),
+                 onPointerLeave: composeEventHandlers(itemProps.onPointerLeave, (event) => {
+-                  if (event.currentTarget === document.activeElement) {
++                  if (event.currentTarget === event.currentTarget.ownerDocument.activeElement) {
+                     contentContext.onItemLeave?.();
+                   }
+                 }),
+@@ -1037,7 +1038,7 @@ var SelectScrollButtonImpl = /* @__PURE__ */ React.forwardRef(/* @__PURE__ */ __
+     return () => clearAutoScrollTimer();
+   }, [clearAutoScrollTimer]);
+   useLayoutEffect(() => {
+-    const activeItem = getItems().find((item) => item.ref.current === document.activeElement);
++    const activeItem = getItems().find((item) => item.ref.current === item.ref.current?.ownerDocument.activeElement);
+     activeItem?.ref.current?.scrollIntoView({ block: "nearest" });
+   }, [getItems]);
+   return /* @__PURE__ */ jsx(

@@ -267,3 +267,13 @@ CodeMirror Widget 的公式／列表、图表、图片和行内内容分别归�
 源表格沿用浏览器的单元格垂直居中，侧边编辑与只读视图已保留；对话的 `agent-markdown.css` 仍显式指定顶部对齐，本次将表头与正文单元格统一为 `vertical-align: middle`。仅修改对话样式，不改生成的编辑器 CSS 或源仓库，横向对齐保持原约定。
 
 验证：无界面 Edge 在 1440px／480px、浅／深主题下检查三种实际视图，共 48 次长短文字混排行高测量通过；侧边单元格编辑与提交正常。Markdown 与编辑器 22 文件／143 项测试、Web 类型检查与生产构建通过，未操作现有桌面窗口。
+
+### 9.5 配色弹框视觉与原生浮层修复（2026-10-20）
+
+源仍为干净的 `87dcfe3`；`src/components/settings/mermaid-theme-dialog.tsx` SHA-256 仍为 `79535AC3F681879C6CFE2681DF99C055C349F25D576243FFC01C89889D4BB1A2`。补齐此前遗漏的四组四色预览、选中勾选、整体选项深浅主题说明、组合说明／单独设置计数，以及带模式图标和实际主题名的预览卡。布局、圆角、字体与间距继续桥接 Aster 的组件和 Token，不迁入源应用外壳。
+
+目标为 `features/settings/appearance/mermaid-theme-presets.tsx`、`mermaid-theme-settings.tsx` 和 `mermaid-theme-preview.tsx`。预览恢复源项目“仅有效主题影响当前图”的依赖语义，组合列表或其他图的配置不重绘当前图；迟到结果不覆盖新主题。关闭的 ThemeSelect 仅挂载当前选项，展开后仍提供全部 11 款及继承项。
+
+Aster 独立浮层使 Radix 的全局 document 与真实控件文档不同：复现到弹框初开连续 84 次焦点跳转，以及异步图像替换抢走输入焦点；Select 的箭头和前缀定位也会误读焦点。使用固定版本的 pnpm 补丁修复 FocusScope 1.1.16、Select 2.3.7 的 ownerDocument 归属，同时覆盖 CJS／ESM。补丁、锁文件与说明一同提交，不直接维护 node_modules 副本；没有修改源 md-king 或生成的编辑器 CSS。
+
+验证：Web 全量 172 文件／1280 项通过，变更 TSX 的定向 ESLint、Web 类型检查与生产构建通过；离线 frozen-lockfile 安装通过。隔离的无界面 Edge 以真实跨文档弹框复现并确认初开焦点跳转从 84 次降至 1 次，异步预览保留输入焦点，键盘选择、组合应用／取消、连续开关 12 次及明暗／宽窄截图检查均通过。重新验证 23 类图表双模式及 11 套主题双模式共 68 次渲染，对话与编辑器刷新保留草稿、选区和滚动位置。现有开发窗口通过 Vite 更新补丁及前端，Electron 主进程 PID 37484 不变；未操作用户桌面输入，未另设应用数据目录。
