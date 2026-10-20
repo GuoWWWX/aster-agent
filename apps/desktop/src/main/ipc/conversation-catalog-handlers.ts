@@ -300,9 +300,10 @@ export function registerConversationCatalogHandlers(
 
   ipcMain.handle(
     IPC_CHANNELS.conversationGetContextUsage,
-    (event, ...args: unknown[]) => {
+    async (event, ...args: unknown[]) => {
       getTrustedWindow(event, getMainWindow);
       const [input] = conversationContextUsageIpcArgumentsSchema.parse(args);
+      await eventProjector.prepareTimeline(input.conversationId);
       return conversationContextUsageSchema.parse(
         agentRuntime.getContextUsage(input)
       );

@@ -6,6 +6,8 @@ import type { AgentClient } from "../../runtime/agent-client.js";
 import { IconButton } from "../ui/icon-button.js";
 import { CodeSourceView } from "../markdown/code-source-view.js";
 import { useWorkbenchUiStore } from "../../stores/workbench-ui-store.js";
+import { useViewportActivation } from "../ui/use-viewport-activation.js";
+import type { RefObject } from "react";
 
 const HTML_PREVIEW_BASE_HEIGHT = 520;
 
@@ -26,15 +28,18 @@ export function HtmlPreviewCard({ source, embedded = false, initialMode = "previ
   const [revision, setRevision] = useState(0);
   const [mode, setMode] = useState(initialMode);
   const [requested, setRequested] = useState(initialMode === "preview" || source.kind === "file");
+  const viewportHostRef = useRef<HTMLElement>(null);
+  const activated = useViewportActivation(viewportHostRef);
   const value = sourceValue(source);
-  return <HtmlPreviewContent key={`${context?.conversationId}:${source.kind}:${source.kind !== "file" ? source.language : "html"}:${value}:${revision}:${requested}:${suspended}`} source={source} embedded={embedded} mode={mode} requested={requested && !suspended} initialHeight={initialHeight} onPreviewHeight={onPreviewHeight}
+  return <HtmlPreviewContent key={`${context?.conversationId}:${source.kind}:${source.kind !== "file" ? source.language : "html"}:${value}:${revision}:${requested}:${suspended}`} source={source} embedded={embedded} mode={mode} requested={requested && !suspended && activated} initialHeight={initialHeight} onPreviewHeight={onPreviewHeight} viewportHostRef={viewportHostRef}
     onModeChange={next => { setMode(next); if (next === "preview") { setRequested(true); setRevision(current => current + 1); } }} />;
 }
 
-function HtmlPreviewContent({ source, embedded, mode, requested, onModeChange, initialHeight, onPreviewHeight }: {
+function HtmlPreviewContent({ source, embedded, mode, requested, onModeChange, initialHeight, onPreviewHeight, viewportHostRef }: {
   source: HtmlPreviewSource; embedded: boolean;
   mode: "preview" | "source"; requested: boolean; onModeChange: (mode: "preview" | "source") => void;
   initialHeight: number | undefined; onPreviewHeight: ((height: number) => void) | undefined;
+  viewportHostRef: RefObject<HTMLElement | null>;
 }): ReactElement {
   const context = useContext(HtmlPreviewContext);
   const themeMode = useWorkbenchUiStore(state => state.themeMode);
@@ -99,7 +104,7 @@ function HtmlPreviewContent({ source, embedded, mode, requested, onModeChange, i
   const sourceText = source.kind === "code" ? source.html : preview?.source;
   const title = source.kind === "file" ? source.path.split(/[\\/]/u).at(-1) : language;
   const loading = mode === "preview" && error === null && (preview === null || loadingFrame);
-  return <section aria-label={`${languageLabel} 页面预览`} className={embedded
+  return <section ref={viewportHostRef} aria-label={`${languageLabel} 页面预览`} className={embedded
     ? "min-w-0 overflow-hidden bg-[var(--app-panel)] text-[var(--app-foreground)]"
     : "my-[5px] min-w-0 overflow-hidden rounded-[var(--app-radius)] border border-[var(--app-border)] bg-[var(--app-panel)] text-[var(--app-foreground)]"}>
     <header className="flex min-w-0 flex-wrap items-center gap-[5px] border-b border-[var(--app-border)] px-2 py-1">

@@ -25,6 +25,8 @@ import { useMediaPreview } from "../media/image-viewer.js";
 import { fileTypeIconMarkup, isRecognizedFileTypePath } from "../ui/file-type-icon-data.js";
 import { highlightCode, isLargeCodeSource } from "./code-highlighter.js";
 import { CodeSourceView } from "./code-source-view.js";
+import { useViewportActivation } from "../ui/use-viewport-activation.js";
+import { useMarkdownLayout } from "./markdown-layout-scope.js";
 import { terminalTokens } from "../ui/terminal-tokens.js";
 import { Popover, PopoverAnchor, PopoverContent } from "../ui/popover.js";
 import { resolveWorkspaceFileLink } from "./workspace-file-link.js";
@@ -259,8 +261,14 @@ export const AgentMarkdown = memo(function AgentMarkdown({ content, streaming = 
   const chatReferences = useChatReferences(content, streaming);
   const references = [...inlineReferences, ...chatReferences];
   const scrollHostRef = useRef<HTMLDivElement>(null);
+  const viewportHostRef = useRef<HTMLDivElement>(null);
+  const activated = useViewportActivation(viewportHostRef, streaming);
+  useMarkdownLayout(viewportHostRef, activated);
   useStreamingScroll(scrollHostRef, content, streaming);
-  return <AgentMarkdownContent key={`${streaming}:${content}`} content={content} streaming={streaming} scrollHostRef={scrollHostRef} inlineReferences={references} />;
+  return <div ref={viewportHostRef} className="min-w-0">
+    {activated ? <AgentMarkdownContent key={`${streaming}:${content}`} content={content} streaming={streaming} scrollHostRef={scrollHostRef} inlineReferences={references} />
+      : <div aria-busy="true" data-markdown-pending="" style={{ height: Math.min(640, Math.max(40, content.length / 60 * 20)) }} />}
+  </div>;
 });
 
 function AgentMarkdownContent({ content, streaming, scrollHostRef, inlineReferences }: { content: string; streaming: boolean; scrollHostRef: RefObject<HTMLDivElement | null>; inlineReferences: readonly InlineReference[] }): ReactElement {

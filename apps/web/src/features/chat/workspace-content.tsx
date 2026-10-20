@@ -79,6 +79,8 @@ import { isImageGenerationModel } from "@agent/protocol";
 import { GeneratedImagesResult, ImageGenerationVisibilityProvider } from "./generated-images-result.js";
 import { imageGenerationDeliveries } from "./image-generation-deliveries.js";
 import { conversationArtifacts, HtmlDeliveryPreview } from "./conversation-artifacts.js";
+import { scheduleContextUsage } from "./schedule-context-usage.js";
+import { MarkdownLayoutScope } from "../../components/markdown/markdown-layout-scope.js";
 import { MarkdownArtifactScope, standaloneArtifactReferences } from "../../components/markdown/artifact-references.js";
 import type { ChatReference } from "@agent/protocol";
 import { ChatReferenceScope } from "../../components/markdown/chat-reference-scope.js";
@@ -1316,6 +1318,7 @@ export function ConversationWorkspace({
   );
 
   const loadContextUsage = useCallback((): void => {
+    if (groupInstanceId === undefined && isLoadingTimeline) return;
     const refresh = contextUsageRefreshRef.current;
     if (!active || usageConversationId === null || refresh === null || refresh.client !== agentClient) return;
     const input = {
@@ -1351,6 +1354,7 @@ export function ConversationWorkspace({
     });
   }, [
     active,
+    isLoadingTimeline,
     groupInstanceId,
     usageModelId,
     usageProviderId,
@@ -1707,8 +1711,9 @@ export function ConversationWorkspace({
   }, [subagentApprovals, timeline]);
 
   useEffect(() => {
-    void Promise.resolve().then(loadContextUsage);
-  }, [loadContextUsage]);
+    if (!active || (groupInstanceId === undefined && isLoadingTimeline)) return;
+    return scheduleContextUsage(loadContextUsage);
+  }, [active, groupInstanceId, isLoadingTimeline, loadContextUsage]);
 
   useEffect(() => () => {
     if (copiedMessageTimeoutRef.current !== null) {
@@ -3402,6 +3407,7 @@ export function ConversationWorkspace({
         />
         <div
           ref={messagesRef}
+          data-deferred-scroll-root=""
           className={hasHtmlGallery ? "conversation-workspace__messages justify-end-safe" : "conversation-workspace__messages"}
           aria-label="对话记录"
           onClickCapture={handleTimelineDisclosureInteraction}
@@ -3418,7 +3424,7 @@ export function ConversationWorkspace({
           ) : displayTimeline.length === 0 && runProgresses.length === 0 && modelActivity === null ? (
             <div className="conversation-workspace__blank">等待任务</div>
           ) : (
-            <ImageGenerationVisibilityProvider><ToolDisclosureContext.Provider value={toolDisclosureChoices}>
+            <MarkdownLayoutScope onResize={handleHtmlGalleryResize}><ImageGenerationVisibilityProvider><ToolDisclosureContext.Provider value={toolDisclosureChoices}>
               <ToolRevealContext.Provider value={locateTimelineItem}>
               {displayTimeline.map((item, index) => {
                 const answerQuestion = item.kind === "message" ? questionForAnswer(item, userQuestions) : null;
@@ -3589,7 +3595,7 @@ export function ConversationWorkspace({
                 </div>
               ) : null}
               </ToolRevealContext.Provider>
-            </ToolDisclosureContext.Provider></ImageGenerationVisibilityProvider>
+            </ToolDisclosureContext.Provider></ImageGenerationVisibilityProvider></MarkdownLayoutScope>
           )}
           {sentSteerMessages.map((message) => (
             <div className="chat-message-group" data-role="user" data-sent-steer={message.id} key={message.id}>

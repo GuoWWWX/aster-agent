@@ -35,8 +35,15 @@ beforeEach(() => {
 afterEach(() => { act(() => root.unmount()); host.remove(); vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 async function render(): Promise<void> {
   await act(async () => { root.render(<TooltipProvider><HtmlPreviewScope client={client} conversationId={conversationId}><HtmlPreviewGallery pages={pages} cacheTtlMs={1000} /></HtmlPreviewScope></TooltipProvider>); await Promise.resolve(); });
+  await revealVisibleCards();
 }
-async function click(label: string): Promise<void> { await act(async () => { host.querySelector<HTMLButtonElement>(`[aria-label="${label}"]`)!.click(); await Promise.resolve(); }); }
+async function revealVisibleCards(): Promise<void> {
+  await act(async () => { for (const [target, reveal] of visibility) if (target.tagName === "SECTION" && target.closest("[hidden]") === null) reveal(true); await Promise.resolve(); });
+}
+async function click(label: string): Promise<void> {
+  await act(async () => { host.querySelector<HTMLButtonElement>(`[aria-label="${label}"]`)!.click(); await Promise.resolve(); });
+  await revealVisibleCards();
+}
 function show(target: Element, visible: boolean): void { act(() => { visibility.get(target)!(visible); }); }
 async function elapse(ms: number): Promise<void> { await act(async () => { await vi.advanceTimersByTimeAsync(ms); }); }
 function creates(): number { return request.mock.calls.filter(([input]) => input.kind === "code").length; }
@@ -106,7 +113,7 @@ it("lets source view shrink to its code content instead of reserving the preview
 it("expires hidden options while keeping a visible option alive, then reloads on return", async () => {
   await render();
   const first = host.querySelector("iframe")!;
-  const firstSlot = [...visibility.keys()][0]!;
+  const firstSlot = [...visibility.keys()].find(target => target.tagName === "DIV")!;
   await click("下一个方案");
   show(firstSlot, false);
   await elapse(1001);
@@ -121,7 +128,7 @@ it("expires hidden options while keeping a visible option alive, then reloads on
 
 it("releases an expired visible option only after it leaves the viewport and reloads on scroll back", async () => {
   await render();
-  const slot = [...visibility.keys()][0]!;
+  const slot = [...visibility.keys()].find(target => target.tagName === "DIV")!;
   await elapse(1001);
   expect(releases()).toBe(0);
   show(slot, false);

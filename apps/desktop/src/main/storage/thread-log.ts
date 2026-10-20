@@ -15,6 +15,7 @@ import {
 } from "node:fs";
 import { rm, rmdir } from "node:fs/promises";
 import path from "node:path";
+import { setImmediate } from "node:timers/promises";
 
 import { z } from "zod";
 
@@ -31,7 +32,7 @@ import {
   type ThreadLogSourceSignature, type ThreadLogRecordLocation, type ThreadLogScanCursor,
   type ThreadLogContextMessage, type ThreadLogContext,
 } from "./thread-log-contracts.js";
-import { applyContextEvent, contextMessageForEvent, readQueuedAgentContext, readLegacyContextMessages, readNullableString } from "./thread-log-context-projection.js";
+import { applyContextEvent, contextMessageForEvent, readQueuedAgentContext, readLegacyContextMessages } from "./thread-log-context-projection.js";
 
 export {
   threadLogHeaderSchema, threadLogEventSchema,
@@ -41,26 +42,8 @@ export {
 } from "./thread-log-contracts.js";
 
 
-const skillSnapshotResultSchema = z.object({ ok: z.literal(true), value: z.object({ loaded: z.literal(true), skill: z.object({
-  id: z.string().min(1).max(80), version: z.string().min(1).max(120), contentHash: z.string().regex(/^[a-f0-9]{64}$/u),
-}) }) });
-export type ThreadLogSkillSnapshot = z.infer<typeof skillSnapshotResultSchema>["value"]["skill"];
-export function skillSnapshotFromResult(content: string): ThreadLogSkillSnapshot | null {
-  let value: unknown;
-  try { value = JSON.parse(content); } catch { return null; }
-  const result = skillSnapshotResultSchema.safeParse(value);
-  return result.success ? result.data.value.skill : null;
-}
-
-type ContextLocation = { record: ThreadLogRecordLocation; legacyIndex: number };
-type ContextIndex = {
-  context: ThreadLogContext;
-  checkpointOffset: number;
-  locations: ContextLocation[];
-  cursor: ThreadLogScanCursor | null;
-  skills: Map<string, ThreadLogSkillSnapshot & { runId: string | null }>;
-  coveredSearch?: { key: string; hits: { position: number; start: number }[] };
-};
+import { applyContextIndexEvent, createContextIndex, type ThreadLogContextIndex as ContextIndex, type ThreadLogSkillSnapshot } from "./thread-log-context-index.js";
+export { skillSnapshotFromResult, type ThreadLogSkillSnapshot } from "./thread-log-context-index.js";
 
 /**
  * The append-only durable source for one Conversation. SQLite TEMP tables may
@@ -79,11 +62,12 @@ export class ThreadLog {
   private readonly contextSnapshotBytes = new WeakMap<ThreadLogContext, number>();
   private readonly contextIndexes = new Map<string, ContextIndex>();
 
-  public constructor(private readonly conversationsRootPath: string) {
-    this.migrateLegacyLayout();
+  public constructor(private readonly conversationsRootPath: string, private readonly options: { readOnly?: boolean } = {}) {
+    if (!options.readOnly) this.migrateLegacyLayout();
   }
 
   public append(conversationId: string, input: ThreadLogEventInput): ThreadLogEvent {
+    if (this.options.readOnly) throw new Error("Read-only ThreadLog cannot append events.");
     const parsedConversationId = z.string().uuid().parse(conversationId);
     this.observeSource(parsedConversationId);
     const lastSequence = this.getLastSequence(parsedConversationId);
@@ -183,6 +167,7 @@ export class ThreadLog {
   }
 
   public async deleteConversations(conversationIds: readonly string[]): Promise<void> {
+    if (this.options.readOnly) throw new Error("Read-only ThreadLog cannot delete conversations.");
     for (const conversationId of conversationIds) {
       const parsedConversationId = z.string().uuid().parse(conversationId);
       const logPath = this.getPath(parsedConversationId);
@@ -214,6 +199,7 @@ export class ThreadLog {
    * in place: a non-terminal malformed line has no trustworthy replay point.
    */
   public quarantine(conversationId: string): string | null {
+    if (this.options.readOnly) throw new Error("Read-only ThreadLog cannot quarantine conversations.");
     const parsedConversationId = z.string().uuid().parse(conversationId);
     const logPath = this.getPath(parsedConversationId);
     if (!existsSync(logPath)) return null;
@@ -487,48 +473,43 @@ export class ThreadLog {
     return matches.reverse();
   }
 
-  private contextIndex(conversationId: string): ContextIndex | null {
+  public hasContextIndex(conversationId: string): boolean {
+    const cursor = this.contextIndexes.get(conversationId)?.cursor;
+    return cursor != null && this.canContinueScan(conversationId, cursor);
+  }
+
+  public restoreContextIndex(conversationId: string, index: ContextIndex): void {
+    if (index.cursor !== null) {
+      index.cursor = this.rebaseReadCursor(conversationId, index.cursor);
+      this.lastSequenceByConversation.set(conversationId, index.cursor.sequence);
+    }
+    setBoundedCacheEntry(this.contextIndexes, conversationId, index, THREAD_LOG_METADATA_CACHE_LIMIT);
+  }
+
+  public rebaseReadCursor(conversationId: string, cursor: ThreadLogScanCursor): ThreadLogScanCursor {
+    if (cursor.header.conversationId !== conversationId) throw new Error("ThreadLog cursor belongs to another conversation.");
+    return { ...cursor, generation: this.observeSource(conversationId) };
+  }
+
+  /** Cooperative fallback for a source changed while its worker was reading it. */
+  public async warmContext(conversationId: string): Promise<void> {
+    for (;;) {
+      const index = this.contextIndex(conversationId, 32);
+      if (index?.cursor == null || index.cursor.offset >= (this.getSourceSignature(conversationId)?.sizeBytes ?? 0)) return;
+      await setImmediate();
+    }
+  }
+
+  private contextIndex(conversationId: string, maxRecords = Infinity): ContextIndex | null {
     const id = z.string().uuid().parse(conversationId);
     if (!this.hasConversation(id)) return null;
     let index = this.contextIndexes.get(id);
     if (index === undefined || index.cursor === null || !this.canContinueScan(id, index.cursor)) {
-      index = { context: { checkpoint: null, messages: [] }, checkpointOffset: -1, locations: [], cursor: null, skills: new Map() };
+      index = createContextIndex();
     }
     const target = index;
     try {
-      target.cursor = this.scan(id, (event, record) => {
-        const replaced = event.type === "run_superseded" ? event.payload.runId
-          : event.type === "run_replaced" ? event.payload.previousRunId : undefined;
-        if (typeof replaced === "string" && replaced.length > 0) {
-          target.locations = target.locations.filter((_, position) => target.context.messages[position]?.runId !== replaced);
-          for (const [id, snapshot] of target.skills) if (snapshot.runId === replaced) target.skills.delete(id);
-        }
-        if (event.type === "tool_result" && event.payload.toolName === "load_skill" && event.payload.status === "completed" && typeof event.payload.content === "string") {
-          const snapshot = skillSnapshotFromResult(event.payload.content);
-          if (snapshot !== null) {
-            target.skills.delete(snapshot.id);
-            target.skills.set(snapshot.id, { ...snapshot, runId: readNullableString(event.payload.runId) });
-            if (target.skills.size > 200) target.skills.delete(target.skills.keys().next().value!);
-          }
-        }
-        const oldLength = target.locations.length;
-        const checkpoint = target.context.checkpoint;
-        applyContextEvent(target.context, event);
-        if (target.context.checkpoint !== checkpoint) {
-          target.checkpointOffset = target.context.checkpoint === null ? -1 : record.offset;
-        }
-        for (let position = oldLength; position < target.context.messages.length; position += 1) {
-          const message = target.context.messages[position]!;
-          target.locations.push({ record, legacyIndex: position - oldLength });
-          message.content = "";
-          message.toolCalls = [];
-          if (message.providerState?.usage !== undefined || message.providerState?.firstTokenLatencyMs !== undefined) {
-            message.providerState = { ...message.providerState, payload: null };
-          } else {
-            delete message.providerState;
-          }
-        }
-      }, target.cursor ?? undefined);
+      target.cursor = this.scan(id, (event, record) => applyContextIndexEvent(target, event, record), target.cursor ?? undefined, maxRecords);
     } catch (error) {
       // A failed incremental scan must not retain partially applied events.
       this.contextIndexes.delete(id);
@@ -609,12 +590,13 @@ export class ThreadLog {
     let lineIndex = after === undefined ? 0 : 1;
     let completedByteCount = after?.offset ?? 0;
     let lastSequence = after?.sequence ?? 0;
-    const descriptor = openSync(logPath, "r+");
+    const descriptor = openSync(logPath, this.options.readOnly ? "r" : "r+");
     const parseLine = (rawLine: string, recoverableFinalLine: boolean): boolean => {
       let value: unknown;
       try {
         value = JSON.parse(rawLine);
       } catch (error) {
+        if (recoverableFinalLine && this.options.readOnly) throw new Error("THREAD_LOG_READER_INCOMPLETE", { cause: error });
         if (!recoverableFinalLine) throw error;
         ftruncateSync(descriptor, completedByteCount);
         return false;
