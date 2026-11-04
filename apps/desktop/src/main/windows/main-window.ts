@@ -1,4 +1,5 @@
 import {
+  app,
   BrowserWindow,
   type BrowserWindowConstructorOptions,
   type WebPreferences
@@ -42,6 +43,7 @@ export function createMainWindow(): BrowserWindow {
     backgroundColor: WINDOW_BACKGROUND_COLOR,
     frame: false,
     height: WINDOW_START_HEIGHT,
+    icon: path.resolve(app.getAppPath(), app.isPackaged ? "renderer" : "../web/public", "aster-logo.png"),
     minHeight: WINDOW_MIN_HEIGHT,
     minWidth: WINDOW_MIN_WIDTH,
     show: false,
