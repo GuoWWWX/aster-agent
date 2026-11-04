@@ -42,7 +42,10 @@ jobs:
         run: pnpm typecheck
 
       - name: Test
-        run: pnpm test
+        env:
+          TEMP: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
+        run: pnpm test:ci
 
       - name: Build
         run: pnpm build

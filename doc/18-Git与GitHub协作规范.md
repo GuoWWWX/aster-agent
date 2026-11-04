@@ -134,7 +134,7 @@ PR 默认目标为 `develop`，并应包含：
 | 合并方式 | 启用 squash merge；保留 merge commit 仅用于发布/热修复分支。 |
 | 安全 | 启用 Dependabot alerts、Secret scanning、Push protection（可用时）。 |
 
-当前早期单人迭代阶段， [CI 工作流](../.github/workflows/ci.yml) 仅由维护者在 Actions 页手动触发，运行 `lint`、`typecheck`、`test`、`build`；PR 与 `main`/`develop` 推送不会自动运行。远端 Windows Runner 与本地环境差异仍在收敛中，因此暂不设置必需状态检查。恢复自动 CI 前，先确认这些门禁已能稳定复现本地结果。
+当前早期单人迭代阶段， [CI 工作流](../.github/workflows/ci.yml) 仅由维护者在 Actions 页手动触发，运行 `lint`、`typecheck`、`test:ci`、`build`；PR 与 `main`/`develop` 推送不会自动运行。`test:ci` 串行运行各工作区测试，Windows 托管 Runner 因非交互式及管理员权限环境排除真实电脑输入驱动测试；该测试仍保留在完整 `pnpm test` 中，需在适当的交互式环境单独验证。远端 Windows Runner 与本地环境差异仍在收敛中，因此暂不设置必需状态检查。
 
 ## 5. 发布流程
 

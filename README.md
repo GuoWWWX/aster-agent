@@ -17,7 +17,7 @@ Aster 是一个本地优先的桌面 AI Agent 工作台。你可以在项目或�
 
 ## 开始使用
 
-当前主要在 Windows 上开发和验证，提供 Windows x64 构建入口。仓库暂未发布安装包，可先从源码运行。`main` 是发布基线；下列命令使用包含当前开发功能的 `develop` 分支。
+当前主要在 Windows 上开发和验证，提供 Windows x64 构建入口。公开发布的安装包可从 [GitHub Releases](https://github.com/GuoWWWX/aster-agent/releases) 获取；如尚无发布，可先从源码运行。`main` 是发布基线；下列命令使用包含当前开发功能的 `develop` 分支。
 
 准备好 Git、Node.js `>=24 <25` 和 pnpm `>=10 <11`，然后在 PowerShell 中运行：
 

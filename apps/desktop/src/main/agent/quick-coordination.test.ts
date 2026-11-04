@@ -367,7 +367,7 @@ describe("quick coordination request queue", () => {
     } finally {
       first.resolve(); runtime.cancelConversation(parent.id);
       await vi.waitFor(() => expect(db.getConversation(child.id).activeRunId).toBeNull());
-      db.close(); await rm(directory, { recursive: true, force: true });
+      db.close(); await rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
   });
 });
