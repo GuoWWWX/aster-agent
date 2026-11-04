@@ -93,7 +93,6 @@ git status --short
 公开发布前仍需由项目负责人确认：
 
 - GitHub 组织/仓库名与域名。
-- 开源许可证或商业许可策略。
 - Windows 代码签名证书，以及未来 macOS 的签名与公证账户。
 - 首发支持的平台、架构与 Beta 用户范围。
 
@@ -101,4 +100,8 @@ git status --short
 
 本软件能够在用户授权范围内访问本地项目并运行命令。使用前请审阅权限设置；不要把 API Key、访问令牌、私钥或包含敏感信息的 `.env` 文件提交到仓库或粘贴到 Issue/PR。
 
-安全问题请勿通过公开 Issue 披露。在安全披露渠道确定前，请直接联系仓库维护者。
+安全问题请勿通过公开 Issue 披露，报告方式见 [SECURITY.md](./SECURITY.md)。
+
+## 许可证
+
+项目代码按 [MIT License](./LICENSE) 发布。Markdown 编辑器包含从 [md-king](https://github.com/GuoWWWX/md-king) 迁入或改编的代码，其[原始许可证](./licenses/md-king-LICENSE.txt)予以保留；其他依赖及品牌标识适用各自的许可和使用条款。
