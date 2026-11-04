@@ -34,6 +34,9 @@ export class ImageGenerationAdapter {
 
   public async generate(configuration: ModelConfiguration, input: ImageGenerationRequest, signal: AbortSignal): Promise<GeneratedImage[]> {
     signal.throwIfAborted();
+    if (configuration.authentication !== undefined && configuration.authentication.type !== "api-key") {
+      throw new ImageGenerationError("当前账号授权暂不支持此生图接口，请选择 API Key 供应商。");
+    }
     if (!["openai-responses", "openai-chat-completions"].includes(configuration.apiFormat)) {
       throw new ImageGenerationError("此供应商尚未配置兼容的 Images API，请选择 OpenAI 兼容供应商的生图模型。");
     }

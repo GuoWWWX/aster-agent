@@ -10,6 +10,7 @@ import {
 
 import type {
   CompleteTurnInput,
+  ModelConfiguration,
   ModelMessage,
   ModelProviderAdapter,
   ModelProviderState,
@@ -308,8 +309,27 @@ function anthropicSdkBaseUrl(baseUrl: string): string {
   return parsed.toString().replace(/\/$/u, "");
 }
 
+function authenticatedModelRequest(configuration: ModelConfiguration, request: typeof fetch): typeof fetch {
+  const authentication = configuration.authentication;
+  if (authentication === undefined) return request;
+  switch (authentication.type) {
+    case "api-key":
+      return request;
+    case "chatgpt-plan":
+      if (configuration.apiFormat !== "openai-responses" || configuration.baseUrl !== "https://api.openai.com/v1") {
+        throw new Error("ChatGPT 套餐只能用于官方 Responses API。");
+      }
+      return createChatGptPlanFetch(authentication.getAccessToken, request);
+    default: {
+      const unsupported: never = authentication;
+      throw new Error("不支持的模型认证方式。", { cause: typeof unsupported });
+    }
+  }
+}
+
 function defaultFactory(input: CompleteTurnInput, request: typeof fetch): LangChainModel {
   const { apiFormat, apiKey, baseUrl, modelId } = input.configuration;
+  const authenticatedRequest = authenticatedModelRequest(input.configuration, request);
   const common = {
     maxRetries: 0,
     streaming: true,
@@ -319,7 +339,7 @@ function defaultFactory(input: CompleteTurnInput, request: typeof fetch): LangCh
     return new ChatOpenAI({
       ...common,
       apiKey,
-      configuration: { baseURL: baseUrl, fetch: openAiChatCompatibilityFetch(input, request) },
+      configuration: { baseURL: baseUrl, fetch: openAiChatCompatibilityFetch(input, authenticatedRequest) },
       ...(input.cacheKey === undefined ? {} : { promptCacheKey: input.cacheKey }),
       model: modelId,
       maxTokens: input.maxOutputTokens,
@@ -327,13 +347,10 @@ function defaultFactory(input: CompleteTurnInput, request: typeof fetch): LangCh
     });
   }
   if (apiFormat === "openai-responses") {
-    const responsesRequest = input.configuration.chatGptAccessToken === undefined
-      ? request
-      : createChatGptPlanFetch(input.configuration.chatGptAccessToken, request);
     return new ChatOpenAI({
       ...common,
       apiKey,
-      configuration: { baseURL: baseUrl, fetch: openAiResponsesCompatibilityFetch(responsesRequest) },
+      configuration: { baseURL: baseUrl, fetch: openAiResponsesCompatibilityFetch(authenticatedRequest) },
       ...(input.cacheKey === undefined ? {} : { promptCacheKey: input.cacheKey }),
       model: modelId,
       maxTokens: input.maxOutputTokens,
@@ -345,7 +362,7 @@ function defaultFactory(input: CompleteTurnInput, request: typeof fetch): LangCh
       ...common,
       anthropicApiKey: apiKey,
       anthropicApiUrl: anthropicSdkBaseUrl(baseUrl),
-      clientOptions: { fetch: request },
+      clientOptions: { fetch: authenticatedRequest },
       maxTokens: input.maxOutputTokens,
       model: modelId,
     });
@@ -698,10 +715,10 @@ export class LangChainModelAdapter implements ModelProviderAdapter {
       if (error instanceof ModelRequestError && error.retryable === false) throw error;
       const status = providerErrorStatus(error);
       if (status !== null) {
-        const usageHint = status === 429 && input.configuration.chatGptAccessToken !== undefined
+        const usageHint = status === 429 && input.configuration.authentication?.type === "chatgpt-plan"
           ? " 请求可能受到频率或套餐限制，请通过输入框旁的“管理用量”查看。"
           : "";
-        const usageLimited = input.configuration.chatGptAccessToken !== undefined
+        const usageLimited = input.configuration.authentication?.type === "chatgpt-plan"
           && providerErrorCode(error) === "subscription_sharing_usage_limit_exceeded";
         throw new ModelRequestError(
           status,
