@@ -1,4 +1,5 @@
 import type { TaskContextScope, TaskCompletionPolicy, SetTaskCompletionPolicyInput, ResolveChatReferencesInput, ChatReference, ListTaskContextsInput, TaskContextPage, TaskContextDetail, UpdateTaskContextInput, TaskContext, LinkTaskContextInput, MergeTaskContextsInput } from "./task-context.js";
+import type { ChatGptConnection, ChatGptConnectResult } from "./chatgpt-plan.js";
 import type { ReadTeamChatInput, TeamChatPage, PostTeamChatInput, TeamChatMessage, TeamChatMember, MarkTeamChatReadInput } from "./team-chat.js";
 import type { HtmlPreview, HtmlPreviewRequest } from "./html-preview.js";
 import type { AnswerUserQuestionInput, UserQuestion } from "./user-question.js";
@@ -263,6 +264,10 @@ export interface DesktopBridge {
     input: DeleteConfigurationWorkspaceEntryInput
   ): Promise<void>;
   discoverModels(input: DiscoverModelsInput): Promise<DiscoveredModel[]>;
+  listChatGptConnections(): Promise<ChatGptConnection[]>;
+  connectChatGpt(providerId?: string): Promise<ChatGptConnectResult>;
+  disconnectChatGpt(providerId: string): Promise<boolean>;
+  syncChatGptModels(providerId: string): Promise<ModelRuntimeStatus>;
   testModelConnection(input: TestModelConnectionInput): Promise<ModelConnectionTestResult>;
   getModelApiKey(providerId: string): Promise<string | null>;
   getModelCatalog(): Promise<ModelCatalog>;

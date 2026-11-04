@@ -5,6 +5,7 @@ import {
   type AgentError,
   type AgentErrorCode,
 } from "@agent/protocol";
+import { ModelRequestError } from "../model/model-request-error.js";
 
 type MainErrorContext = {
   operation: string;
@@ -353,7 +354,7 @@ export function toMainAgentError(
     },
     id: randomUUID(),
     message: userMessage,
-    retryable: classification.retryable,
+    retryable: reason instanceof ModelRequestError ? reason.retryable ?? classification.retryable : classification.retryable,
   });
 }
 

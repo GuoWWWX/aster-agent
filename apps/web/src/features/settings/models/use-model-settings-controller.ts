@@ -70,6 +70,7 @@ export function useModelSettingsController({ agentClient }: { agentClient: Agent
   const [deletingProviderId, setDeletingProviderId] = useState<string | null>(null);
   const [providerSearchQuery, setProviderSearchQuery] = useState("");
   const [saveRevision, setSaveRevision] = useState(0);
+  const [providerSyncRevision, setProviderSyncRevision] = useState(0);
   const [modelCatalog, setModelCatalog] = useState<ModelCatalog>(DEFAULT_MODEL_CATALOG);
   const [status, setStatus] = useState<ModelRuntimeStatus | null>(null);
   const autoSaveInputRef = useRef<SaveModelConfigurationInput | null>(null);
@@ -336,7 +337,7 @@ export function useModelSettingsController({ agentClient }: { agentClient: Agent
     return () => {
       disposed = true;
     };
-  }, [activeProviderId, agentClient, isGlobalContextCompressionLoaded, saveQueue]);
+  }, [activeProviderId, agentClient, isGlobalContextCompressionLoaded, providerSyncRevision, saveQueue]);
 
   function updateDraft(event: ChangeEvent<HTMLInputElement>): void {
     setDraft((current) => ({ ...current, [event.target.name]: event.target.value }));
@@ -490,6 +491,19 @@ export function useModelSettingsController({ agentClient }: { agentClient: Agent
   }
 
   async function discoverModels(): Promise<void> {
+    if (activeProvider?.authentication === "chatgpt" && selectedProviderId !== null && agentClient.syncChatGptModels !== undefined) {
+      setIsDiscovering(true);
+      setOperationError(null);
+      try {
+        setStatus(rememberModelStatus(agentClient, await agentClient.syncChatGptModels(selectedProviderId)));
+        setProviderSyncRevision((revision) => revision + 1);
+      } catch (reason) {
+        setOperationError(errorMessage(reason));
+      } finally {
+        setIsDiscovering(false);
+      }
+      return;
+    }
     if (draft.baseUrl.trim().length === 0 || draft.apiKey.trim().length === 0) {
       setOperationError("请先填写请求地址和 API Key");
       return;
@@ -582,6 +596,13 @@ export function useModelSettingsController({ agentClient }: { agentClient: Agent
     }
   }
   return {
+    activeProvider,
+    applyChatGptStatus: (nextStatus: ModelRuntimeStatus, providerId: string) => {
+      rememberModelStatus(agentClient, nextStatus);
+      setStatus(nextStatus);
+      setActiveProviderId(providerId);
+      setProviderSyncRevision((revision) => revision + 1);
+    },
     discoveredModels,
     setDiscoveredModels,
     draft,

@@ -29,6 +29,7 @@ import { requestFingerprint, type RequestFingerprint } from "./request-fingerpri
 import { compactProviderReplayState } from "./provider-replay-state.js";
 import { openAiChatReasoningByAssistant } from "./langchain-provider-replay.js";
 import { toLangChainMessages } from "./langchain-model-messages.js";
+import { createChatGptPlanFetch } from "./chatgpt-plan-fetch.js";
 
 const LANGCHAIN_PROVIDER_STATE_VERSION = 2;
 
@@ -326,10 +327,13 @@ function defaultFactory(input: CompleteTurnInput, request: typeof fetch): LangCh
     });
   }
   if (apiFormat === "openai-responses") {
+    const responsesRequest = input.configuration.chatGptAccessToken === undefined
+      ? request
+      : createChatGptPlanFetch(input.configuration.chatGptAccessToken, request);
     return new ChatOpenAI({
       ...common,
       apiKey,
-      configuration: { baseURL: baseUrl, fetch: openAiResponsesCompatibilityFetch(request) },
+      configuration: { baseURL: baseUrl, fetch: openAiResponsesCompatibilityFetch(responsesRequest) },
       ...(input.cacheKey === undefined ? {} : { promptCacheKey: input.cacheKey }),
       model: modelId,
       maxTokens: input.maxOutputTokens,
@@ -513,6 +517,13 @@ function providerErrorMessage(error: unknown, status: number): string {
   return summarizeModelErrorText(message);
 }
 
+function providerErrorCode(error: unknown): string | null {
+  if (!isRecord(error)) return null;
+  const nested = error.error;
+  const code = error.code ?? (isRecord(nested) ? nested.code : undefined);
+  return typeof code === "string" ? code : null;
+}
+
 function rejectsImageInput(error: unknown): boolean {
   const status = providerErrorStatus(error);
   if (status === null || status < 400 || status >= 500) return false;
@@ -684,11 +695,18 @@ export class LangChainModelAdapter implements ModelProviderAdapter {
       };
     } catch (error) {
       if (input.signal.aborted || isAbortError(error)) throw error;
+      if (error instanceof ModelRequestError && error.retryable === false) throw error;
       const status = providerErrorStatus(error);
       if (status !== null) {
+        const usageHint = status === 429 && input.configuration.chatGptAccessToken !== undefined
+          ? " 请求可能受到频率或套餐限制，请通过输入框旁的“管理用量”查看。"
+          : "";
+        const usageLimited = input.configuration.chatGptAccessToken !== undefined
+          && providerErrorCode(error) === "subscription_sharing_usage_limit_exceeded";
         throw new ModelRequestError(
           status,
-          `Model request failed (${status}): ${providerErrorMessage(error, status)}`,
+          `Model request failed (${status}): ${providerErrorMessage(error, status)}${usageHint}`,
+          usageLimited ? false : undefined,
         );
       }
       throw error;

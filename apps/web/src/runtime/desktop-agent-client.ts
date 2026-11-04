@@ -1,4 +1,5 @@
 import type { TaskContextScope, TaskCompletionPolicy, SetTaskCompletionPolicyInput, ResolveChatReferencesInput, ChatReference, ListTaskContextsInput, TaskContextPage, TaskContextDetail, UpdateTaskContextInput, TaskContext, LinkTaskContextInput, MergeTaskContextsInput, ReadTeamChatInput, TeamChatPage, PostTeamChatInput, TeamChatMessage, TeamChatMember, MarkTeamChatReadInput } from "@agent/protocol";
+import type { ChatGptConnection, ChatGptConnectResult } from "@agent/protocol";
 import type { HtmlPreview, HtmlPreviewRequest } from "@agent/protocol";
 import type { AnswerUserQuestionInput, UserQuestion, BackgroundCommand, StopBackgroundCommandInput, BackgroundCommandOutput, ReadBackgroundCommandInput } from "@agent/protocol";
 import type { ScheduledTask, SaveScheduledTaskInput, ScheduledTaskReference } from "@agent/protocol";
@@ -329,6 +330,22 @@ export class DesktopAgentClientAdapter implements AgentClient {
 
   public discoverModels(input: DiscoverModelsInput): Promise<DiscoveredModel[]> {
     return this.desktopBridge.discoverModels(input);
+  }
+
+  public listChatGptConnections(): Promise<ChatGptConnection[]> {
+    return this.desktopBridge.listChatGptConnections();
+  }
+
+  public connectChatGpt(providerId?: string): Promise<ChatGptConnectResult> {
+    return this.desktopBridge.connectChatGpt(providerId);
+  }
+
+  public disconnectChatGpt(providerId: string): Promise<boolean> {
+    return this.desktopBridge.disconnectChatGpt(providerId);
+  }
+
+  public syncChatGptModels(providerId: string): Promise<ModelRuntimeStatus> {
+    return this.desktopBridge.syncChatGptModels(providerId);
   }
 
   public testModelConnection(input: TestModelConnectionInput): Promise<ModelConnectionTestResult> {

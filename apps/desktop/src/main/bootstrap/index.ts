@@ -2,7 +2,9 @@ import { HtmlPreviewServer } from "../preview/html-preview-server.js";
 import { ScheduledTaskController } from "../schedules/scheduled-task-controller.js";
 import { ScheduledTaskStore } from "../schedules/scheduled-task-store.js";
 import { AgentScheduledTaskRunner } from "../schedules/agent-scheduled-task-runner.js";
-import { app, BrowserWindow, nativeTheme } from "electron";
+import { app, BrowserWindow, nativeTheme, shell } from "electron";
+import { ChatGptPlanAuth } from "../model/chatgpt-plan-auth.js";
+import { ChatGptPlanStore } from "../model/chatgpt-plan-store.js";
 import { ComputerUseConfigurationStore } from "../settings/computer-use-configuration-store.js";
 import { WindowsComputerController } from "../computer-use/windows-computer-controller.js";
 import { ComputerUseTool } from "../computer-use/computer-use-tool.js";
@@ -267,6 +269,8 @@ async function initializeServices(): Promise<DesktopServices> {
   const credentials = new ModelCredentialStore(
     settings,
     agentHome.paths.credentialsPath,
+    new ChatGptPlanAuth(new ChatGptPlanStore(path.join(agentHome.paths.rootPath, "chatgpt-authorization.json")),
+      { openExternal: (url) => shell.openExternal(url) }),
   );
   credentials.importFromEnvironment();
   const modelCatalog = new ModelCatalogStore(

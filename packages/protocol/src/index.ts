@@ -1,4 +1,5 @@
 export { htmlPreviewRequestSchema, htmlPreviewSchema, htmlPreviewResponseSchema, htmlPreviewResizeMessageSchema, presentHtmlInputSchema, presentHtmlToolInputSchema, htmlPresentationResultSchema, htmlPresentationPageSchema, codePreviewLanguageSchema, HTML_PREVIEW_MAX_HEIGHT, type CodePreviewLanguage, type HtmlPreviewRequest, type HtmlPreview, type HtmlPresentationPage } from "./html-preview.js";
+export { chatGptConnectionSchema, chatGptConnectionListSchema, chatGptConnectResultSchema, chatGptProviderInputSchema, chatGptConnectInputSchema, type ChatGptConnection, type ChatGptConnectResult } from "./chatgpt-plan.js";
 export { capabilitySetSchema } from "./capability.js";
 export type { CapabilitySet } from "./capability.js";
 export {

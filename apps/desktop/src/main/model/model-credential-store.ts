@@ -9,14 +9,18 @@ import {
 } from "node:fs";
 import {
   conversationModelSelectionSchema,
+  DEFAULT_MODEL_CATALOG,
   isReasoningOptionEnabled,
   isReasoningOptionSupportedByApiFormat,
   modelReasoningOptionKey,
   modelRuntimeStatusSchema,
+  resolveModelContextWindow,
+  resolveModelReasoningOptions,
   type DiscoverModelsInput,
   type DiscoveredModel,
   type ConversationModelSelection,
   type ModelConnectionStatus,
+  type ModelCatalog,
   type ModelProfile,
   type ModelRuntimeStatus,
   type SaveModelConfigurationInput,
@@ -48,6 +52,7 @@ import type {
 import {
   ModelResponseError,
 } from "./model-request-error.js";
+import type { ChatGptPlanAuth } from "./chatgpt-plan-auth.js";
 import {
   storedModelSchema,
   storedProviderSchema,
@@ -87,6 +92,7 @@ function modelProfile(
       modelId: model.modelId,
       lastSuccessfulAt: model.lastSuccessfulAt ?? null,
     providerApiFormat: provider.apiFormat,
+    ...(provider.authentication === undefined ? {} : { providerAuthentication: provider.authentication }),
     providerBaseUrl: provider.baseUrl,
     providerId: provider.id,
     providerName: provider.name,
@@ -188,7 +194,8 @@ export class ModelCredentialStore {
   private readonly legacyConfigurationPath: string | null;
   private readonly settings: SettingsJsoncFile | null;
 
-  public constructor(configuration: string | SettingsJsoncFile, legacyConfigurationPath?: string) {
+  public constructor(configuration: string | SettingsJsoncFile, legacyConfigurationPath?: string,
+    private readonly chatGpt?: ChatGptPlanAuth) {
     this.configurationPath = typeof configuration === "string" ? configuration : null;
     this.legacyConfigurationPath = legacyConfigurationPath ?? null;
     this.settings = typeof configuration === "string" ? null : configuration;
@@ -228,6 +235,15 @@ export class ModelCredentialStore {
 
   public getConfiguration(providerId?: string, modelId?: string): ModelConfiguration {
     const selected = this.getSelectedModel(providerId, modelId);
+    if (selected.provider.authentication === "chatgpt") {
+      if (selected.provider.baseUrl !== "https://api.openai.com/v1" || selected.provider.apiFormat !== "openai-responses") {
+        throw new Error("ChatGPT 套餐供应商配置无效。");
+      }
+      const auth = this.chatGpt;
+      if (auth === undefined) throw new Error("ChatGPT 授权服务不可用。");
+      return { ...this.toContextConfiguration(selected), apiKey: "chatgpt-plan",
+        chatGptAccessToken: () => auth.getAccessToken(selected.provider.id) };
+    }
     return {
       ...this.toContextConfiguration(selected),
       apiKey: this.decodeApiKey(selected.provider.encryptedApiKey),
@@ -329,6 +345,47 @@ export class ModelCredentialStore {
     return this.decodeApiKey(provider.encryptedApiKey);
   }
 
+  public listChatGptConnections(): Array<{ providerId: string; label: string; email: string | null; signedIn: boolean; connected: boolean }> {
+    if (this.chatGpt === undefined) throw new Error("ChatGPT 授权服务不可用。");
+    return this.chatGpt.listConnections();
+  }
+
+  public async connectChatGpt(providerId?: string): Promise<{ providerId: string; email: string | null; planEnabled: boolean }> {
+    if (this.chatGpt === undefined) throw new Error("ChatGPT 授权服务不可用。");
+    return this.chatGpt.signIn(providerId);
+  }
+
+  public async disconnectChatGpt(providerId: string): Promise<boolean> {
+    if (this.chatGpt === undefined) throw new Error("ChatGPT 授权服务不可用。");
+    return this.chatGpt.signOut(providerId);
+  }
+
+  public async syncChatGptModels(providerId: string, catalog: ModelCatalog = DEFAULT_MODEL_CATALOG): Promise<ModelRuntimeStatus> {
+    if (this.chatGpt === undefined) throw new Error("ChatGPT 授权服务不可用。");
+    const connection = this.chatGpt.listConnections().find((item) => item.providerId === providerId);
+    if (connection === undefined || !connection.connected) throw new Error("ChatGPT 账号未连接，请先登录。");
+    const status = this.getStatus();
+    const currentModels = status.models.filter((model) => model.providerId === providerId);
+    if (currentModels.some((model) => model.providerAuthentication !== "chatgpt")) {
+      throw new Error("供应商标识冲突，无法同步 ChatGPT 模型。");
+    }
+    const remaining = 100 - status.models.length + currentModels.length;
+    if (remaining <= 0) throw new Error("模型配置已达到上限，请先删除不需要的模型。");
+    const discovered = await this.chatGpt.listModels(providerId);
+    const distinct = [...new Map(discovered.map((model) => [model.modelId, model])).values()].slice(0, remaining);
+    if (distinct.length === 0) throw new Error("此 ChatGPT 账号没有可用模型。");
+    return this.saveConfiguration({
+      apiFormat: "openai-responses", apiKey: "chatgpt-plan", baseUrl: "https://api.openai.com/v1",
+      providerId, providerIcon: "openai", providerName: connection.email === null ? connection.label : `${connection.label} · ${connection.email}`.slice(0, 100),
+      models: distinct.map((model) => {
+        const current = currentModels.find((item) => item.modelId === model.modelId);
+        return { ...model, contextWindow: current?.contextWindow ?? resolveModelContextWindow(catalog, model.modelId),
+          reasoningOptions: current?.reasoningOptions ?? resolveModelReasoningOptions(catalog, "openai-responses", model.modelId),
+          ...(current?.contextCompression === undefined ? {} : { contextCompression: current.contextCompression }) };
+      }),
+    }, "chatgpt");
+  }
+
   public async discoverModels(
     input: DiscoverModelsInput
   ): Promise<DiscoveredModel[]> {
@@ -422,7 +479,8 @@ export class ModelCredentialStore {
   }
 
   public saveConfiguration(
-    input: SaveModelConfigurationInput
+    input: SaveModelConfigurationInput,
+    authentication?: "chatgpt",
   ): ModelRuntimeStatus {
     const providerId = input.providerId ?? randomUUID();
     this.migrateLegacyConfiguration();
@@ -430,6 +488,11 @@ export class ModelCredentialStore {
       ? this.readStoredConfiguration()
       : null;
     const existingProvider = existing?.providers.find((provider) => provider.id === providerId);
+    const authMode = existingProvider?.authentication ?? authentication;
+    if (authMode === "chatgpt" && (input.apiFormat !== "openai-responses"
+      || normalizeBaseUrl(input.baseUrl) !== "https://api.openai.com/v1" || input.apiKey !== "chatgpt-plan")) {
+      throw new Error("ChatGPT 套餐只能使用官方 Responses API 和登录授权。");
+    }
     const existingStatuses = new Map(existingProvider?.models.map((model) => [
       model.modelId,
       {
@@ -439,6 +502,7 @@ export class ModelCredentialStore {
       },
     ]));
     const provider = storedProviderSchema.parse({
+      ...(authMode === undefined ? {} : { authentication: authMode }),
       apiFormat: input.apiFormat,
       baseUrl: normalizeBaseUrl(input.baseUrl),
       encryptedApiKey: this.encodeApiKey(input.apiKey),
@@ -499,6 +563,10 @@ export class ModelCredentialStore {
     this.migrateLegacyConfiguration();
     if (!this.hasConfigurationSection()) return this.getStatus();
     const stored = this.readStoredConfiguration();
+    if (stored.providers.find((provider) => provider.id === providerId)?.authentication === "chatgpt"
+      && this.chatGpt?.listConnections().some((connection) => connection.providerId === providerId && connection.connected)) {
+      throw new Error("请先在 ChatGPT 登录授权中断开账号，再删除供应商。");
+    }
     const providers = stored.providers.filter((provider) => provider.id !== providerId);
     const defaultProvider = providers.find((provider) => provider.id === stored.defaultProviderId) ?? providers[0];
     this.writeStoredConfiguration(storedConfigurationV6Schema.parse({

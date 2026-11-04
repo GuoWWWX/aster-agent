@@ -207,6 +207,15 @@ describe("main agent errors", () => {
     });
   });
 
+  it("preserves a provider's non-retryable plan limit and usage guidance", () => {
+    expect(toMainAgentError(
+      new ModelRequestError(429, "ChatGPT 套餐用量达到限制，请通过管理用量查看。", false),
+      { operation: "agent.run" },
+    )).toMatchObject({
+      code: "MODEL_RATE_LIMITED", retryable: false, message: "ChatGPT 套餐用量达到限制，请通过管理用量查看。",
+    });
+  });
+
   it("classifies provider status through a framework error cause chain", () => {
     const wrapped = new Error("Middleware execution failed", {
       cause: new ModelRequestError(429, "Too Many Requests"),

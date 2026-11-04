@@ -1,6 +1,10 @@
 import { z } from "zod";
 import {
   discoverModelsIpcArgumentsSchema,
+  chatGptConnectionListSchema,
+  chatGptConnectInputSchema,
+  chatGptConnectResultSchema,
+  chatGptProviderInputSchema,
   discoveredModelSchema,
   getModelApiKeyIpcArgumentsSchema,
   deleteModelProviderIpcArgumentsSchema,
@@ -24,6 +28,30 @@ export function registerModelHandlers(
   { ipcMain, getMainWindow }: IpcHandlerRegistrationContext,
   { credentials, modelCatalog }: Pick<MainIpcDependencies, "credentials" | "modelCatalog">,
 ): void {
+  ipcMain.handle(IPC_CHANNELS.modelChatGptList, (event, ...args: unknown[]) => {
+    getTrustedWindow(event, getMainWindow);
+    parseNoArguments(args);
+    return chatGptConnectionListSchema.parse(credentials.listChatGptConnections());
+  });
+
+  ipcMain.handle(IPC_CHANNELS.modelChatGptConnect, async (event, ...args: unknown[]) => {
+    getTrustedWindow(event, getMainWindow);
+    const [input] = z.tuple([chatGptConnectInputSchema]).parse(args);
+    return chatGptConnectResultSchema.parse(await credentials.connectChatGpt(input.providerId));
+  });
+
+  ipcMain.handle(IPC_CHANNELS.modelChatGptDisconnect, async (event, ...args: unknown[]) => {
+    getTrustedWindow(event, getMainWindow);
+    const [input] = z.tuple([chatGptProviderInputSchema]).parse(args);
+    return z.boolean().parse(await credentials.disconnectChatGpt(input.providerId));
+  });
+
+  ipcMain.handle(IPC_CHANNELS.modelChatGptSync, async (event, ...args: unknown[]) => {
+    getTrustedWindow(event, getMainWindow);
+    const [input] = z.tuple([chatGptProviderInputSchema]).parse(args);
+    return modelRuntimeStatusSchema.parse(await credentials.syncChatGptModels(input.providerId, modelCatalog.getCatalog()));
+  });
+
   ipcMain.handle(IPC_CHANNELS.modelGetStatus, (event, ...args: unknown[]) => {
     getTrustedWindow(event, getMainWindow);
     parseNoArguments(args);

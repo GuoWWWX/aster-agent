@@ -53,6 +53,7 @@ const storedProviderV4Schema = storedProviderV3Schema.extend({
 });
 
 export const storedProviderSchema = z.object({
+  authentication: z.literal("chatgpt").optional(),
   apiFormat: modelApiFormatSchema,
   baseUrl: z.string().url(),
   encryptedApiKey: z.string(),
