@@ -1,3 +1,4 @@
+/* CSS trigger #2: feature scroll containers and interaction selectors. */
 /* Styling trigger: descendant and data-attribute selectors express Diff line semantics. */
 .tool-diff-view {
   --tool-diff-surface: var(--app-muted);
@@ -11,6 +12,7 @@
   max-height: min(520px, 55dvh);
   margin: 0;
   overflow: auto;
+  scrollbar-gutter: stable;
   background: var(--tool-diff-surface);
   color: var(--tool-diff-code-text);
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;

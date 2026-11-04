@@ -55,6 +55,8 @@ import { ConversationLifecycleService } from "../storage/conversation-lifecycle-
 import { EventProjector } from "../storage/event-projector.js";
 import { NodeSqliteCheckpointSaver } from "../storage/node-sqlite-checkpoint-saver.js";
 import { ThreadLog } from "../storage/thread-log.js";
+import { ThreadLogReader } from "../storage/thread-log-reader.js";
+import { unpackedExecutablePath } from "../tools/bundled-executable-path.js";
 import { ThreadLogLegacyImporter } from "../storage/thread-log-legacy-importer.js";
 import { IntegrationConfigurationStore } from "../settings/integration-configuration-store.js";
 import { ApplicationSettingsStore } from "../settings/application-settings-store.js";
@@ -71,7 +73,8 @@ import { TerminalSessionController } from "../tools/terminal-session-controller.
 import { WorkspaceTerminalTabController } from "../tools/workspace-terminal-tab-controller.js";
 import { WorkspaceBrowserTabController } from "../tools/workspace-browser-tab-controller.js";
 import { BrowserToolPlugin } from "../plugins/browser-tool-plugin.js";
-import { createMainWindow } from "../windows/main-window.js";
+import { createMainWindow, getAppUserModelId } from "../windows/main-window.js";
+import { WindowCloseController } from "../windows/window-close-controller.js";
 import { publishConversationAttentionEvent } from "../windows/conversation-attention.js";
 import { attachNativeConversationAttention } from "../windows/native-conversation-attention.js";
 import { ManagedBrowserController } from "../windows/managed-browser-controller.js";
@@ -102,6 +105,7 @@ type DesktopServices = {
   credentials: ModelCredentialStore;
   database: AgentDatabase;
   eventProjector: EventProjector;
+  conversationReads: ThreadLogReader;
   integrationConfiguration: IntegrationConfigurationStore;
   contextCompression: ContextCompressionConfigurationStore;
   graphCheckpointer: NodeSqliteCheckpointSaver;
@@ -121,6 +125,7 @@ type DesktopServices = {
 };
 
 let mainWindow: BrowserWindow | undefined;
+let windowCloseController: WindowCloseController | undefined;
 let disposeIpcHandlers: (() => void) | undefined;
 let services: DesktopServices | undefined;
 let localControl: LocalControlServer | undefined;
@@ -149,6 +154,7 @@ async function shutdownDesktop(): Promise<void> {
   for (const result of results) {
     if (result.status === "rejected") reportUnhandledError(result.reason, "desktop.shutdown");
   }
+  await services?.conversationReads.dispose();
   try {
     services?.eventProjector.checkpointInactiveConversations();
   } catch (error) {
@@ -295,10 +301,12 @@ async function initializeServices(): Promise<DesktopServices> {
     ...agentHome.legacyConversationFilesPaths,
   ]);
   const threadLog = new ThreadLog(agentHome.paths.conversationsPath);
+  const conversationReads = new ThreadLogReader(unpackedExecutablePath(path.join(__dirname, "storage", "thread-log-reader-worker.cjs")));
   const eventProjector = new EventProjector(
     database,
     threadLog,
     (attachment) => attachments.resolveThreadLogPaths(attachment),
+    conversationReads,
   );
   const conversationLifecycle = new ConversationLifecycleService(
     database,
@@ -423,7 +431,7 @@ async function initializeServices(): Promise<DesktopServices> {
   const htmlPreviews = new HtmlPreviewServer(async (conversationId) => {
     const conversation = database.getConversation(conversationId);
     return (await projectRegistry.ensureWorkspaceRoot(conversation.projectId ?? conversation.id)).rootPath;
-  }, (conversationId, reference) => resolveMessageCodeBlock(database.listTimeline(conversationId)
+  }, (conversationId, reference) => resolveMessageCodeBlock(eventProjector.listTimeline(conversationId)
     .filter(item => item.kind === "message"), reference));
   const managedBrowser = new ManagedBrowserController(
     () => mainWindow,
@@ -515,6 +523,7 @@ async function initializeServices(): Promise<DesktopServices> {
     database,
     eventProjector,
     integrationConfiguration,
+    conversationReads,
     projectRegistry,
     threadLogLegacyImporter,
     skillDocuments,
@@ -558,6 +567,8 @@ async function openMainWindow(): Promise<void> {
   const window = createMainWindow();
   let rendererRecoveryAttempted = false;
   mainWindow = window;
+  windowCloseController = new WindowCloseController(window, getServices().applicationSettings,
+    (error) => reportUnhandledError(error, "desktop.window_close"));
   const disposeAttention = attachNativeConversationAttention(window, getServices().database);
   window.once("closed", disposeAttention);
   const detachBrowserRenderer = getServices().managedBrowser.attachRenderer(window,
@@ -605,6 +616,8 @@ async function openMainWindow(): Promise<void> {
   window.once("closed", () => {
     nativeOverlay.dispose();
     if (mainWindow === window) {
+      windowCloseController?.beginQuit();
+      windowCloseController = undefined;
       disposeIpcHandlers?.();
       disposeIpcHandlers = undefined;
       mainWindow = undefined;
@@ -668,7 +681,7 @@ async function bootstrap(): Promise<void> {
     return;
   }
   await app.whenReady();
-  app.setAppUserModelId("com.agent.workbench");
+  app.setAppUserModelId(getAppUserModelId());
   services = await initializeServices();
   if (process.env.ASTER_CONTROL_ENABLED === "1") {
     const control = new ConversationControl(services.database, services.conversationLifecycle,
@@ -722,6 +735,7 @@ async function bootstrap(): Promise<void> {
 
   app.on("before-quit", (event) => {
     if (shutdownComplete) return;
+    windowCloseController?.beginQuit();
     conversationEventStreams.dispose();
     event.preventDefault();
     shutdownPromise ??= shutdownDesktop()

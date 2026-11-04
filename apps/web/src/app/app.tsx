@@ -61,6 +61,7 @@ function applicationSettingsSnapshot(): ApplicationSettings {
       teams: structuredClone(directory.teams),
     },
     appearance: {
+      mermaidThemes: structuredClone(workbench.mermaidThemes),
       uiFontSize: workbench.uiFontSize,
       chatFontSize: workbench.chatFontSize,
       codeFontSize: workbench.codeFontSize,
@@ -73,6 +74,7 @@ function applicationSettingsSnapshot(): ApplicationSettings {
     },
     general: {
       approvalReviewer: applicationSettings.approvalReviewer,
+      closeBehavior: applicationSettings.closeBehavior,
       defaultPermissionMode: applicationSettings.defaultPermissionMode,
       defaultMessageDeliveryMode: applicationSettings.defaultMessageDeliveryMode,
       sendShortcut: applicationSettings.sendShortcut,
@@ -418,6 +420,7 @@ export function App(): ReactElement {
     let initialized = false;
     let saveTimer: number | undefined;
     let lastSavedSnapshot = "";
+    let lastSavedCloseBehavior: ApplicationSettings["general"]["closeBehavior"] | undefined;
     let applyingRemoteSettings = false;
     const unsubscribe: (() => void)[] = [];
 
@@ -433,6 +436,7 @@ export function App(): ReactElement {
           settings.permissionPolicies,
         );
         lastSavedSnapshot = JSON.stringify(settings);
+        lastSavedCloseBehavior = settings.general.closeBehavior;
       } finally {
         applyingRemoteSettings = false;
       }
@@ -443,6 +447,7 @@ export function App(): ReactElement {
       const snapshot = applicationSettingsSnapshot();
       if (JSON.stringify(snapshot) === lastSavedSnapshot) return;
       if (saveTimer !== undefined) window.clearTimeout(saveTimer);
+      const delay = snapshot.general.closeBehavior === lastSavedCloseBehavior ? 450 : 0;
       saveTimer = window.setTimeout(() => {
         saveTimer = undefined;
         const pendingSnapshot = applicationSettingsSnapshot();
@@ -454,11 +459,12 @@ export function App(): ReactElement {
           .then(async () => {
             const saved = await agentClient.saveApplicationSettings(pendingSnapshot);
             lastSavedSnapshot = JSON.stringify(saved);
+            lastSavedCloseBehavior = saved.general.closeBehavior;
             if (!disposed && JSON.stringify(applicationSettingsSnapshot()) !== lastSavedSnapshot) {
               scheduleSave();
             }
           });
-      }, 450);
+      }, delay);
     }
 
     function subscribeToApplicationSettings(): void {
@@ -483,6 +489,7 @@ export function App(): ReactElement {
         if (disposed) return;
         initialized = true;
         lastSavedSnapshot = JSON.stringify(applicationSettingsSnapshot());
+        lastSavedCloseBehavior = applicationSettingsSnapshot().general.closeBehavior;
         subscribeToApplicationSettings();
       },
     );

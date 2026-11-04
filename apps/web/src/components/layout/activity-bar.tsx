@@ -15,6 +15,7 @@ import { useWorkbenchUiStore, type ActivityView } from "../../stores/workbench-u
 import { IconButton } from "../ui/icon-button.js";
 import type { AgentClient } from "../../runtime/index.js";
 import { useAppUpdate } from "../../features/updates/use-app-update.js";
+import { TooltipSideContext } from "../ui/tooltip.js";
 
 type ActivityItem = {
   icon: LucideIcon;
@@ -48,6 +49,7 @@ export function ActivityBar({ agentClient, onOpenGlobalSearch, onConversationHov
   const themeLabel = themeMode === "dark" ? "切换为浅色主题" : "切换为深色主题";
 
   return (
+    <TooltipSideContext.Provider value="right">
     <aside
       className="activity-bar"
       aria-label="主导航"
@@ -120,5 +122,6 @@ export function ActivityBar({ agentClient, onOpenGlobalSearch, onConversationHov
         </IconButton>
       </div>
     </aside>
+    </TooltipSideContext.Provider>
   );
 }

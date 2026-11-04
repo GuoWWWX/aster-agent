@@ -3,9 +3,9 @@ import { describe, expect, it, vi } from "vitest";
 
 const fake = vi.hoisted(() => ({ configuration: "", observed: [] as string[] }));
 vi.mock("mermaid", () => ({ default: {
-  initialize: (configuration: { securityLevel: string; themeVariables: { primaryTextColor: string } }) => {
+  initialize: (configuration: { securityLevel: string; theme: string }) => {
     expect(configuration.securityLevel).toBe("strict");
-    fake.configuration = configuration.themeVariables.primaryTextColor;
+    fake.configuration = configuration.theme;
   },
   render: async (_id: string, source: string) => {
     await new Promise((resolve) => setTimeout(resolve, 5));
@@ -15,6 +15,7 @@ vi.mock("mermaid", () => ({ default: {
   },
 } }));
 import { getCachedMermaidSvg, measureSvg, normalizeMermaidSource, renderMermaid } from "./mermaid.js";
+import { normalizeMermaidThemes } from "./mermaid-theme-settings.js";
 
 describe("shared Mermaid rendering", () => {
   it("normalizes directions and reads scientific or comma-separated SVG dimensions", () => {
@@ -32,5 +33,16 @@ describe("shared Mermaid rendering", () => {
     expect(getCachedMermaidSvg("flowchart lr\nA-->B", false)?.width).toBe(100);
     await expect(renderMermaid("invalid", true)).rejects.toThrow("syntax");
     await expect(renderMermaid("flowchart TB\nE-->F", false)).resolves.toMatchObject({ width: 100 });
+  });
+  it("separates simultaneous chosen themes and reuses each cached rendering", async () => {
+    const source = "flowchart LR\nThemeA-->ThemeB";
+    const forest = normalizeMermaidThemes({ light: "forest" });
+    const neo = normalizeMermaidThemes({ light: "neo" });
+    fake.observed.length = 0;
+    const [a, b] = await Promise.all([renderMermaid(source, false, forest), renderMermaid(source, false, neo)]);
+    expect(fake.observed).toEqual(["forest", "neo"]);
+    expect(await renderMermaid(source, false, forest)).toBe(a);
+    expect(await renderMermaid(source, false, neo)).toBe(b);
+    expect(fake.observed).toHaveLength(2);
   });
 });

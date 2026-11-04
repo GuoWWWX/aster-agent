@@ -279,7 +279,7 @@ describe.runIf(process.platform === "win32")("Windows actual input", () => {
     try {
       await vi.waitFor(async () => expect(await events()).toContain("ready"), { timeout: 5000 });
       await controller.start();
-      const signal = new AbortController().signal;
+      const abort = new AbortController(); const signal = abort.signal;
       const listed = await controller.execute({ action: "list" }, signal);
       if (!listed.ok) throw new Error(listed.code);
       const windows = z.object({ windows: z.array(z.object({ windowId: z.string(), authorized: z.boolean() })) }).parse(listed.value).windows;
@@ -312,7 +312,6 @@ describe.runIf(process.platform === "win32")("Windows actual input", () => {
       expect(await act({ action: "sequence", steps: [{ action: "move", x: 50, y: 50 }, { action: "move", x: 30000, y: 0 }, { action: "click", x: 50, y: 50 }] }))
         .toMatchObject({ ok: false, code: "POINT_OUTSIDE_WINDOW", completedSteps: 1, failedStep: 2 });
       expect((await events()).slice(before.length)).not.toContain("down:");
-      const abort = new AbortController();
       const dragStart = (await events()).length;
       const dragging = controller.execute(computerUseArgumentsSchema.parse({ action: "drag", windowId: target.windowId, path: [{ x: 40, y: 80 }, { x: 240, y: 80 }], durationMs: 5000 }), abort.signal);
       const cancelled = expect(dragging).rejects.toMatchObject({ code: "PROCESS_CANCELLED" });

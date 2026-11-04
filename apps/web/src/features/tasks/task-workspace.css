@@ -1,3 +1,4 @@
+/* CSS trigger #2: feature scroll containers and interaction selectors. */
 .task-workspace {
   display: flex;
   min-height: 0;
@@ -55,6 +56,7 @@
 .task-detail-panel {
   min-width: 0;
   overflow: auto;
+  scrollbar-gutter: stable;
 }
 
 .task-list-panel {

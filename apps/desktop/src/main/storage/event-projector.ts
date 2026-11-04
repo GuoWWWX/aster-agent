@@ -20,6 +20,7 @@ import { z } from "zod";
 import { setImmediate } from "node:timers/promises";
 import { ThreadLogTimeline } from "./thread-log-timeline.js";
 import type { ConversationTimelineItem, ConversationTimelinePageInput, ConversationTimelinePage } from "@agent/protocol";
+import { restoreThreadLogReadIndexes, type ThreadLogReadIndexLoader } from "./thread-log-read-index.js";
 
 const conversationCreatedPayloadSchema = z.object({
   legacyImport: z.literal(true).optional(),
@@ -53,6 +54,7 @@ export class EventProjector {
     private readonly database: AgentDatabase,
     private readonly threadLog: ThreadLog,
     private readonly attachmentPathResolver: ThreadLogAttachmentPathResolver | null = null,
+    private readonly readIndexes?: ThreadLogReadIndexLoader,
   ) {
     this.timeline = new ThreadLogTimeline(threadLog);
     database.collaboration.setSourceResolver(source => database.hasConversation(source.containerId)
@@ -66,7 +68,13 @@ export class EventProjector {
 
   public async prepareTimeline(conversationId: string): Promise<void> {
     this.database.getConversation(conversationId);
+    if (this.readIndexes !== undefined && (this.threadLog.getSourceSignature(conversationId)?.sizeBytes ?? 0) > 1_024 * 1_024
+      && (!this.timeline.hasIndex(conversationId) || !this.threadLog.hasContextIndex(conversationId))) {
+      const snapshot = await this.readIndexes.read(this.threadLog, conversationId);
+      if (snapshot !== null && restoreThreadLogReadIndexes(this.threadLog, this.timeline, conversationId, snapshot)) return;
+    }
     await this.timeline.warm(conversationId);
+    await this.threadLog.warmContext(conversationId);
   }
 
   public listTimeline(conversationId: string): ConversationTimelineItem[] {

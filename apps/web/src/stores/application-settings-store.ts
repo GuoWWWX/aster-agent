@@ -12,6 +12,7 @@ import { create } from "zustand";
 
 type ApplicationSettingsState = {
   approvalReviewer: ApprovalReviewer;
+  closeBehavior: ApplicationGeneralConfiguration["closeBehavior"];
   defaultMessageDeliveryMode: ConversationMessageDeliveryMode;
   defaultPermissionMode: ConversationPermissionMode;
   isHydrated: boolean;
@@ -22,6 +23,7 @@ type ApplicationSettingsState = {
   hydratePermissionPolicies: (permissionPolicies: ApplicationPermissionPolicies) => void;
   setDefaultMessageDeliveryMode: (mode: ConversationMessageDeliveryMode) => void;
   setApprovalReviewer: (reviewer: ApprovalReviewer) => void;
+  setCloseBehavior: (behavior: ApplicationGeneralConfiguration["closeBehavior"]) => void;
   setDefaultPermissionMode: (mode: ConversationPermissionMode) => void;
   setSendShortcut: (shortcut: ConversationSendShortcut) => void;
   setShowContextUsage: (showContextUsage: boolean) => void;
@@ -33,6 +35,7 @@ type ApplicationSettingsState = {
 
 export const useApplicationSettingsStore = create<ApplicationSettingsState>()((set) => ({
   approvalReviewer: DEFAULT_APPLICATION_SETTINGS.general.approvalReviewer,
+  closeBehavior: DEFAULT_APPLICATION_SETTINGS.general.closeBehavior,
   defaultMessageDeliveryMode:
     DEFAULT_APPLICATION_SETTINGS.general.defaultMessageDeliveryMode,
   defaultPermissionMode: DEFAULT_APPLICATION_SETTINGS.general.defaultPermissionMode,
@@ -42,6 +45,7 @@ export const useApplicationSettingsStore = create<ApplicationSettingsState>()((s
   showContextUsage: DEFAULT_APPLICATION_SETTINGS.general.showContextUsage,
   hydrateGeneralConfiguration: (configuration) => set({
     approvalReviewer: configuration.approvalReviewer,
+    closeBehavior: configuration.closeBehavior,
     defaultMessageDeliveryMode: configuration.defaultMessageDeliveryMode,
     defaultPermissionMode: configuration.defaultPermissionMode,
     isHydrated: true,
@@ -56,6 +60,7 @@ export const useApplicationSettingsStore = create<ApplicationSettingsState>()((s
     defaultMessageDeliveryMode,
   }),
   setApprovalReviewer: (approvalReviewer) => set({ approvalReviewer }),
+  setCloseBehavior: (closeBehavior) => set({ closeBehavior }),
   setDefaultPermissionMode: (defaultPermissionMode) => set({ defaultPermissionMode }),
   setSendShortcut: (sendShortcut) => set({ sendShortcut }),
   setShowContextUsage: (showContextUsage) => set({ showContextUsage }),

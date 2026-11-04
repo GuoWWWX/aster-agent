@@ -1,5 +1,6 @@
 import { Eye, Palette, PanelRight, RefreshCw, Type } from "lucide-react";
 import { SettingsSectionHeader } from "../components/settings-section-header.js";
+import { MermaidAppearanceSettings } from "./mermaid-theme-settings.js";
 import { type ReactElement } from "react";
 import { DEFAULT_APPLICATION_SETTINGS } from "@agent/protocol";
 import {
@@ -40,6 +41,8 @@ export function AppearanceSettings(): ReactElement {
         </div>
         </SettingsConfigurationCard>
       </section>
+
+      <MermaidAppearanceSettings />
 
       <section className="settings-general-category" aria-labelledby="appearance-font-heading">
         <SettingsCategoryHeading id="appearance-font-heading" icon={Type}>字体与阅读</SettingsCategoryHeading>

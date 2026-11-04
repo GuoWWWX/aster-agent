@@ -36,6 +36,7 @@ export function TeamChatPanel({ agentClient, teamInstanceId, onOpenConversation,
   const viewport = useRef<HTMLDivElement>(null);
   const messageList = useRef<HTMLOListElement>(null);
   const atBottom = useRef(focusMessageId === undefined); const hasLoaded = useRef(false);
+  const automaticScrollTop = useRef<number | null>(null);
   const revealedMessage = useRef<string | undefined>(undefined);
   const revealedNavigation = useRef<typeof navigationTarget>(null);
   const latestOwnSequence = useRef<number | null>(null);
@@ -86,6 +87,12 @@ export function TeamChatPanel({ agentClient, teamInstanceId, onOpenConversation,
       void load();
     }
   }), [agentClient, load, teamInstanceId, members, active]);
+  const followBottom = useCallback((): void => {
+    const element = viewport.current;
+    if (!active || !atBottom.current || element === null) return;
+    element.scrollTop = element.scrollHeight;
+    automaticScrollTop.current = element.scrollTop;
+  }, [active]);
   useLayoutEffect(() => {
     if (!active) return;
     const messageId = focusMessageId ?? (navigationTarget?.instanceId === teamInstanceId ? navigationTarget.messageId : undefined);
@@ -105,16 +112,16 @@ export function TeamChatPanel({ agentClient, teamInstanceId, onOpenConversation,
       if (target) { target.scrollIntoView({ block: "center" }); revealedMessage.current = messageId; return; }
       if (cursor !== null) { void Promise.resolve().then(() => load(cursor)); return; }
     }
-    if (atBottom.current && viewport.current) viewport.current.scrollTop = viewport.current.scrollHeight;
-  }, [messages, focusMessageId, navigationTarget, teamInstanceId, cursor, load, active, composerClearance]);
+    // Revealing the group must not force layout in the React commit.
+    const frame = window.requestAnimationFrame(followBottom);
+    return () => window.cancelAnimationFrame(frame);
+  }, [messages, focusMessageId, navigationTarget, teamInstanceId, cursor, load, active, composerClearance, followBottom]);
   useLayoutEffect(() => {
     if (!active || messageList.current === null || typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(() => {
-      if (atBottom.current && viewport.current) viewport.current.scrollTop = viewport.current.scrollHeight;
-    });
+    const observer = new ResizeObserver(followBottom);
     observer.observe(messageList.current);
     return () => observer.disconnect();
-  }, [active]);
+  }, [active, followBottom]);
 
   const openProcess = async (conversationId: string, runId: string | null) => {
     try {
@@ -160,7 +167,14 @@ export function TeamChatPanel({ agentClient, teamInstanceId, onOpenConversation,
   };
   return <section aria-label="团队群聊" className="flex min-h-0 min-w-0 flex-1 flex-col gap-[5px] text-[length:var(--app-font-size-control)]">
     {error === null ? null : <p role="alert" className="m-0 text-[var(--app-destructive)]">{error}<button type="button" onClick={() => void load()} className="ml-2 underline">重试读取</button></p>}
-    <div ref={viewport} role="log" aria-label="群消息" className="conversation-workspace__messages" style={{ scrollPaddingBottom: composerClearance }} onScroll={() => { const element = viewport.current; if (element) { atBottom.current = element.scrollHeight - element.scrollTop - element.clientHeight < 32; const last = messages.at(-1); if (active && atBottom.current && last && document.visibilityState === "visible") void agentClient.markTeamChatRead({ teamInstanceId, throughSequence: last.sequence }).catch(reason => setError(String(reason))); } }}>
+    <div ref={viewport} role="log" aria-label="群消息" data-deferred-scroll-root="" className="conversation-workspace__messages" style={{ scrollPaddingBottom: composerClearance }} onScroll={() => {
+      const element = viewport.current;
+      if (!active || element === null || element.scrollTop === automaticScrollTop.current) return;
+      automaticScrollTop.current = null;
+      atBottom.current = element.scrollHeight - element.scrollTop - element.clientHeight < 32;
+      const last = messages.at(-1);
+      if (atBottom.current && last && document.visibilityState === "visible") void agentClient.markTeamChatRead({ teamInstanceId, throughSequence: last.sequence }).catch(reason => setError(String(reason)));
+    }}>
       {cursor === null ? null : <button type="button" className="my-2 underline" onClick={() => void load(cursor)}>加载更早消息</button>}
       {messages.length === 0 ? <p className="text-[var(--app-muted-foreground)]">暂无群消息。可以直接提问，或输入 @ 选择需要回答的成员。</p> : null}
       <ol ref={messageList} data-group-message-list className="m-0 flex list-none flex-col gap-5 p-0">{messages.filter(message => !superseded.has(message.id)).map(message => {

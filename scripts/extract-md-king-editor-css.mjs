@@ -85,7 +85,8 @@ const ruleCount = (extracted.join("\n").match(/\{/g) ?? []).length;
 const rewritten = extracted
   .join("\n\n")
   .replace(/\.dark /g, '[data-theme="dark"] ')
-  .replace(/\.dark\./g, '[data-theme="dark"] .');
+  .replace(/\.dark\./g, '[data-theme="dark"] .')
+  .replace(/(\[data-theme="dark"\] \.mk-table-context-menu\s*\{[^}]*background:)\s*#18181b;/g, "$1 var(--app-panel);");
 
 const asterOverrides = `
 /* Aster 约定：列表圆点和编号跟随当前正文颜色。 */
@@ -102,7 +103,8 @@ const header = `/*
  * 请勿手工编辑本文件——重新同步时重跑脚本，避免逐条意译造成视觉漂移。
  *
  * 与源文件的差异：暗色选择器 \`.dark\` 改写为 \`[data-theme="dark"]\`；
- * 列表圆点和编号改为继承正文颜色。所需的 shadcn 语义变量由 markdown-token-bridge.css 提供。
+ * 列表圆点和编号改为继承正文颜色；深色表格菜单底色桥接 --app-panel。
+ * 所需的 shadcn 语义变量由 markdown-token-bridge.css 提供。
  *
  * 源文件：md-king/src/index.css
  * 提取规则数：${ruleCount}

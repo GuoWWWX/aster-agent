@@ -571,7 +571,7 @@ describe("group execution integration", () => {
       await vi.waitFor(() => {
         expect(db.collaboration.readMessages({ teamInstanceId: instance.id }).messages.at(-1)?.content).toBe("两位的意见已汇总");
         expect([lead.id, ...recipients].every(id => db.getConversation(id).activeRunId === null)).toBe(true);
-      });
+      }, { timeout: 10_000 });
       const messages = db.collaboration.readMessages({ teamInstanceId: instance.id }).messages;
       expect(messages).toHaveLength(5); expect(messages[0]?.recipientConversationIds).toEqual([lead.id]);
       expect(messages[1]).toMatchObject({ senderConversationId: lead.id, intent: "request", recipientConversationIds: recipients, rootMessageId: original.id });

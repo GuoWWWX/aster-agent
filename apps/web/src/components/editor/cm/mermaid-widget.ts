@@ -6,6 +6,8 @@ import { requestMediaPreview, svgDataUrl } from "../../media/image-viewer.js";
 import { copyTextToClipboard, measuredBlockWidget, isDarkEditorView, iconMarkup } from "./widget-dom.js";
 import { editMermaidSourceEffect } from "./widget-effects.js";
 
+const renderRevisions = new WeakMap<HTMLElement, symbol>();
+
 export function refreshLiveMermaidTheme(editorDom: HTMLElement, isDark: boolean): void {
   const hosts = editorDom.querySelectorAll<HTMLElement>(".mk-cm-mermaid");
   hosts.forEach((host) => {
@@ -13,6 +15,8 @@ export function refreshLiveMermaidTheme(editorDom: HTMLElement, isDark: boolean)
     const source = host.dataset.mkMermaidSource;
     if (!canvas || !source) return;
 
+    const revision = Symbol();
+    renderRevisions.set(canvas, revision);
     const cached = getCachedMermaidSvg(source, isDark);
     if (cached) {
       delete host.dataset.state;
@@ -23,13 +27,13 @@ export function refreshLiveMermaidTheme(editorDom: HTMLElement, isDark: boolean)
 
     void renderMermaid(source, isDark)
       .then(({ svg }) => {
-        if (!canvas.isConnected) return;
+        if (!canvas.isConnected || renderRevisions.get(canvas) !== revision) return;
         delete host.dataset.state;
         host.style.minHeight = "";
         canvas.innerHTML = svg;
       })
       .catch((error: unknown) => {
-        if (!canvas.isConnected) return;
+        if (!canvas.isConnected || renderRevisions.get(canvas) !== revision) return;
         host.dataset.state = "error";
         host.style.minHeight = "";
         canvas.textContent = error instanceof Error ? error.message : "图表渲染失败";
@@ -58,6 +62,9 @@ export class MermaidWidget extends WidgetType {
     const host = dom.classList.contains("mk-cm-mermaid") ? dom : dom.querySelector<HTMLElement>(".mk-cm-mermaid");
     const canvas = dom.querySelector<HTMLElement>(".mk-cm-mermaid-canvas");
     if (!host || !canvas) return false;
+    host.dataset.mkMermaidSource = this.source;
+    const revision = Symbol();
+    renderRevisions.set(canvas, revision);
 
     const isDark = isDarkEditorView(view);
     const cached = getCachedMermaidSvg(this.source, isDark);
@@ -71,13 +78,13 @@ export class MermaidWidget extends WidgetType {
     // 若新主题尚未缓存，保留当前现有 SVG 画面与物理尺寸（零坍塌），在后台无感完成重绘替换
     void renderMermaid(this.source, isDark)
       .then(({ svg }) => {
-        if (!canvas.isConnected) return;
+        if (!canvas.isConnected || renderRevisions.get(canvas) !== revision) return;
         delete host.dataset.state;
         host.style.minHeight = "";
         canvas.innerHTML = svg;
       })
       .catch((error: unknown) => {
-        if (!canvas.isConnected) return;
+        if (!canvas.isConnected || renderRevisions.get(canvas) !== revision) return;
         host.dataset.state = "error";
         host.style.minHeight = "";
         canvas.textContent = error instanceof Error ? error.message : "图表渲染失败";
@@ -191,6 +198,8 @@ export class MermaidWidget extends WidgetType {
     }
 
     const isDark = isDarkEditorView(view);
+    const revision = Symbol();
+    renderRevisions.set(canvas, revision);
     const cached = getCachedMermaidSvg(this.source, isDark);
     if (cached) {
       canvas.innerHTML = cached.svg;
@@ -212,7 +221,7 @@ export class MermaidWidget extends WidgetType {
       .then(({ svg }) => {
         // 容器可能已经被 CM 回收（用户快速滚动或改了源码），
         // 这时候往里写东西没有意义，isConnected 判掉。
-        if (!canvas.isConnected) return;
+        if (!canvas.isConnected || renderRevisions.get(canvas) !== revision) return;
         delete host.dataset.state;
         host.style.minHeight = "";
         canvas.innerHTML = svg;
@@ -223,7 +232,7 @@ export class MermaidWidget extends WidgetType {
         }
       })
       .catch((error: unknown) => {
-        if (!canvas.isConnected) return;
+        if (!canvas.isConnected || renderRevisions.get(canvas) !== revision) return;
         host.dataset.state = "error";
         host.style.minHeight = "";
         // 语法错误要给出原文，否则用户不知道图为什么画不出来。

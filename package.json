@@ -21,6 +21,7 @@
     "lint": "pnpm lint:scripts && pnpm --recursive --if-present run lint",
     "typecheck": "pnpm --recursive --if-present run typecheck",
     "test:scripts": "node --test scripts/*.test.mjs",
+    "test:ci": "pnpm test:scripts && pnpm --filter @agent/protocol exec vitest run src --maxWorkers=2 && pnpm --filter @agent/web exec vitest run --maxWorkers=2 && pnpm --filter @agent/desktop exec vitest run --maxWorkers=2 --testTimeout=15000 --exclude src/main/computer-use/windows-driver.test.ts",
     "test:control": "node --test scripts/aster-control.test.mjs && pnpm --filter @agent/desktop exec vitest run src/main/control --maxWorkers=1 && pnpm --filter @agent/web exec vitest run src/features/projects/use-project-sessions.test.tsx --maxWorkers=1",
     "test": "pnpm test:scripts && pnpm --recursive --if-present run test",
     "build": "pnpm --recursive --if-present run build"

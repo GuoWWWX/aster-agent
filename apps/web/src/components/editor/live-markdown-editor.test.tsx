@@ -6,6 +6,8 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { markdownMathBlockExtension } from "./cm/live-preview.js";
 import { LiveMarkdownEditor } from "./live-markdown-editor.js";
+import { useWorkbenchUiStore } from "../../stores/workbench-ui-store.js";
+import { normalizeMermaidThemes } from "../../lib/mermaid-theme-settings.js";
 
 const roots: Root[] = [];
 afterEach(() => {
@@ -30,6 +32,19 @@ function mount(content: string) {
 }
 
 describe("Markdown editor integration", () => {
+  it("retains draft, selection, undo and scroll when Mermaid preferences change", () => {
+    const source = "正文\n\n待保存内容";
+    const { view } = mount(source);
+    act(() => view.dispatch({ changes: { from: source.length, insert: "新增" }, selection: { anchor: 2 } }));
+    view.scrollDOM.scrollTop = 73;
+    act(() => useWorkbenchUiStore.getState().setMermaidThemes(normalizeMermaidThemes({ light: "forest" })));
+    expect(view.state.doc.toString()).toBe(source + "新增");
+    expect(view.state.selection.main.anchor).toBe(2);
+    expect(view.scrollDOM.scrollTop).toBe(73);
+    expect(undo(view)).toBe(true);
+    expect(view.state.doc.toString()).toBe(source);
+    act(() => useWorkbenchUiStore.getState().setMermaidThemes(normalizeMermaidThemes()));
+  });
   it("retains unsaved content, selection, undo, math widgets and scroll on a theme change", () => {
     const source = "正文\n\n$$\nx^2 + y^2\n$$\n\n末尾";
     const { root, view, props, onDirty } = mount(source);

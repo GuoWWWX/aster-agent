@@ -13,7 +13,7 @@ import { ConversationWorkspace, WorkspaceContent } from "../chat/workspace-conte
 import { useWorkbenchUiStore } from "../../stores/workbench-ui-store.js";
 
 let root: Root | null = null;
-beforeEach(() => { Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true }); vi.stubGlobal("ResizeObserver", class { observe() {} disconnect() {} }); });
+beforeEach(() => { Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true }); vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} }); });
 afterEach(() => { act(() => root?.unmount()); root = null; document.body.replaceChildren(); useWorkbenchUiStore.getState().closeTeamChat(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 const mount = () => { const element = document.createElement("div"); document.body.append(element); root = createRoot(element); return element; };
 
@@ -22,6 +22,7 @@ it("follows a loaded preview at the bottom and preserves a reader's older positi
   vi.stubGlobal("ResizeObserver", class {
     constructor(private readonly callback: () => void) {}
     observe(element: Element) { if (element.hasAttribute("data-group-message-list")) resize = this.callback; }
+    unobserve(): void {}
     disconnect() { disconnect(); }
   });
   const client = new MockAgentClient(); const { instance } = await groupFixture(client); const container = mount();
@@ -463,6 +464,8 @@ it("follows a new user message after visiting an older group source instead of r
     messages = [original, { ...original, id: crypto.randomUUID(), sequence: 2, content: "新的问题" }];
     await act(() => Promise.resolve().then(() => { listeners.forEach(listener => listener({ type: "collaboration.changed", conversationId: instance.rootConversationId!, teamInstanceId: instance.id })); }));
     expect(scrollIntoView).toHaveBeenCalledTimes(1);
+    expect(viewport.scrollTop).toBe(0);
+    await act(async () => { await new Promise<void>(resolve => window.requestAnimationFrame(() => resolve())); });
     expect(viewport.scrollTop).toBe(500);
   } finally { if (previous === undefined) Reflect.deleteProperty(HTMLElement.prototype, "scrollIntoView"); else Object.defineProperty(HTMLElement.prototype, "scrollIntoView", previous); }
 });

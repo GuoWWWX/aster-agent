@@ -230,7 +230,8 @@ describe("SettingsWorkspace", () => {
     searchFor("没有此分区");
     expect(container.querySelector('.settings-navigation [role="status"]')?.textContent).toBe("无匹配的设置");
     searchFor("");
-    expect(container.querySelectorAll(".settings-navigation__item")).toHaveLength(12);
+    expect(container.querySelectorAll(".settings-navigation__item")).toHaveLength(13);
+    expect([...container.querySelectorAll(".settings-navigation__item")].map((item) => item.textContent)).toContain("关于");
     expect(useWorkbenchUiStore.getState().settingsSection).toBe("general");
   });
 
@@ -261,7 +262,7 @@ describe("SettingsWorkspace", () => {
       searchFor("API KEY");
       expect(container.querySelector('[aria-label="模型配置：API Key"]')).not.toBeNull();
       searchFor("");
-      expect(container.querySelectorAll(".settings-navigation__item")).toHaveLength(12);
+      expect(container.querySelectorAll(".settings-navigation__item")).toHaveLength(13);
     } finally {
       Reflect.deleteProperty(HTMLElement.prototype, "scrollIntoView");
     }

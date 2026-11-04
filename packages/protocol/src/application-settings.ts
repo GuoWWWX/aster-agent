@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import { agentAvatarSchema } from "./agent-avatar.js";
+import { DEFAULT_MERMAID_THEMES, mermaidThemeSettingsSchema } from "./mermaid-theme-settings.js";
 import type { AgentAvatar, AgentAvatarIcon } from "./agent-avatar.js";
 import {
   conversationMessageDeliveryModeSchema,
@@ -165,6 +166,7 @@ export const applicationPermissionPoliciesSchema = z.object({
 }).strict();
 
 export const applicationAppearanceConfigurationSchema = z.object({
+  mermaidThemes: mermaidThemeSettingsSchema.default(DEFAULT_MERMAID_THEMES),
   uiFontSize: z.number().int().min(12).max(18).default(13),
   chatFontSize: z.number().int().min(12).max(24).default(13),
   codeFontSize: z.number().int().min(10).max(24).default(11),
@@ -181,6 +183,7 @@ export const approvalReviewerSchema = z.enum(["user", "auto_review"]);
 
 export const applicationGeneralConfigurationSchema = z.object({
   approvalReviewer: approvalReviewerSchema.default("user"),
+  closeBehavior: z.enum(["hide", "ask", "quit"]).default("hide"),
   defaultPermissionMode: conversationPermissionModeSchema.default("ask_before_changes"),
   defaultMessageDeliveryMode: conversationMessageDeliveryModeSchema,
   sendShortcut: conversationSendShortcutSchema.default("enter"),
@@ -192,6 +195,7 @@ export const applicationSettingsSchema = z.object({
   appearance: applicationAppearanceConfigurationSchema,
   general: applicationGeneralConfigurationSchema.default({
     approvalReviewer: "user",
+    closeBehavior: "hide",
     defaultPermissionMode: "ask_before_changes",
     defaultMessageDeliveryMode: "queue",
     sendShortcut: "enter",
@@ -461,6 +465,7 @@ export const DEFAULT_AGENT_DIRECTORY_CONFIGURATION: AgentDirectoryConfiguration 
 export const DEFAULT_APPLICATION_SETTINGS: ApplicationSettings = {
   agentDirectory: structuredClone(DEFAULT_AGENT_DIRECTORY_CONFIGURATION),
   appearance: {
+    mermaidThemes: DEFAULT_MERMAID_THEMES,
     uiFontSize: 13,
     chatFontSize: 13,
     codeFontSize: 11,
@@ -473,6 +478,7 @@ export const DEFAULT_APPLICATION_SETTINGS: ApplicationSettings = {
   },
   general: {
     approvalReviewer: "user",
+    closeBehavior: "hide",
     defaultPermissionMode: "ask_before_changes",
     defaultMessageDeliveryMode: "queue",
     sendShortcut: "enter",

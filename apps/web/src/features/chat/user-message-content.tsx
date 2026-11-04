@@ -1,6 +1,7 @@
 import { ChevronDown, ChevronUp } from "lucide-react";
-import { useId, useLayoutEffect, useRef, useState, type ReactElement, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type ReactElement, type ReactNode } from "react";
 import { referenceProseSegments, useChatReferences, type InlineReference } from "../../components/markdown/chat-reference-scope.js";
+import { useMarkdownLayout } from "../../components/markdown/markdown-layout-scope.js";
 import { findComposerReferenceRanges } from "./composer-reference-ranges.js";
 
 function referencedText(content: string, references: readonly InlineReference[]): ReactNode {
@@ -38,24 +39,33 @@ function referencedText(content: string, references: readonly InlineReference[])
 /** Fold only the visible body; copying, search and model history keep the full text. */
 export function UserMessageContent({ content, children, inlineReferences = [] }: { content: string; children?: ReactNode; inlineReferences?: readonly InlineReference[] }): ReactElement {
   const references = [...inlineReferences, ...useChatReferences(content, false, "mention")];
+  const host = useRef<HTMLDivElement>(null);
+  useMarkdownLayout(host, true);
   const paragraph = useRef<HTMLParagraphElement>(null);
   const contentId = useId();
   const [overflows, setOverflows] = useState(false);
   const [expandedContent, setExpandedContent] = useState<string | null>(null);
   const expanded = expandedContent === content;
-  useLayoutEffect(() => {
+  useEffect(() => {
     const element = paragraph.current;
     if (element === null) return;
     const measure = (): void => {
       const lineHeight = Number.parseFloat(window.getComputedStyle(element).lineHeight);
       setOverflows(element.scrollHeight > lineHeight * 6 + 1);
     };
-    measure();
-    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(measure);
-    observer?.observe(element);
-    return () => observer?.disconnect();
+    if (typeof ResizeObserver === "undefined") {
+      const frame = window.requestAnimationFrame(measure);
+      return () => window.cancelAnimationFrame(frame);
+    }
+    // The initial notification runs after layout. Hidden cached messages keep
+    // their disclosure state and do not force layout while switching chats.
+    const observer = new ResizeObserver(entries => {
+      if (entries.some(entry => entry.contentRect.width > 0)) measure();
+    });
+    observer.observe(element);
+    return () => observer.disconnect();
   }, [content, children]);
-  return <div className="min-w-0" data-user-message-content>
+  return <div ref={host} className="min-w-0" data-user-message-content>
     <p ref={paragraph} id={contentId} className={expanded ? undefined : "line-clamp-6"}>{children ?? referencedText(content, references)}</p>
     {overflows ? <button type="button" aria-expanded={expanded} aria-controls={contentId}
       data-conversation-find-ignore

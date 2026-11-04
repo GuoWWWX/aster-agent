@@ -44,7 +44,10 @@ jobs:
       - name: Typecheck
         run: pnpm typecheck
       - name: Test
-        run: pnpm test
+        env:
+          TEMP: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
+        run: pnpm test:ci
       - name: Build Windows installer and update metadata
         run: pnpm package:win
       - name: Publish release

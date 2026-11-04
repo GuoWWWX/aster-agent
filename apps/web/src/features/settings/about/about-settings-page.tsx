@@ -61,11 +61,9 @@ export function AboutSettings({ agentClient }: { agentClient: AgentClient }): Re
               ) : null}
             </div>
             <div className="flex shrink-0 flex-wrap items-center gap-2">
-              {status !== "unavailable" && state !== null ? (
-                <button className="settings-secondary-button inline-flex items-center gap-1" disabled={status === "checking"} type="button" onClick={() => { void run("check"); }}>
-                  <RefreshCw aria-hidden="true" size={14} />检查更新
-                </button>
-              ) : null}
+              <button className="settings-secondary-button inline-flex items-center gap-1" disabled={state === null || status === "checking" || status === "unavailable"} type="button" onClick={() => { void run("check"); }}>
+                <RefreshCw aria-hidden="true" size={14} />检查更新
+              </button>
               {state?.availableVersion !== null && state?.availableVersion !== undefined && ["available", "paused", "error"].includes(status ?? "") ? (
                 <button className="settings-secondary-button" type="button" onClick={() => { void run("download"); }}>
                   {status === "available" ? "下载更新" : "继续下载"}

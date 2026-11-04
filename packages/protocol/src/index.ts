@@ -2,6 +2,7 @@ export { htmlPreviewRequestSchema, htmlPreviewSchema, htmlPreviewResponseSchema,
 export { appUpdateProgressSchema, appUpdateStateSchema, type AppUpdateProgress, type AppUpdateState } from "./app-update.js";
 export { chatGptConnectionSchema, chatGptConnectionListSchema, chatGptConnectResultSchema, chatGptProviderInputSchema, chatGptConnectInputSchema, type ChatGptConnection, type ChatGptConnectResult } from "./chatgpt-plan.js";
 export { capabilitySetSchema } from "./capability.js";
+export { MERMAID_THEME_IDS, MERMAID_DIAGRAM_IDS, DEFAULT_MERMAID_THEMES, mermaidThemeIdSchema, mermaidThemeSettingsSchema, type MermaidThemeId, type MermaidDiagramType, type MermaidThemeSettings, type MermaidThemePreset } from "./mermaid-theme-settings.js";
 export type { CapabilitySet } from "./capability.js";
 export {
   APPLICATION_DATA_DIRECTORY_NAME,

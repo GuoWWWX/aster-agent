@@ -3,6 +3,7 @@ import { createContext, useContext, useEffect, useState, type ReactElement, type
 
 import { NATIVE_OVERLAY_READY, NATIVE_TOOLTIP_POINTER } from "../../lib/native-overlay.js";
 import { LIVE_PANEL_RESIZE_EVENT, type LivePanelResizeDetail } from "../layout/live-panel-resize.js";
+import { trackInputModality } from "./input-modality.js";
 
 const NativeOverlayContext = createContext<HTMLElement | undefined>(undefined);
 
@@ -15,7 +16,8 @@ export function NativeOverlayProvider({ children }: { children: ReactNode }): Re
   const [container, setContainer] = useState<HTMLElement>();
 
   useEffect(() => {
-    if (window.agentDesktop === undefined) return undefined;
+    const stopInputModality = trackInputModality([document]);
+    if (window.agentDesktop === undefined) return stopInputModality;
     let child: Window | null = null;
     let detach: (() => void) | undefined;
     let disposed = false;
@@ -41,6 +43,7 @@ export function NativeOverlayProvider({ children }: { children: ReactNode }): Re
     };
     window.addEventListener("message", ready);
     return () => {
+      stopInputModality();
       disposed = true;
       window.clearTimeout(timer);
       window.clearInterval(closed);
@@ -54,6 +57,7 @@ export function NativeOverlayProvider({ children }: { children: ReactNode }): Re
 }
 
 function connectOverlayHost(child: Window, root: HTMLElement): () => void {
+  const stopInputModality = trackInputModality([document, child.document]);
   const bridge = child.nativeOverlay!;
   let updateTimer: number | undefined;
   let lastInput = "";
@@ -226,6 +230,7 @@ function connectOverlayHost(child: Window, root: HTMLElement): () => void {
   dragObserver.observe(document.body, { attributes: true, attributeFilter: ["data-resizing-panel"] });
   schedule();
   return () => {
+    stopInputModality();
     if (updateTimer !== undefined) window.clearTimeout(updateTimer);
     if (pointerTimer !== undefined) window.clearTimeout(pointerTimer);
     resizeObserver.disconnect();

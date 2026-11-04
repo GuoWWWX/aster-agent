@@ -243,6 +243,7 @@
   margin: 0;
   max-height: var(--app-code-block-max-height);
   overflow: auto;
+  scrollbar-gutter: stable;
   padding: 8px 9px;
   font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
   font-size: var(--app-font-size-body);
@@ -430,7 +431,7 @@
   padding: 6px 10px;
   border: 1px solid var(--agent-md-table-border);
   overflow-wrap: anywhere;
-  vertical-align: top;
+  vertical-align: middle;
   word-break: break-word;
 }
 
@@ -579,10 +580,10 @@
 }
 .agent-markdown__mermaid button:hover { background: var(--app-hover); color: var(--app-foreground); }
 .agent-markdown__mermaid button:focus-visible { outline: 2px solid var(--app-focus-ring); outline-offset: -2px; }
-.agent-markdown__mermaid-canvas { padding: 10px; overflow: auto; color: var(--app-muted-foreground); user-select: text; }
+.agent-markdown__mermaid-canvas { padding: 10px; overflow: auto; scrollbar-gutter: stable; color: var(--app-muted-foreground); user-select: text; }
 .agent-markdown__mermaid-canvas svg { display: block; width: 100%; height: auto; max-width: 100%; margin-inline: auto; }
 .agent-markdown__mermaid-canvas[data-error] { color: var(--app-status-danger-fg); }
-.agent-markdown__mermaid pre:not([hidden]) { margin: 0; padding: 9px; overflow: auto; background: var(--app-muted); }
+.agent-markdown__mermaid pre:not([hidden]) { margin: 0; padding: 9px; overflow: auto; scrollbar-gutter: stable; background: var(--app-muted); }
 .agent-markdown__mermaid pre[hidden] { display: none; }
 .agent-markdown__mermaid pre code { background: transparent; padding: 0; border: 0; }
 .agent-markdown__mermaid-caption,
