@@ -5,6 +5,19 @@ const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwM
 const configuration = { apiKey: "private-key", baseUrl: "https://provider.test/v1", apiFormat: "openai-responses" as const, modelId: "gpt-image-2.5-flare", reasoningOptions: [] };
 
 describe("ImageGenerationAdapter", () => {
+  it("does not use account authorization with the API-key-only Images API", async () => {
+    const fetcher = vi.fn<typeof fetch>();
+    const getAccessToken = vi.fn().mockResolvedValue("oauth-secret");
+    const accountConfiguration = { ...configuration, apiKey: "chatgpt-plan",
+      authentication: { type: "chatgpt-plan" as const, getAccessToken } };
+
+    await expect(new ImageGenerationAdapter(fetcher).generate(accountConfiguration,
+      { prompt: "test", count: 1, referenceImages: [] }, new AbortController().signal))
+      .rejects.toThrow(/账号授权.*不支持/u);
+    expect(getAccessToken).not.toHaveBeenCalled();
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
   it("requests several variants in one text-to-image request", async () => {
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(Response.json({ data: [{ b64_json: png }, { b64_json: png }] }));
     const images = await new ImageGenerationAdapter(fetcher).generate(configuration, { prompt: "two variants", count: 2, referenceImages: [] }, new AbortController().signal);

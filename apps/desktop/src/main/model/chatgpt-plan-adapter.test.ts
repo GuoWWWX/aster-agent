@@ -13,11 +13,48 @@ function sse(chunks: string[]): Response {
 }
 
 describe("ChatGPT plan integration with the model adapter", () => {
+  it.each([
+    { apiFormat: "anthropic-messages" as const, baseUrl: "https://api.anthropic.com/v1" },
+    { apiFormat: "google-gemini" as const, baseUrl: "https://generativelanguage.googleapis.com/v1beta" },
+    { apiFormat: "openai-responses" as const, baseUrl: "https://attacker.example/v1" },
+  ])("rejects a ChatGPT account with an incompatible endpoint: $apiFormat", async ({ apiFormat, baseUrl }) => {
+    const request = vi.fn<typeof fetch>().mockResolvedValue(Response.json({ error: { message: "Unauthorized" } }, { status: 401 }));
+    const accessToken = vi.fn().mockResolvedValue("oauth-secret");
+    const input: CompleteTurnInput = {
+      configuration: { apiFormat, baseUrl, apiKey: "chatgpt-plan",
+        modelId: "example-model", reasoningOptions: [], authentication: { type: "chatgpt-plan", getAccessToken: accessToken } },
+      messages: [message("user", "Hello")], maxOutputTokens: 128, onTextDelta: () => undefined,
+      reasoning: undefined, signal: AbortSignal.timeout(5_000), tools: [],
+    };
+
+    await expect(new LangChainModelAdapter(apiFormat, request).completeTurn(input))
+      .rejects.toThrow(/ChatGPT 套餐只能用于官方 Responses API/u);
+    expect(accessToken).not.toHaveBeenCalled();
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it("rejects an unrecognized account authentication without obtaining credentials or making a request", async () => {
+    const request = vi.fn<typeof fetch>();
+    const accessToken = vi.fn().mockResolvedValue("oauth-secret");
+    const input: CompleteTurnInput = {
+      configuration: { apiFormat: "openai-responses", baseUrl: "https://api.openai.com/v1", apiKey: "placeholder",
+        modelId: "example-model", reasoningOptions: [] },
+      messages: [message("user", "Hello")], maxOutputTokens: 128, onTextDelta: () => undefined,
+      reasoning: undefined, signal: AbortSignal.timeout(5_000), tools: [],
+    };
+    Reflect.set(input.configuration, "authentication", { type: "unrecognized", getAccessToken: accessToken });
+
+    await expect(new LangChainModelAdapter("openai-responses", request).completeTurn(input))
+      .rejects.toThrow(/不支持的模型认证方式/u);
+    expect(accessToken).not.toHaveBeenCalled();
+    expect(request).not.toHaveBeenCalled();
+  });
+
   it("preserves a rate-limit error and tells users where to manage their plan", async () => {
     const request = vi.fn<typeof fetch>().mockResolvedValue(Response.json({ error: { message: "Rate limit reached", type: "rate_limit_error" } }, { status: 429 }));
     const input: CompleteTurnInput = {
       configuration: { apiFormat: "openai-responses", baseUrl: "https://api.openai.com/v1", apiKey: "chatgpt-plan",
-        modelId: "example-model", reasoningOptions: [], chatGptAccessToken: () => Promise.resolve("oauth-secret") },
+        modelId: "example-model", reasoningOptions: [], authentication: { type: "chatgpt-plan", getAccessToken: () => Promise.resolve("oauth-secret") } },
       messages: [message("user", "Hello")], maxOutputTokens: 128, onTextDelta: () => undefined,
       reasoning: undefined, signal: AbortSignal.timeout(5_000), tools: [],
     };
@@ -33,7 +70,7 @@ describe("ChatGPT plan integration with the model adapter", () => {
     } }, { status: 429 }));
     const input: CompleteTurnInput = {
       configuration: { apiFormat: "openai-responses", baseUrl: "https://api.openai.com/v1", apiKey: "chatgpt-plan",
-        modelId: "example-model", reasoningOptions: [], chatGptAccessToken: () => Promise.resolve("oauth-secret") },
+        modelId: "example-model", reasoningOptions: [], authentication: { type: "chatgpt-plan", getAccessToken: () => Promise.resolve("oauth-secret") } },
       messages: [message("user", "Hello")], maxOutputTokens: 128, onTextDelta: () => undefined,
       reasoning: undefined, signal: AbortSignal.timeout(5_000), tools: [],
     };
@@ -47,7 +84,7 @@ describe("ChatGPT plan integration with the model adapter", () => {
     ]));
     const input: CompleteTurnInput = {
       configuration: { apiFormat: "openai-responses", baseUrl: "https://api.openai.com/v1", apiKey: "chatgpt-plan",
-        modelId: "example-model", reasoningOptions: [], chatGptAccessToken: () => Promise.resolve("oauth-secret") },
+        modelId: "example-model", reasoningOptions: [], authentication: { type: "chatgpt-plan", getAccessToken: () => Promise.resolve("oauth-secret") } },
       messages: [message("user", "Hello")], maxOutputTokens: 128, onTextDelta: () => undefined,
       reasoning: undefined, signal: AbortSignal.timeout(5_000), tools: [],
     };
@@ -61,7 +98,7 @@ describe("ChatGPT plan integration with the model adapter", () => {
     const request = vi.fn<typeof fetch>().mockResolvedValue(sse(['{"type":"response.output_text.delta","delta":"partial"}']));
     const input: CompleteTurnInput = {
       configuration: { apiFormat: "openai-responses", baseUrl: "https://api.openai.com/v1", apiKey: "chatgpt-plan",
-        modelId: "example-model", reasoningOptions: [], chatGptAccessToken: () => Promise.resolve("oauth-secret") },
+        modelId: "example-model", reasoningOptions: [], authentication: { type: "chatgpt-plan", getAccessToken: () => Promise.resolve("oauth-secret") } },
       messages: [message("user", "Hello")], maxOutputTokens: 128, onTextDelta: () => undefined,
       reasoning: undefined, signal: AbortSignal.timeout(5_000), tools: [],
     };
@@ -82,7 +119,7 @@ describe("ChatGPT plan integration with the model adapter", () => {
       ]));
     const input: CompleteTurnInput = {
       configuration: { apiFormat: "openai-responses", baseUrl: "https://api.openai.com/v1", apiKey: "chatgpt-plan",
-        modelId: "example-model", reasoningOptions: [], chatGptAccessToken: () => Promise.resolve("oauth-secret") },
+        modelId: "example-model", reasoningOptions: [], authentication: { type: "chatgpt-plan", getAccessToken: () => Promise.resolve("oauth-secret") } },
       messages: [message("system", "Follow instructions"), message("user", "Read the file")],
       maxOutputTokens: 128, onTextDelta: () => undefined, reasoning: undefined, signal: AbortSignal.timeout(5_000),
       tools: [{ name: "read_file", description: "Read a file", parameters: { type: "object", properties: {} } }],

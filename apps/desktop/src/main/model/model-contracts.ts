@@ -28,10 +28,15 @@ export type ModelProviderTokenUsage = {
   totalTokens: number;
 };
 
+/** Account authorization is provider-specific; each kind must select its own request rules. */
+export type ModelAuthentication =
+  | { type: "api-key" }
+  | { type: "chatgpt-plan"; getAccessToken: () => Promise<string> };
+
 export type ModelConfiguration = {
   modelType?: "chat" | "image";
   apiKey: string;
-  chatGptAccessToken?: () => Promise<string>;
+  authentication?: ModelAuthentication;
   apiFormat: ModelApiFormat;
   baseUrl: string;
   contextCompression?: ContextCompressionThreshold;
@@ -41,7 +46,7 @@ export type ModelConfiguration = {
 };
 
 /** Model metadata safe to use without decrypting a provider credential. */
-export type ModelContextConfiguration = Omit<ModelConfiguration, "apiKey" | "chatGptAccessToken">;
+export type ModelContextConfiguration = Omit<ModelConfiguration, "apiKey" | "authentication">;
 
 export type ModelMessage = {
   /** Request state snapshot retained within the current execution graph, never a new user input. */

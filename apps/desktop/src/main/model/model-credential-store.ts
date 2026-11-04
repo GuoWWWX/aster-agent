@@ -242,11 +242,12 @@ export class ModelCredentialStore {
       const auth = this.chatGpt;
       if (auth === undefined) throw new Error("ChatGPT 授权服务不可用。");
       return { ...this.toContextConfiguration(selected), apiKey: "chatgpt-plan",
-        chatGptAccessToken: () => auth.getAccessToken(selected.provider.id) };
+        authentication: { type: "chatgpt-plan", getAccessToken: () => auth.getAccessToken(selected.provider.id) } };
     }
     return {
       ...this.toContextConfiguration(selected),
       apiKey: this.decodeApiKey(selected.provider.encryptedApiKey),
+      authentication: { type: "api-key" },
     };
   }
 
@@ -415,6 +416,9 @@ export class ModelCredentialStore {
     try {
       const configuration = this.getConfiguration(providerId, modelId);
       if (isImageGenerationModel(configuration)) {
+        if (configuration.authentication !== undefined && configuration.authentication.type !== "api-key") {
+          throw new Error("当前账号授权暂不支持此生图接口，请选择 API Key 供应商。");
+        }
         const models = await this.discoverModels({ apiKey: configuration.apiKey, apiFormat: configuration.apiFormat, baseUrl: configuration.baseUrl });
         if (!models.some(model => model.modelId === modelId)) throw new Error("供应商未列出此生图模型。");
         return { modelId, content: "已在供应商模型列表中找到此生图模型；未执行付费生成。请在对话中生成图片验证实际生图能力。" };

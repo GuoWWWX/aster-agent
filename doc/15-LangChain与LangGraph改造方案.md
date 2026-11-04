@@ -2,6 +2,8 @@
 
 ChatGPT 套餐授权复用现有 Responses 适配器和 Runtime／LangGraph 工具循环。主进程在每次请求前取得当前账号令牌，套餐请求限定官方地址，移除预览不支持的参数并以 `additional_tools` 传递本地工具；服务明确报告套餐用量限制时不自动重试，普通 Responses 供应商的请求保持不变。〔FACT｜`apps/desktop/src/main/model/chatgpt-plan-fetch.ts`、`apps/desktop/src/main/model/langchain-model-adapter.ts`〕
 
+模型调用的认证在 Main 使用带类型的 `ModelAuthentication` 合同，区分普通 `api-key` 与账号套餐 `chatgpt-plan`；未设置该字段时沿用 API Key。ChatGPT 适配器在取得令牌或发起请求前校验协议和官方地址，未知类型拒绝执行；仅支持 API Key 的生图及连接测试拒绝账号认证；不将认证信息放进仅供上下文计算的模型配置。后续新增账号时，分别实现并验证该供应商的登录、权限、令牌生命周期、请求地址及套餐规则，不能仅凭 OAuth 登录成功就认定可使用订阅额度。通过厂商独立 Agent／CLI 接入时，应单独评估运行、工具权限和官方条款，不把它当作普通模型令牌。〔FACT｜`apps/desktop/src/main/model/model-contracts.ts`、`apps/desktop/src/main/model/langchain-model-adapter.ts`、`apps/desktop/src/main/model/image-generation-adapter.ts`〕
+
 > 文档状态：技术选型与迁移决策；生产主链已迁移到 `createAgent`，Desktop 与全仓 lint/typecheck/test/build 已通过，桌面端已重启加载最新构建；真实 Provider、审批和恢复场景仍需手工验收
 > 决策日期：2026-08-19
 > 适用范围：`apps/desktop` 的 Agent Runtime、模型适配、工具循环、Skill 上下文和可恢复执行

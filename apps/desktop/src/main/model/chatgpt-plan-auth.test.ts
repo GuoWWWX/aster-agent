@@ -161,11 +161,30 @@ describe("ChatGPT plan authorization", () => {
     expect(status.models[0]).toMatchObject({ providerAuthentication: "chatgpt", modelId: "example-model" });
     expect(credentials.getApiKey(connection.providerId)).toBe("chatgpt-plan");
     const configuration = credentials.getConfiguration(connection.providerId, "example-model");
-    expect(await configuration.chatGptAccessToken?.()).toBe("access-secret");
+    expect(configuration.authentication?.type).toBe("chatgpt-plan");
+    if (configuration.authentication?.type !== "chatgpt-plan") throw new Error("Expected ChatGPT authentication.");
+    const getAccessToken = vi.spyOn(auth, "getAccessToken");
+    expect(await configuration.authentication.getAccessToken()).toBe("access-secret");
+    expect(getAccessToken).toHaveBeenCalledWith(connection.providerId);
+    expect(credentials.getContextConfiguration(connection.providerId, "example-model"))
+      .not.toHaveProperty("authentication");
     expect(await readFile(settings.path, "utf8")).not.toMatch(/(?:access|refresh|identity)-secret/u);
     expect(() => credentials.saveConfiguration({
       apiFormat: "openai-responses", apiKey: "chatgpt-plan", baseUrl: "https://attacker.example/v1",
       providerId: connection.providerId, providerName: "ChatGPT", models: [{ modelId: "example-model", displayName: "Example", contextWindow: 0, reasoningOptions: [] }],
     })).toThrow(/官方/u);
+  });
+
+  it("does not test an account-authorized image model with the API-key-only discovery endpoint", async () => {
+    const { auth, directory } = await fixture();
+    const connection = await auth.signIn();
+    vi.spyOn(auth, "listModels").mockResolvedValue([{ modelId: "gpt-image-1", displayName: "Image" }]);
+    const credentials = new ModelCredentialStore(new SettingsJsoncFile(path.join(directory, "settings.jsonc")), undefined, auth);
+    await credentials.syncChatGptModels(connection.providerId);
+    const discover = vi.spyOn(credentials, "discoverModels").mockResolvedValue([]);
+
+    await expect(credentials.testModelConnection(connection.providerId, "gpt-image-1"))
+      .rejects.toThrow(/账号授权.*不支持/u);
+    expect(discover).not.toHaveBeenCalled();
   });
 });

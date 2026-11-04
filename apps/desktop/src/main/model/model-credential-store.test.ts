@@ -153,6 +153,7 @@ describe("ModelCredentialStore", () => {
     if (providerId === null) throw new Error("Expected a configured provider.");
 
     expect(store.getConfiguration(providerId, "test-model").apiKey).toBe("plain-test-key");
+    expect(store.getConfiguration(providerId, "test-model").authentication).toEqual({ type: "api-key" });
     const content = await readFile(configurationPath, "utf8");
     expect(content).toContain('"apiKey": "plain-test-key"');
     expect(content).not.toContain("encryptedApiKey");
@@ -408,6 +409,7 @@ describe("ModelCredentialStore", () => {
       store.getConfiguration("00000000-0000-4000-8000-000000000001", "legacy-model")
     ).toEqual({
       apiKey: "legacy-key",
+      authentication: { type: "api-key" },
       apiFormat: "openai-chat-completions",
       baseUrl: "https://legacy.example/v1",
       contextWindow: 32_000,
