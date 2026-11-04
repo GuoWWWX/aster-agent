@@ -74,6 +74,7 @@ import { WorkspaceTerminalTabController } from "../tools/workspace-terminal-tab-
 import { WorkspaceBrowserTabController } from "../tools/workspace-browser-tab-controller.js";
 import { BrowserToolPlugin } from "../plugins/browser-tool-plugin.js";
 import { createMainWindow, getAppUserModelId } from "../windows/main-window.js";
+import { WindowCloseController } from "../windows/window-close-controller.js";
 import { publishConversationAttentionEvent } from "../windows/conversation-attention.js";
 import { attachNativeConversationAttention } from "../windows/native-conversation-attention.js";
 import { ManagedBrowserController } from "../windows/managed-browser-controller.js";
@@ -124,6 +125,7 @@ type DesktopServices = {
 };
 
 let mainWindow: BrowserWindow | undefined;
+let windowCloseController: WindowCloseController | undefined;
 let disposeIpcHandlers: (() => void) | undefined;
 let services: DesktopServices | undefined;
 let localControl: LocalControlServer | undefined;
@@ -565,6 +567,8 @@ async function openMainWindow(): Promise<void> {
   const window = createMainWindow();
   let rendererRecoveryAttempted = false;
   mainWindow = window;
+  windowCloseController = new WindowCloseController(window, getServices().applicationSettings,
+    (error) => reportUnhandledError(error, "desktop.window_close"));
   const disposeAttention = attachNativeConversationAttention(window, getServices().database);
   window.once("closed", disposeAttention);
   const detachBrowserRenderer = getServices().managedBrowser.attachRenderer(window,
@@ -612,6 +616,8 @@ async function openMainWindow(): Promise<void> {
   window.once("closed", () => {
     nativeOverlay.dispose();
     if (mainWindow === window) {
+      windowCloseController?.beginQuit();
+      windowCloseController = undefined;
       disposeIpcHandlers?.();
       disposeIpcHandlers = undefined;
       mainWindow = undefined;
@@ -729,6 +735,7 @@ async function bootstrap(): Promise<void> {
 
   app.on("before-quit", (event) => {
     if (shutdownComplete) return;
+    windowCloseController?.beginQuit();
     conversationEventStreams.dispose();
     event.preventDefault();
     shutdownPromise ??= shutdownDesktop()

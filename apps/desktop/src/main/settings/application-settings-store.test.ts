@@ -19,6 +19,22 @@ afterEach(async () => {
 });
 
 describe("ApplicationSettingsStore", () => {
+  it("defaults legacy settings to tray and persists a remembered close choice", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "aster-close-behavior-"));
+    temporaryDirectories.push(directory);
+    const configurationPath = path.join(directory, "settings.jsonc");
+    const legacyGeneral = { ...DEFAULT_APPLICATION_SETTINGS.general, sendShortcut: "ctrl_enter" };
+    Reflect.deleteProperty(legacyGeneral, "closeBehavior");
+    await writeFile(configurationPath, JSON.stringify({ general: legacyGeneral, version: 1 }), "utf8");
+    const store = new ApplicationSettingsStore(new SettingsJsoncFile(configurationPath));
+    store.ensureFile();
+    const current = store.getConfiguration();
+    expect(current.general).toMatchObject({ closeBehavior: "hide", sendShortcut: "ctrl_enter" });
+    store.saveConfiguration({ ...current, general: { ...current.general, closeBehavior: "quit" } });
+    const reopened = new ApplicationSettingsStore(new SettingsJsoncFile(configurationPath));
+    expect(reopened.getConfiguration().general).toMatchObject({ closeBehavior: "quit", sendShortcut: "ctrl_enter" });
+  });
+
   it("persists Mermaid appearance, type overrides and named combinations across a fresh store", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "aster-mermaid-themes-"));
     temporaryDirectories.push(directory);

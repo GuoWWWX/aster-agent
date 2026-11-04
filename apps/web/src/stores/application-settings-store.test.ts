@@ -26,6 +26,7 @@ describe("useApplicationSettingsStore", () => {
 
     useApplicationSettingsStore.getState().hydrateGeneralConfiguration({
       approvalReviewer: "auto_review",
+      closeBehavior: "hide",
       defaultPermissionMode: "full_access",
       defaultMessageDeliveryMode: "queue",
       sendShortcut: "ctrl_enter",

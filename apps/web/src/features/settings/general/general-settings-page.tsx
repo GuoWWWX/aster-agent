@@ -23,6 +23,8 @@ export function GeneralSettings({ agentClient }: { agentClient: AgentClient }): 
   const setSendShortcut = useApplicationSettingsStore((state) => state.setSendShortcut);
   const showContextUsage = useApplicationSettingsStore((state) => state.showContextUsage);
   const setShowContextUsage = useApplicationSettingsStore((state) => state.setShowContextUsage);
+  const closeBehavior = useApplicationSettingsStore((state) => state.closeBehavior);
+  const setCloseBehavior = useApplicationSettingsStore((state) => state.setCloseBehavior);
   const filePanelOpen = useWorkbenchUiStore((state) => state.isFilePanelOpen);
   const projectNavigatorOpen = useWorkbenchUiStore(
     (state) => state.isProjectNavigatorOpen,
@@ -83,6 +85,22 @@ export function GeneralSettings({ agentClient }: { agentClient: AgentClient }): 
       eyebrow="应用默认行为"
       title="常规设置"
     >
+      <section className="settings-general-category" aria-labelledby="application-close-heading">
+        <h3 id="application-close-heading">窗口与托盘</h3>
+        <div className="settings-general-card">
+          <article className="settings-general-row">
+            <div>
+              <h4>关闭时隐藏到托盘</h4>
+              <p>{closeBehavior === "hide" ? "关闭窗口后软件继续在系统托盘运行。" : closeBehavior === "quit" ? "关闭窗口时退出软件。" : "关闭窗口时询问隐藏到托盘还是退出。"}</p>
+            </div>
+            <label className="settings-switch">
+              <input aria-label="关闭时隐藏到托盘" checked={closeBehavior === "hide"} type="checkbox"
+                onChange={(event) => setCloseBehavior(event.target.checked ? "hide" : "ask")} />
+              <span aria-hidden="true" />
+            </label>
+          </article>
+        </div>
+      </section>
       <section className="settings-general-category" aria-labelledby="conversation-editor-heading">
         <h3 id="conversation-editor-heading">
           <MessageSquareText aria-hidden="true" size={16} className="shrink-0 text-[var(--app-muted-foreground)]" />

@@ -183,6 +183,7 @@ export const approvalReviewerSchema = z.enum(["user", "auto_review"]);
 
 export const applicationGeneralConfigurationSchema = z.object({
   approvalReviewer: approvalReviewerSchema.default("user"),
+  closeBehavior: z.enum(["hide", "ask", "quit"]).default("hide"),
   defaultPermissionMode: conversationPermissionModeSchema.default("ask_before_changes"),
   defaultMessageDeliveryMode: conversationMessageDeliveryModeSchema,
   sendShortcut: conversationSendShortcutSchema.default("enter"),
@@ -194,6 +195,7 @@ export const applicationSettingsSchema = z.object({
   appearance: applicationAppearanceConfigurationSchema,
   general: applicationGeneralConfigurationSchema.default({
     approvalReviewer: "user",
+    closeBehavior: "hide",
     defaultPermissionMode: "ask_before_changes",
     defaultMessageDeliveryMode: "queue",
     sendShortcut: "enter",
@@ -476,6 +478,7 @@ export const DEFAULT_APPLICATION_SETTINGS: ApplicationSettings = {
   },
   general: {
     approvalReviewer: "user",
+    closeBehavior: "hide",
     defaultPermissionMode: "ask_before_changes",
     defaultMessageDeliveryMode: "queue",
     sendShortcut: "enter",
