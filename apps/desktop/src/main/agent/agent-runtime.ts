@@ -2604,6 +2604,7 @@ export class AgentRuntime {
         type: "run.finished"
       });
     } finally {
+      this.computerUseTool?.releaseRun(controller.signal);
       this.clearPendingChangeApprovals(runId);
       this.browserToolPlugin?.closeBackground(conversationId);
       for (const tool of this.database.expirePendingToolApprovalsForRun(runId)) {

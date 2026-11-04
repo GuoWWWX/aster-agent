@@ -14,6 +14,7 @@ export interface ComputerControlPort {
   getStatus(): ComputerUseStatus;
   start(): Promise<ComputerUseStatus>;
   stop(): void;
+  releaseRun(signal: AbortSignal): void;
   execute(command: ComputerUseArguments, signal: AbortSignal): Promise<ComputerResponse>;
 }
 const responseSchema = z.discriminatedUnion("ok", [
@@ -40,6 +41,8 @@ export class WindowsComputerController implements ComputerControlPort {
   private sessionAbort = new AbortController();
   private readonly catalog = new Map<string, ComputerApplication>();
   private readonly participants = new WeakMap<AbortSignal, number>();
+  private owner: AbortSignal | null = null;
+  private readonly cancelOwner = (): void => this.stop();
   public constructor(private readonly configuration: { getConfiguration(): ComputerUseConfiguration }, private readonly permissions: Pick<ComputerApplicationPermissions, "describe" | "state" | "authorize" | "grants" | "clearSession"> | null = null) {}
   public getStatus(): ComputerUseStatus {
     return { supported: process.platform === "win32", running: this.socket !== null && !this.socket.destroyed, elevated: this.elevated };
@@ -52,6 +55,7 @@ export class WindowsComputerController implements ComputerControlPort {
   }
   public stop(): void {
     this.generation++;
+    this.owner?.removeEventListener("abort", this.cancelOwner); this.owner = null;
     const reject = this.rejectPending; this.rejectPending = null;
     reject?.(controlError("PROCESS_CANCELLED", "电脑控制已停止。"));
     this.sessionAbort.abort(); this.sessionAbort = new AbortController();
@@ -64,6 +68,12 @@ export class WindowsComputerController implements ComputerControlPort {
     if (connected && child !== null) setTimeout(() => child.kill(), 1000).unref(); else child?.kill();
     this.elevated = false;
   }
+  /** Release ownership only; the model must explicitly stop the control session. */
+  public releaseRun(signal: AbortSignal): void {
+    if (this.owner !== signal) return;
+    this.owner.removeEventListener("abort", this.cancelOwner);
+    this.owner = null;
+  }
   public execute(input: ComputerUseArguments, signal: AbortSignal): Promise<ComputerResponse> {
     const command = computerUseArgumentsSchema.parse(input);
     const generation = this.generation;
@@ -73,21 +83,19 @@ export class WindowsComputerController implements ComputerControlPort {
       const configuration = this.configuration.getConfiguration();
       if (!configuration.enabled) return { ok: false as const, code: "COMPUTER_USE_DISABLED" };
       if (command.action === "status") return { ok: true as const, value: { ...this.getStatus() } };
-      if (command.action === "stop") { this.participants.set(signal, this.generation); this.stop(); return { ok: true as const, value: { ...this.getStatus() } }; }
       const previous = this.participants.get(signal);
       if (previous !== undefined && previous !== this.generation) return { ok: false as const, code: "COMPUTER_CONTROL_STOPPED" };
+      if (this.owner !== null && this.owner !== signal) return { ok: false as const, code: "COMPUTER_CONTROL_BUSY" };
+      if (command.action === "stop") { this.participants.set(signal, this.generation); this.stop(); return { ok: true as const, value: { ...this.getStatus() } }; }
       if (command.action === "start") {
         if (this.getStatus().running && configuration.administrator !== this.elevated) return { ok: false as const, code: "COMPUTER_PERMISSION_CHANGED" };
-        this.participants.set(signal, this.generation);
-        const abort = (): void => this.stop();
-        signal.addEventListener("abort", abort, { once: true });
-        try { const status = await this.start(); signal.throwIfAborted(); return { ok: true as const, value: { ...status } }; }
-        finally { signal.removeEventListener("abort", abort); }
+        this.claimRun(signal);
+        const status = await this.start(); signal.throwIfAborted(); return { ok: true as const, value: { ...status } };
       }
       if (configuration.administrator && !this.getStatus().running) return { ok: false as const, code: "ADMINISTRATOR_START_REQUIRED" };
       if (!this.getStatus().running) return { ok: false as const, code: "COMPUTER_START_REQUIRED" };
       if (configuration.administrator !== this.elevated) return { ok: false as const, code: "COMPUTER_PERMISSION_CHANGED" };
-      this.participants.set(signal, this.generation);
+      this.claimRun(signal);
       if (command.action === "list") return this.list(configuration, signal);
       let application: ComputerApplication | undefined;
       let expectedExecutablePath: string | undefined;
@@ -110,6 +118,12 @@ export class WindowsComputerController implements ComputerControlPort {
     });
     this.queue = result;
     return result;
+  }
+  private claimRun(signal: AbortSignal): void {
+    if (this.owner === signal) return;
+    this.owner = signal;
+    this.participants.set(signal, this.generation);
+    signal.addEventListener("abort", this.cancelOwner, { once: true });
   }
   private describe(executablePath: string): ComputerApplication {
     const resolved = this.permissions?.describe(executablePath) ?? computerApplicationSchema.parse({ id: randomUUID(), name: path.win32.basename(executablePath, ".exe"), executablePath, enabled: true });

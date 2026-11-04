@@ -144,6 +144,7 @@
   align-content: start;
   gap: 5px;
   overflow: auto;
+  scrollbar-gutter: stable;
   background: var(--app-canvas);
   padding: 5px;
 }
@@ -436,6 +437,7 @@
   display: grid;
   max-height: 130px;
   overflow: auto;
+  scrollbar-gutter: stable;
 }
 
 .workflow-event-log article {
@@ -593,7 +595,8 @@
 }
 
 .workflow-canvas-toolbar__palette > button:hover {
-  border-color: var(--app-accent);
+  border-color: var(--app-border);
+  background: var(--app-hover);
 }
 
 .workflow-canvas {
@@ -604,6 +607,7 @@
 .workflow-canvas__body {
   min-height: 0;
   overflow: auto;
+  scrollbar-gutter: stable;
   background: var(--app-canvas);
   padding: 5px;
 }
@@ -824,6 +828,7 @@
 .workflow-node-inspector__body {
   min-height: 0;
   overflow: auto;
+  scrollbar-gutter: stable;
 }
 
 .workflow-node-inspector__body > section {
@@ -876,7 +881,8 @@
 }
 
 .workflow-action-editor__heading button:hover {
-  border-color: var(--app-accent);
+  border-color: var(--app-border);
+  background: var(--app-hover);
 }
 
 .workflow-action-editor__hint {
@@ -1129,6 +1135,7 @@
   .workflow-designer {
     grid-template-columns: minmax(430px, 1fr) 250px;
     overflow: auto;
+    scrollbar-gutter: stable;
   }
 
   .workflow-node-inspector {

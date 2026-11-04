@@ -7,7 +7,7 @@ const id = "11111111-1111-4111-8111-111111111111";
 function fixture() {
   let configuration: ComputerUseConfiguration = { ...structuredClone(DEFAULT_COMPUTER_USE_CONFIGURATION), enabled: true, applications: [{ id, name: "编辑器", executablePath: "C:\\Editor.exe", enabled: true }] };
   const execute = vi.fn<ComputerControlPort["execute"]>().mockResolvedValue({ ok: true, value: { performed: true } });
-  const controller: ComputerControlPort = { getStatus: () => ({ supported: true, running: true, elevated: false }), start: vi.fn(), stop: vi.fn(), execute };
+  const controller: ComputerControlPort = { getStatus: () => ({ supported: true, running: true, elevated: false }), start: vi.fn(), stop: vi.fn(), releaseRun: vi.fn(), execute };
   const tool = new ComputerUseTool(controller, { getConfiguration: () => configuration });
   return { tool, execute, set: (next: Partial<ComputerUseConfiguration>) => { configuration = { ...configuration, ...next }; } };
 }

@@ -1,3 +1,5 @@
+import { useWorkbenchUiStore } from "../../stores/workbench-ui-store.js";
+import { mermaidLanguageDescription } from "./cm/mermaid-language.js";
 import { markdownCursorExtension } from "./cm/cursor.js";
 import { refreshLiveMermaidTheme } from "./cm/widgets.js";
 import "katex/dist/katex.min.css";
@@ -272,6 +274,7 @@ export const LiveMarkdownEditor = forwardRef<LiveMarkdownEditorHandle, LiveMarkd
   { documentKey, contentRevision = 0, initialContent, documentTitle, onDocumentTitleChange, markdownSourcePath, readOnly = false, isDark, placeholder, onDocChanged, onDirty, onRequestSave, onImportImage, onOpenLink, openLinksOnClick = false, tableDefaultWidthMode = "content", onTableContextChange, className },
   ref,
 ) {
+  const mermaidThemes = useWorkbenchUiStore(state => state.mermaidThemes);
   const hostRef = useRef<HTMLDivElement | null>(null);
   const viewRef = useRef<EditorView | null>(null);
   const cursorCompartment = useRef(new Compartment()).current;
@@ -471,7 +474,7 @@ export const LiveMarkdownEditor = forwardRef<LiveMarkdownEditorHandle, LiveMarkd
       // codeLanguages 是代码块高亮的开关：不传的话 lang-markdown 只把围栏内
       // 认成一整块 monospace，语言级 token 无从区分，编辑器和 Word 预览的
       // 配色就永远对不上。languages 是按需懒加载的，不会全进主 chunk。
-      markdown({ base: livePreviewMarkdownLanguage, extensions: GFM, codeLanguages: languages, addKeymap: false }),
+      markdown({ base: livePreviewMarkdownLanguage, extensions: GFM, codeLanguages: [mermaidLanguageDescription, ...languages], addKeymap: false }),
       livePreviewCompartment.of(livePreviewPlugin),
       documentTitleCompartment.of(documentTitleExtension(
         documentTitle,
@@ -602,7 +605,7 @@ export const LiveMarkdownEditor = forwardRef<LiveMarkdownEditorHandle, LiveMarkd
     view.dispatch({ effects: [themeCompartment.reconfigure(markdownEditorTheme(isDark)), cursorCompartment.reconfigure(markdownCursorExtension(isDark))] });
     refreshLiveMermaidTheme(view.dom, isDark);
     view.scrollDOM.scrollTop = scrollTop;
-  }, [cursorCompartment, isDark, themeCompartment]);
+  }, [cursorCompartment, isDark, themeCompartment, mermaidThemes]);
 
   useEffect(() => {
     viewRef.current?.dispatch({ effects: [frontmatterCompartment.reconfigure(frontmatterBlockExtension(!readOnly)),

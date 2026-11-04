@@ -12,7 +12,8 @@ module.exports = {
   files: ["dist/**/*.cjs", "package.json", { from: "../web/dist", to: "renderer", filter: ["**/*"] }],
   asar: true,
   // The preview compiler and its browser runtimes are read by esbuild's native child process.
-  asarUnpack: ["node_modules/esbuild/**", "node_modules/@esbuild/**", "node_modules/react/**", "node_modules/react-dom/**", "node_modules/scheduler/**", "node_modules/vue/**", "node_modules/@vue/**"],
+  // Node's conversation reader worker also needs a physical entry point.
+  asarUnpack: ["dist/main/storage/thread-log-reader-worker.cjs", "node_modules/esbuild/**", "node_modules/@esbuild/**", "node_modules/react/**", "node_modules/react-dom/**", "node_modules/scheduler/**", "node_modules/vue/**", "node_modules/@vue/**"],
   // node-pty 1.1 supplies Node-API prebuilds; package scripts verify them in Electron.
   npmRebuild: false,
   win: { icon: "apps/web/public/aster-logo.png", target: [{ target: "nsis", arch: ["x64"] }] },

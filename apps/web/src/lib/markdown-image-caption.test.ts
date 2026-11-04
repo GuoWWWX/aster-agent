@@ -65,3 +65,21 @@ test("普通图片支持前后紧邻的整行加粗题注", () => {
   assert.equal(extracted.markdown.includes("图2-2 后置题注"), false);
   assert.equal(extracted.markdown.includes("**普通加粗正文**"), true);
 });
+
+test("附录字母编号图片题注跨空行关联，保留原编号", () => {
+  for (const title of ["图A-1 附录图", "图 B.2 附录示意", "Figure C-3 Appendix diagram"]) {
+    for (const source of [`**${title}**\n\n![图](a.png)`, `![图](a.png)\n\n**${title}**`]) {
+      const result = extractExplicitImageCaptions(source);
+      assert.equal(result.captionsByImageIndex.get(0), title);
+      assert.ok(!result.markdown.includes(title));
+    }
+  }
+});
+
+test("隔空行的编号图片题注仍关联图片，保留原编号", () => {
+  for (const source of ["**图3-1 系统图**\n\n![示意图](a.png)", "![示意图](a.png)\n\n**图3-1 系统图**"]) {
+    const result = extractExplicitImageCaptions(source);
+    assert.equal(result.captionsByImageIndex.get(0), "图3-1 系统图");
+    assert.ok(!result.markdown.includes("**图3-1"));
+  }
+});

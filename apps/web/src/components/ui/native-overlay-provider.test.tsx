@@ -84,6 +84,17 @@ it("keeps the popup in the native host, mirrors theme, and removes its input reg
   });
 });
 
+it("uses the same focus input method in the parent and native popup", async () => {
+  await ready();
+  expect(host.document.documentElement.dataset.inputModality).toBe("pointer");
+  act(() => { document.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true })); });
+  expect(host.document.documentElement.dataset.inputModality).toBe("keyboard");
+  act(() => { host.document.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true })); });
+  expect(document.documentElement.dataset.inputModality).toBe("pointer");
+  act(() => parentFocus());
+  expect(host.document.documentElement.dataset.inputModality).toBe("pointer");
+});
+
 it("marks tooltip-only regions and forwards native cursor positions without requiring DOM input", async () => {
   const popup = await ready();
   popup.dataset.nativeOverlayTooltip = "";

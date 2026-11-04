@@ -25,7 +25,7 @@ let container: HTMLDivElement;
 
 beforeEach(() => {
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
-  vi.stubGlobal("ResizeObserver", class { observe() {} disconnect() {} });
+  vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
   useAgentDirectoryStore.getState().hydrate(structuredClone(DEFAULT_AGENT_DIRECTORY_CONFIGURATION));
   container = document.createElement("div"); document.body.append(container); root = createRoot(container);
 });
@@ -446,11 +446,14 @@ it.each(["batch", "detail"] as const)("keeps the bottom when expanding a %s and 
   });
   act(() => { messages.dispatchEvent(new Event("scroll")); });
   act(() => toggle().click());
+  expect(messages.scrollTop).toBe(600);
+  await act(async () => { await new Promise<void>(resolve => window.requestAnimationFrame(() => resolve())); });
   expect(messages.scrollTop).toBe(1000);
   act(() => toggle().click());
   messages.scrollTop = 240;
   act(() => { messages.dispatchEvent(new Event("scroll")); });
   act(() => toggle().click());
+  await act(async () => { await new Promise<void>(resolve => window.requestAnimationFrame(() => resolve())); });
   expect(messages.scrollTop).toBe(240);
 });
 
@@ -458,7 +461,8 @@ it("keeps paginated HTML navigation anchored at the bottom through growth and sh
   const resizes = new Map<Element, () => void>();
   vi.stubGlobal("ResizeObserver", class {
     constructor(private callback: ResizeObserverCallback) {}
-    observe(target: Element): void { resizes.set(target, () => this.callback([], this as unknown as ResizeObserver)); }
+    observe(target: Element): void { resizes.set(target, () => this.callback([], this)); }
+    unobserve(target: Element): void { resizes.delete(target); }
     disconnect(): void {}
   });
   const client = new MockAgentClient();

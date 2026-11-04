@@ -1,3 +1,4 @@
+/* CSS trigger #2: shared control descendant and focus selectors. */
 .app-search-field {
   display: flex;
   height: 30px;
@@ -13,8 +14,7 @@
 }
 
 .app-search-field:focus-within {
-  border-color: rgba(37, 99, 235, 0.5);
-  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.14);
+  border-color: var(--app-focus-ring);
 }
 
 .app-search-field > svg {

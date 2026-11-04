@@ -61,7 +61,7 @@ function expandWorkProcess(container: HTMLElement): void {
 }
 
 beforeEach(() => {
-  vi.stubGlobal("ResizeObserver", class { observe() {} disconnect() {} });
+  vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
   useWorkbenchUiStore.setState({ activeActivity: "conversations" });
   useAgentDirectoryStore.getState().hydrate(structuredClone(DEFAULT_AGENT_DIRECTORY_CONFIGURATION));
@@ -1286,6 +1286,9 @@ describe("Communication tool identities", () => {
 
 describe("Conversation scroll navigation", () => {
   it("opens uncached conversations at the latest message and restores a cached position", async () => {
+    const nextFrame = async (): Promise<void> => {
+      await act(async () => { await new Promise<void>(resolve => window.requestAnimationFrame(() => resolve())); });
+    };
     const client = new MockAgentClient();
     const target = session({ id: PARENT_ID, title: "切换对话滚动位置测试" });
     vi.spyOn(client, "listConversationTimeline").mockResolvedValue([]);
@@ -1321,6 +1324,8 @@ describe("Conversation scroll navigation", () => {
     });
 
     await renderWorkspace(true);
+    expect(messages.scrollTop).toBe(0);
+    await nextFrame();
     expect(messages.scrollTop).toBe(1_200);
 
     messages.scrollTop = 240;
@@ -1332,6 +1337,7 @@ describe("Conversation scroll navigation", () => {
     messages.scrollTop = 0;
 
     await renderWorkspace(true);
+    await nextFrame();
     expect(messages.scrollTop).toBe(240);
 
     messages.scrollTop = 600;
@@ -1347,6 +1353,7 @@ describe("Conversation scroll navigation", () => {
     messages.scrollTop = 0;
 
     await renderWorkspace(true);
+    await nextFrame();
     expect(messages.scrollTop).toBe(1_800);
   });
 

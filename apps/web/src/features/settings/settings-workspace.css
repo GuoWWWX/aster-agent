@@ -426,7 +426,7 @@
 }
 
 .settings-global-model__trigger:not(:disabled):hover {
-  border-color: color-mix(in srgb, var(--app-accent) 48%, var(--app-border));
+  border-color: var(--app-border);
   background: var(--app-hover);
 }
 
@@ -531,7 +531,7 @@
 .settings-draft-form input:focus-visible,
 .settings-select-trigger:focus-visible,
 .settings-permission-select:focus-visible,
-.settings-switch input:focus-visible + span,
+.settings-switch input:focus-visible:where(:root:not([data-input-modality="pointer"]) *) + span,
 .settings-segmented button:focus-visible,
 .settings-icon-text-button:focus-visible {
   outline: 2px solid var(--app-focus-ring);
@@ -782,6 +782,7 @@
   min-height: 0;
   align-content: start;
   overflow-y: auto;
+  scrollbar-gutter: stable;
   overscroll-behavior: contain;
   padding: 1px;
 }
@@ -936,12 +937,13 @@
 }
 
 .settings-model-reasoning-button:hover {
-  border-color: color-mix(in srgb, var(--app-accent) 42%, var(--app-border));
+  border-color: var(--app-border);
+  background: var(--app-hover);
 }
 
 .settings-model-reasoning-button[data-state="open"] {
-  border-color: color-mix(in srgb, var(--app-accent) 52%, var(--app-border));
-  background: color-mix(in srgb, var(--app-accent) 8%, var(--app-panel));
+  border-color: var(--app-border);
+  background: var(--app-hover);
 }
 
 .settings-model-reasoning-button:focus-visible {
@@ -980,7 +982,8 @@
 }
 
 .settings-model-compression-button:hover {
-  border-color: color-mix(in srgb, var(--app-accent) 42%, var(--app-border));
+  border-color: var(--app-border);
+  background: var(--app-hover);
 }
 
 .settings-model-compression-button:focus-visible {
@@ -1116,6 +1119,7 @@
   container-type: inline-size;
   overflow-x: hidden;
   overflow-y: auto;
+  scrollbar-gutter: stable;
   overscroll-behavior: contain;
   border: 1px solid var(--app-border);
   border-radius: var(--app-radius);
@@ -1335,6 +1339,7 @@
   align-content: start;
   gap: 5px;
   overflow-y: auto;
+  scrollbar-gutter: stable;
   overscroll-behavior: contain;
   padding: 3px 1px;
 }
@@ -1832,6 +1837,7 @@
   align-content: start;
   gap: 2px;
   overflow-y: auto;
+  scrollbar-gutter: stable;
 }
 
 .settings-model-test-dialog__option {
@@ -2374,6 +2380,7 @@
 .settings-skill-preview {
   height: 100%;
   overflow: auto;
+  scrollbar-gutter: stable;
   color: var(--app-foreground);
   padding: 18px 22px 48px;
   font-size: var(--app-font-size-control);
@@ -2398,6 +2405,7 @@
 .settings-skill-preview .agent-markdown pre { margin: 8px 0; }
 .settings-skill-preview .agent-markdown pre {
   overflow: auto;
+  scrollbar-gutter: stable;
   border: 1px solid var(--app-border);
   border-radius: var(--app-radius);
   background: var(--app-muted);
@@ -2963,6 +2971,7 @@
 .settings-terminal-preview pre {
   margin: 0;
   overflow: auto;
+  scrollbar-gutter: stable;
   padding: 11px;
   font: inherit;
   overflow-wrap: anywhere;
@@ -3295,6 +3304,7 @@
     display: flex;
     flex: 0 0 auto;
     overflow: auto hidden;
+    scrollbar-gutter: auto;
   }
 
   .settings-navigation__item {
@@ -3498,9 +3508,9 @@
 }
 
 .settings-provider-list__pagination-controls button:not(:disabled):hover {
-  border-color: color-mix(in srgb, var(--app-accent) 48%, var(--app-border));
-  background: color-mix(in srgb, var(--app-accent) 7%, var(--app-panel));
-  color: var(--app-accent);
+  border-color: var(--app-border);
+  background: var(--app-hover);
+  color: var(--app-foreground);
 }
 
 .settings-provider-list__pagination-controls button:focus-visible {
@@ -3811,7 +3821,7 @@
 .settings-provider-editor,
 .settings-integration-editor,
 .team-configuration-pane,
-.agent-configuration-pane { scrollbar-width: auto; }
+.agent-configuration-pane { scrollbar-width: thin; }
 .settings-section__body::-webkit-scrollbar,
 .settings-provider-editor::-webkit-scrollbar,
 .settings-integration-editor::-webkit-scrollbar,

@@ -19,6 +19,19 @@ afterEach(async () => {
 });
 
 describe("ApplicationSettingsStore", () => {
+  it("persists Mermaid appearance, type overrides and named combinations across a fresh store", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "aster-mermaid-themes-"));
+    temporaryDirectories.push(directory);
+    const configurationPath = path.join(directory, "settings.jsonc");
+    const store = new ApplicationSettingsStore(new SettingsJsoncFile(configurationPath));
+    store.ensureFile();
+    const current = store.getConfiguration();
+    const mermaidThemes: ApplicationSettings["appearance"]["mermaidThemes"] = { light: "forest", dark: "neo-dark", diagrams: { sequence: { light: "neutral" } }, presets: [{ name: "工作", light: "redux", dark: "redux-dark", diagrams: {} }] };
+    store.saveConfiguration({ ...current, appearance: { ...current.appearance, mermaidThemes } });
+    const reopened = new ApplicationSettingsStore(new SettingsJsoncFile(configurationPath));
+    expect(reopened.getConfiguration().appearance.mermaidThemes).toEqual(mermaidThemes);
+    expect(reopened.getConfiguration().general).toEqual(current.general);
+  });
   it("persists character presets alongside existing icons and uploaded avatars", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "aster-agent-avatars-"));
     temporaryDirectories.push(directory);

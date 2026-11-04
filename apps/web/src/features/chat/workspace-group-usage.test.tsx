@@ -16,7 +16,7 @@ let container: HTMLDivElement;
 const flush = async () => { for (let index = 0; index < 25; index++) await Promise.resolve(); };
 beforeEach(() => {
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
-  vi.stubGlobal("ResizeObserver", class { observe() {} disconnect() {} });
+  vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
   useAgentDirectoryStore.getState().hydrate(structuredClone(DEFAULT_AGENT_DIRECTORY_CONFIGURATION));
   useApplicationSettingsStore.getState().setShowContextUsage(true);
   container = document.createElement("div"); document.body.append(container); root = createRoot(container);

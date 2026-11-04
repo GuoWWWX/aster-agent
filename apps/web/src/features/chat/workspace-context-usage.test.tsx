@@ -22,6 +22,22 @@ beforeEach(() => {
 afterEach(async () => { await act(async () => { root?.unmount(); await settle(); }); root = null; document.body.replaceChildren(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 async function settle(): Promise<void> { for (let index = 0; index < 20; index++) await Promise.resolve(); }
 const meterLabel = (): string | null => container.querySelector(".context-usage-indicator__trigger")?.getAttribute("aria-label") ?? null;
+it("does not compile context while the first history page is still loading", async () => {
+  const client = new MockAgentClient();
+  const session = await client.createConversation({});
+  let finish: (() => void) | undefined;
+  vi.spyOn(client, "listConversationTimelinePage").mockImplementation(() => new Promise(resolve => {
+    finish = () => resolve({ items: [], hasMore: false, nextBeforeSequence: null });
+  }));
+  const usage = vi.spyOn(client, "getConversationContextUsage");
+  await act(async () => {
+    root?.render(<TooltipProvider><ConversationWorkspace active agentClient={client} project={null} session={{ ...session, pinOrder: null }} /></TooltipProvider>);
+    await settle();
+  });
+  expect(usage).not.toHaveBeenCalled();
+  await act(async () => { finish?.(); await settle(); });
+  expect(usage).toHaveBeenCalledTimes(1);
+});
 async function setup() {
   const client = new MockAgentClient();
   const conversation = await client.createConversation({});

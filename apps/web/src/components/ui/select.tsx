@@ -20,7 +20,7 @@ export function SelectTrigger({
   return (
     <SelectPrimitive.Trigger
       className={cn(
-        "inline-flex h-8 min-w-0 items-center justify-between gap-2 rounded-[var(--app-radius)] border border-[var(--app-border)] bg-[var(--app-panel)] px-2 text-[length:var(--app-font-size-control)] font-medium text-[var(--app-foreground)] shadow-[0_1px_2px_rgba(15,23,42,0.04)] outline-none transition-[border-color,box-shadow,background-color,color] hover:border-[var(--app-focus-ring)] hover:bg-[var(--app-hover)] focus-visible:border-[var(--app-focus-ring)] focus-visible:ring-2 focus-visible:ring-[var(--app-focus-ring)] data-[state=open]:border-[var(--app-focus-ring)] data-[state=open]:bg-[var(--app-hover)] data-[state=open]:shadow-[0_0_0_2px_var(--app-focus-ring)] disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50 [&_[data-slot=select-value]]:truncate",
+        "inline-flex h-8 min-w-0 items-center justify-between gap-2 rounded-[var(--app-radius)] border border-[var(--app-border)] bg-[var(--app-panel)] px-2 text-[length:var(--app-font-size-control)] font-medium text-[var(--app-foreground)] shadow-[0_1px_2px_rgba(15,23,42,0.04)] outline-none transition-[border-color,box-shadow,background-color,color] hover:bg-[var(--app-hover)] focus-visible:border-[var(--app-focus-ring)] focus-visible:ring-2 focus-visible:ring-[var(--app-focus-ring)] data-[state=open]:bg-[var(--app-hover)] disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50 [&_[data-slot=select-value]]:truncate",
         className,
       )}
       data-slot="select-trigger"

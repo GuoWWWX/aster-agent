@@ -55,6 +55,8 @@ import { ConversationLifecycleService } from "../storage/conversation-lifecycle-
 import { EventProjector } from "../storage/event-projector.js";
 import { NodeSqliteCheckpointSaver } from "../storage/node-sqlite-checkpoint-saver.js";
 import { ThreadLog } from "../storage/thread-log.js";
+import { ThreadLogReader } from "../storage/thread-log-reader.js";
+import { unpackedExecutablePath } from "../tools/bundled-executable-path.js";
 import { ThreadLogLegacyImporter } from "../storage/thread-log-legacy-importer.js";
 import { IntegrationConfigurationStore } from "../settings/integration-configuration-store.js";
 import { ApplicationSettingsStore } from "../settings/application-settings-store.js";
@@ -102,6 +104,7 @@ type DesktopServices = {
   credentials: ModelCredentialStore;
   database: AgentDatabase;
   eventProjector: EventProjector;
+  conversationReads: ThreadLogReader;
   integrationConfiguration: IntegrationConfigurationStore;
   contextCompression: ContextCompressionConfigurationStore;
   graphCheckpointer: NodeSqliteCheckpointSaver;
@@ -149,6 +152,7 @@ async function shutdownDesktop(): Promise<void> {
   for (const result of results) {
     if (result.status === "rejected") reportUnhandledError(result.reason, "desktop.shutdown");
   }
+  await services?.conversationReads.dispose();
   try {
     services?.eventProjector.checkpointInactiveConversations();
   } catch (error) {
@@ -295,10 +299,12 @@ async function initializeServices(): Promise<DesktopServices> {
     ...agentHome.legacyConversationFilesPaths,
   ]);
   const threadLog = new ThreadLog(agentHome.paths.conversationsPath);
+  const conversationReads = new ThreadLogReader(unpackedExecutablePath(path.join(__dirname, "storage", "thread-log-reader-worker.cjs")));
   const eventProjector = new EventProjector(
     database,
     threadLog,
     (attachment) => attachments.resolveThreadLogPaths(attachment),
+    conversationReads,
   );
   const conversationLifecycle = new ConversationLifecycleService(
     database,
@@ -423,7 +429,7 @@ async function initializeServices(): Promise<DesktopServices> {
   const htmlPreviews = new HtmlPreviewServer(async (conversationId) => {
     const conversation = database.getConversation(conversationId);
     return (await projectRegistry.ensureWorkspaceRoot(conversation.projectId ?? conversation.id)).rootPath;
-  }, (conversationId, reference) => resolveMessageCodeBlock(database.listTimeline(conversationId)
+  }, (conversationId, reference) => resolveMessageCodeBlock(eventProjector.listTimeline(conversationId)
     .filter(item => item.kind === "message"), reference));
   const managedBrowser = new ManagedBrowserController(
     () => mainWindow,
@@ -515,6 +521,7 @@ async function initializeServices(): Promise<DesktopServices> {
     database,
     eventProjector,
     integrationConfiguration,
+    conversationReads,
     projectRegistry,
     threadLogLegacyImporter,
     skillDocuments,

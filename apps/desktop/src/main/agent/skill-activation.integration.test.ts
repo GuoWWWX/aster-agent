@@ -116,7 +116,7 @@ it("keeps activation conversation-local and revalidates revocation before a new 
 it("blocks desktop actions in the load batch, then permits them after the model sees the Skill", async () => {
   const f = await fixture();
   const execute = vi.fn<ComputerControlPort["execute"]>().mockResolvedValue({ ok: true, value: { performed: true } });
-  const computer = new ComputerUseTool({ execute, getStatus: () => ({ supported: true, running: true, elevated: false }), start: vi.fn(), stop: vi.fn() },
+  const computer = new ComputerUseTool({ execute, releaseRun: vi.fn(), getStatus: () => ({ supported: true, running: true, elevated: false }), start: vi.fn(), stop: vi.fn() },
     { getConfiguration: () => ({ ...DEFAULT_COMPUTER_USE_CONFIGURATION, enabled: true }) });
   const skillId = f.skills.getCatalog().find(entry => entry.name === "computer-use")!.id;
   let turn = 0;
@@ -145,7 +145,7 @@ it("blocks desktop actions in the load batch, then permits them after the model 
 it("rechecks Skill revocation after an operation approval is resumed", async () => {
   const f = await fixture();
   const execute = vi.fn<ComputerControlPort["execute"]>().mockResolvedValue({ ok: true, value: { performed: true } });
-  const computer = new ComputerUseTool({ execute, getStatus: () => ({ supported: true, running: true, elevated: false }), start: vi.fn(), stop: vi.fn() },
+  const computer = new ComputerUseTool({ execute, releaseRun: vi.fn(), getStatus: () => ({ supported: true, running: true, elevated: false }), start: vi.fn(), stop: vi.fn() },
     { getConfiguration: () => ({ ...DEFAULT_COMPUTER_USE_CONFIGURATION, enabled: true }) });
   const skillId = f.skills.getCatalog().find(entry => entry.name === "computer-use")!.id;
   let turn = 0;

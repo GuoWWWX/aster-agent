@@ -271,7 +271,7 @@ export function AgentAvatar({
     >
       {avatar.kind === "image" ? (
         <img alt="" src={avatar.dataUrl} />
-      ) : avatar.kind === "preset" ? <AgentCharacterAvatar preset={avatar.preset} /> : Icon === null ? null : (
+      ) : avatar.kind === "preset" ? <AgentCharacterAvatar preset={avatar.preset} toolbar={size === "toolbar"} /> : Icon === null ? null : (
         <Icon strokeWidth={1.8} />
       )}
     </span>

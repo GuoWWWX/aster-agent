@@ -34,6 +34,39 @@ function fixture(permissions: ConstructorParameters<typeof WindowsComputerContro
   return { controller, requests, disconnect: () => peer?.destroy(), failOperation: (index: number, code: string) => peer?.write(`${JSON.stringify({ id: requests[index]?.id, ok: false, code })}\n`), reply: (index: number, value: unknown = { windows: [] }) => peer?.write(`${JSON.stringify({ id: requests[index]?.id, ok: true, value })}\n`), set: (value: Partial<ComputerUseConfiguration>) => { configuration = { ...configuration, ...value }; } };
 }
 describe.runIf(process.platform === "win32")("Windows computer transport", () => {
+  it("releases only Run ownership and never automatically stops control on completion", async () => {
+    const f = fixture(); const signal = new AbortController().signal; const other = new AbortController().signal;
+    await f.controller.start(); f.controller.releaseRun(signal);
+    expect(f.controller.getStatus().running).toBe(true);
+    await f.controller.execute({ action: "start" }, signal);
+    f.controller.releaseRun(other); expect(f.controller.getStatus().running).toBe(true);
+    f.controller.releaseRun(signal); expect(f.controller.getStatus().running).toBe(true);
+    await f.controller.execute({ action: "start" }, other);
+    f.controller.releaseRun(signal); expect(f.controller.getStatus().running).toBe(true);
+  });
+  it("rejects competing Runs instead of mixing their input or letting them stop the owner", async () => {
+    const f = fixture(); const owner = new AbortController().signal; const other = new AbortController().signal;
+    await f.controller.execute({ action: "start" }, owner);
+    for (const command of [{ action: "start" }, { action: "list" }, { action: "stop" }, { action: "type", windowId: "123", text: "other" }] as const) {
+      expect(await f.controller.execute(command, other)).toMatchObject({ ok: false, code: "COMPUTER_CONTROL_BUSY" });
+    }
+    expect(await f.controller.execute({ action: "status" }, other)).toMatchObject({ ok: true, value: { running: true } });
+    expect(f.requests).toHaveLength(0);
+    f.controller.releaseRun(owner);
+    expect(await f.controller.execute({ action: "start" }, other)).toMatchObject({ ok: true });
+    expect(await f.controller.execute({ action: "stop" }, owner)).toMatchObject({ ok: false, code: "COMPUTER_CONTROL_BUSY" });
+    expect(f.controller.getStatus().running).toBe(true);
+    await f.controller.execute({ action: "stop" }, other);
+    expect(await f.controller.execute({ action: "start" }, owner)).toMatchObject({ ok: false, code: "COMPUTER_CONTROL_STOPPED" });
+  });
+  it("stops on Run cancellation between operations and detaches the old cancellation listener", async () => {
+    const f = fixture(); const owner = new AbortController();
+    await f.controller.execute({ action: "start" }, owner.signal);
+    owner.abort(); expect(f.controller.getStatus().running).toBe(false);
+    const next = new AbortController(); await f.controller.execute({ action: "start" }, next.signal);
+    f.controller.releaseRun(next.signal); await f.controller.start();
+    next.abort(); expect(f.controller.getStatus().running).toBe(true);
+  });
   it("lets the agent start the configured session and stop without settings-page actions", async () => {
     const f = fixture(); const signal = new AbortController().signal;
     expect(await f.controller.execute({ action: "status" }, signal)).toMatchObject({ ok: true, value: { running: false } });
@@ -64,11 +97,11 @@ describe.runIf(process.platform === "win32")("Windows computer transport", () =>
     await vi.waitFor(() => expect(native.spawn).toHaveBeenCalledOnce()); abort.abort(); await rejected;
     expect(f.controller.getStatus().running).toBe(false); expect(native.spawn).toHaveBeenCalledOnce();
   });
-  it("serializes all callers and transfers only current allowlist facts", async () => {
-    const f = fixture(); await f.controller.start();
+  it("serializes the owning Run's operations and transfers only current allowlist facts", async () => {
+    const f = fixture(); const signal = new AbortController().signal; await f.controller.start();
     expect(f.controller.getStatus()).toMatchObject({ running: true, elevated: false });
-    const first = f.controller.execute({ action: "list" }, new AbortController().signal);
-    const second = f.controller.execute({ action: "observe", windowId: "123" }, new AbortController().signal);
+    const first = f.controller.execute({ action: "list" }, signal);
+    const second = f.controller.execute({ action: "observe", windowId: "123" }, signal);
     await vi.waitFor(() => expect(f.requests).toHaveLength(1));
     expect(f.requests[0]?.applications).toEqual([expect.objectContaining({ executablePath: "C:\\Editor.exe" })]); f.reply(0); await first;
     await vi.waitFor(() => expect(f.requests).toHaveLength(2)); f.reply(1); await second;
@@ -86,7 +119,7 @@ describe.runIf(process.platform === "win32")("Windows computer transport", () =>
   it("cancels pending input, disconnects the helper and does not replay queued aborted input", async () => {
     const f = fixture(); await f.controller.start(); const abort = new AbortController();
     const pending = f.controller.execute({ action: "type", windowId: "123", text: "one" }, abort.signal);
-    const rejected = expect(pending).rejects.toThrow("取消");
+    const rejected = expect(pending).rejects.toMatchObject({ code: "PROCESS_CANCELLED" });
     await vi.waitFor(() => expect(f.requests).toHaveLength(1)); abort.abort(); await rejected;
     expect(f.controller.getStatus().running).toBe(false);
     await expect(f.controller.execute({ action: "type", windowId: "123", text: "two" }, abort.signal)).rejects.toThrow();
@@ -115,22 +148,22 @@ describe.runIf(process.platform === "win32")("Windows computer transport", () =>
     expect(f.requests).toHaveLength(1); expect(native.spawn).toHaveBeenCalledOnce();
   });
   it("keeps the control session alive when ordinary user input changes focus or holds a modifier", async () => {
-    const f = fixture(); await f.controller.start();
+    const f = fixture(); const signal = new AbortController().signal; await f.controller.start();
     for (const code of ["USER_INPUT_ACTIVE", "FOCUS_CHANGED", "WINDOW_OCCLUDED"]) {
       const index = f.requests.length;
-      const operation = f.controller.execute({ action: "click", windowId: "123", x: 12, y: 12, button: "left", count: 1 }, new AbortController().signal);
+      const operation = f.controller.execute({ action: "click", windowId: "123", x: 12, y: 12, button: "left", count: 1 }, signal);
       await vi.waitFor(() => expect(f.requests).toHaveLength(index + 1)); f.failOperation(index, code);
       expect(await operation).toMatchObject({ ok: false, code }); expect(f.controller.getStatus().running).toBe(true);
     }
-    const resumed = f.controller.execute({ action: "list" }, new AbortController().signal);
+    const resumed = f.controller.execute({ action: "list" }, signal);
     await vi.waitFor(() => expect(f.requests).toHaveLength(4)); f.reply(3); expect(await resumed).toMatchObject({ ok: true });
     expect(native.spawn).toHaveBeenCalledOnce();
   });
   it("lists stable software identities without leaking unapproved window titles or executable paths", async () => {
-    const f = fixture(); f.set({ applications: [] }); await f.controller.start();
+    const f = fixture(); const signal = new AbortController().signal; f.set({ applications: [] }); await f.controller.start();
     let applicationId = "";
     for (let index = 0; index < 2; index++) {
-      const listing = f.controller.execute({ action: "list" }, new AbortController().signal);
+      const listing = f.controller.execute({ action: "list" }, signal);
       await vi.waitFor(() => expect(f.requests).toHaveLength(index + 1));
       f.reply(index, { windows: [{ windowId: "123", title: "private contents", executablePath: "C:\\Editor.exe" }] });
       const result = await listing; expect(JSON.stringify(result)).not.toContain("private contents"); expect(JSON.stringify(result)).not.toContain("Editor.exe");
@@ -139,7 +172,7 @@ describe.runIf(process.platform === "win32")("Windows computer transport", () =>
       expect(windows[0]?.authorized).toBe(false);
       if (index === 0) applicationId = windows[0]!.applicationId; else expect(windows[0]?.applicationId).toBe(applicationId);
     }
-    expect(await f.controller.execute({ action: "observe", windowId: "123" }, new AbortController().signal)).toMatchObject({ ok: false, code: "APPLICATION_ACCESS_DENIED" });
+    expect(await f.controller.execute({ action: "observe", windowId: "123" }, signal)).toMatchObject({ ok: false, code: "APPLICATION_ACCESS_DENIED" });
     expect(f.requests).toHaveLength(2);
   });
   it("asks software permission before reading and checks it even when tool approval has already passed", async () => {

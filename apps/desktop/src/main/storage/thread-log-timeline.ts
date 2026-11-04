@@ -19,14 +19,14 @@ type Entry = {
   kind: ConversationTimelineItem["kind"];
   status: string | undefined;
 };
-type Index = { signature: string; entries: Entry[]; items: Map<string, Entry>; cursor: ThreadLogScanCursor | null; sequence: number };
+export type ThreadLogTimelineIndex = { signature: string; entries: Entry[]; items: Map<string, Entry>; cursor: ThreadLogScanCursor | null; sequence: number };
 
 /** Keeps record locations, never message bodies, between page requests. */
 export class ThreadLogTimeline {
-  private readonly indexes = new Map<string, Index>();
+  private readonly indexes = new Map<string, ThreadLogTimelineIndex>();
   private warmQueue: Promise<void> = Promise.resolve();
 
-  public constructor(private readonly log: ThreadLog) {}
+  public constructor(private readonly log: ThreadLog, private readonly onEvent?: (event: ThreadLogEvent, location: ThreadLogRecordLocation) => void) {}
 
   public warm(conversationId: string): Promise<void> {
     // Do not let concurrent cold builds evict each other's partial progress.
@@ -35,6 +35,20 @@ export class ThreadLogTimeline {
     });
     this.warmQueue = operation.catch(() => undefined);
     return operation;
+  }
+
+  public hasIndex(conversationId: string): boolean {
+    const cursor = this.indexes.get(conversationId)?.cursor;
+    return cursor != null && this.log.canContinueScan(conversationId, cursor);
+  }
+
+  public readIndex(conversationId: string): ThreadLogTimelineIndex { return this.index(conversationId); }
+
+  public restoreIndex(conversationId: string, index: ThreadLogTimelineIndex): void {
+    if (index.cursor !== null) index.cursor = this.log.rebaseReadCursor(conversationId, index.cursor);
+    this.indexes.delete(conversationId);
+    this.indexes.set(conversationId, index);
+    while (this.indexes.size > TIMELINE_INDEX_CACHE_LIMIT) this.indexes.delete(this.indexes.keys().next().value!);
   }
 
   public page(input: ConversationTimelinePageInput): ConversationTimelinePage {
@@ -52,10 +66,10 @@ export class ThreadLogTimeline {
       end = Math.min(entries.length, start + input.limit);
     }
     const selected = entries.slice(start, end);
-    const read = this.reader(input.conversationId);
     return {
       hasMore: start > 0,
-      items: selected.map(read),
+      items: selected.length === 0 ? [] : this.log.withRecordReader(input.conversationId,
+        read => selected.map(this.reader(input.conversationId, read))),
       nextBeforeSequence: start > 0 ? selected[0]?.sequence ?? null : null,
       nextAfterSequence: end < entries.length ? selected.at(-1)?.sequence ?? null : null,
     };
@@ -73,12 +87,14 @@ export class ThreadLogTimeline {
     }
   }
 
-  private reader(conversationId: string): (entry: Entry) => ConversationTimelineItem {
+  private reader(conversationId: string,
+    readRecord = (location: ThreadLogRecordLocation): ThreadLogEvent => this.log.readRecord(conversationId, location),
+  ): (entry: Entry) => ConversationTimelineItem {
     let offset = -1;
     let decoded: ConversationTimelineItem[] = [];
     return (entry) => {
       if (offset !== entry.location.offset) {
-        decoded = timelineItems(this.log.readRecord(conversationId, entry.location));
+        decoded = timelineItems(readRecord(entry.location));
         offset = entry.location.offset;
       }
       const item = decoded[entry.slot];
@@ -87,7 +103,7 @@ export class ThreadLogTimeline {
     };
   }
 
-  private index(conversationId: string, maxRecords = Infinity): Index {
+  private index(conversationId: string, maxRecords = Infinity): ThreadLogTimelineIndex {
     const source = this.log.getSourceSignature(conversationId);
     const signature = `${source?.sizeBytes}:${source?.modifiedAtMs}`;
     const cached = this.indexes.get(conversationId);
@@ -98,6 +114,7 @@ export class ThreadLogTimeline {
     const items = incremental ? cached.items : new Map<string, Entry>();
     let sequence = incremental ? cached.sequence : 0;
     const cursor = this.log.scan(conversationId, (event, location) => {
+      this.onEvent?.(event, location);
       const removedRun = event.type === "run_superseded" ? event.payload.runId
         : event.type === "run_replaced" || event.type === "user_message_replaced" ? event.payload.previousRunId : undefined;
       if (typeof removedRun === "string") {

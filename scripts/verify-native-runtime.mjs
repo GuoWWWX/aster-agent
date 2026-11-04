@@ -14,6 +14,7 @@ const electron = packaged ? path.join(repositoryRoot, "release/win-unpacked/Aste
 // node-pty 1.1 uses Node-API prebuilds. Verify the actual Electron runtime before
 // packaging those binaries instead of compiling them against the host Node ABI.
 const result = spawnSync(electron, ["--eval", `
+  (async () => {
   const appRequire = require("node:module").createRequire(${JSON.stringify(path.join(packageDirectory, "package.json"))});
   const pty = appRequire("node-pty");
   const resolveBinary = ${unpackedRipgrepPath.toString()};
@@ -32,6 +33,23 @@ const result = spawnSync(electron, ["--eval", `
   if (!vueCompiled.outputFiles[0].text.includes("button")) { console.error("Packaged Vue preview compiler failed"); process.exit(1); }
   const renderer = ${packaged} ? require("node:fs").existsSync(${JSON.stringify(path.join(packageDirectory, "renderer/index.html"))}) : true;
   if (!renderer) { console.error("Packaged Renderer missing"); process.exit(1); }
+  const readerDirectory = require("node:fs").mkdtempSync(require("node:path").join(require("node:os").tmpdir(), "aster-reader-verify-"));
+  const reader = new (require("node:worker_threads").Worker)(resolveBinary(${JSON.stringify(path.join(packageDirectory, "dist/main/storage/thread-log-reader-worker.cjs"))}));
+  try {
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("Conversation reader verification timed out")), 5000);
+      reader.once("error", error => { clearTimeout(timer); reject(error); });
+      reader.once("message", response => {
+        clearTimeout(timer);
+        if (response.ok && response.snapshot?.timeline.entries.length === 0) resolve();
+        else reject(new Error("Conversation reader returned an invalid snapshot"));
+      });
+      reader.postMessage({ requestId: 1, root: readerDirectory, conversationId: require("node:crypto").randomUUID() });
+    });
+  } finally {
+    await reader.terminate();
+    require("node:fs").rmSync(readerDirectory, { recursive: true, force: true });
+  }
   let output = "";
   const timeout = setTimeout(() => { console.error("PTY verification timed out"); process.exit(1); }, 15000);
   const terminal = pty.spawn(process.env.ComSpec || "cmd.exe", ["/d", "/c", "echo ASTER_NATIVE_OK"], {
@@ -41,9 +59,10 @@ const result = spawnSync(electron, ["--eval", `
   terminal.onExit(({exitCode}) => {
     clearTimeout(timeout);
     const ok = exitCode === 0 && output.includes("ASTER_NATIVE_OK");
-    console.log(JSON.stringify({ electron: process.versions.electron, nodeApi: process.versions.napi, pty: ok, ripgrep: true, previewCompiler: true, vuePreview: true, renderer, packaged: ${packaged} }));
+    console.log(JSON.stringify({ electron: process.versions.electron, nodeApi: process.versions.napi, pty: ok, ripgrep: true, previewCompiler: true, vuePreview: true, conversationReader: true, renderer, packaged: ${packaged} }));
     process.exit(ok ? 0 : 1);
   });
+  })().catch(error => { console.error(error); process.exit(1); });
 `], {
   cwd: repositoryRoot,
   env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
