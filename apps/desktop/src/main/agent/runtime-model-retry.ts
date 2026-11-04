@@ -17,7 +17,7 @@ export function isRetryableModelError(error: unknown): boolean {
   if (error instanceof ModelResponseError) return true;
 
   if (error instanceof ModelRequestError) {
-    return [408, 425, 429].includes(error.status) || error.status >= 500;
+    return error.retryable ?? ([408, 425, 429].includes(error.status) || error.status >= 500);
   }
 
   return (error instanceof Error || error instanceof DOMException)

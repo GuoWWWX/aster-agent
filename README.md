@@ -9,7 +9,7 @@ Aster 是一个本地优先的桌面 AI Agent 工作台。你可以在项目或�
 - **对话与协作**：项目对话、临时对话、Subagent、快速协作和团队群聊，保留任务与执行过程。
 - **本地工具**：文件读取与搜索、Patch、命令、终端、Web 搜索和受管浏览器；文件变更与工具结果可以在工作区查看。
 - **权限与审批**：支持请求批准、帮我批准和完全访问三种模式。写文件、执行命令等操作遵循当前权限设置。
-- **模型与扩展**：配置多个供应商和模型，支持 OpenAI Chat Completions、OpenAI Responses、Anthropic Messages 和 Google Gemini 接口格式，以及 MCP 和按需加载的 Skill。
+- **模型与扩展**：配置多个供应商和模型，支持 ChatGPT 套餐登录，以及 OpenAI Chat Completions、OpenAI Responses、Anthropic Messages 和 Google Gemini 接口格式；支持 MCP 和按需加载的 Skill。
 - **文件与预览**：查看和编辑工作区文件，预览 HTML、Vue、React 内容；配置支持的生图模型后可生成和查看图片。
 - **本地数据**：对话历史、附件、配置和业务数据保存在本机；模型请求和启用的联网工具仍会连接相应服务。
 
@@ -33,13 +33,20 @@ pnpm dev
 
 ### 配置模型
 
+API Key 方式：
+
 1. 打开应用的“设置 → 模型配置”，添加供应商。
 2. 填写供应商名称、API 格式、请求地址和 API Key，然后添加模型 ID。
-3. 使用“测试模型”检查连接，并选择默认模型。
+3. 使用“测试模型”检查连接，并选择默认模型。API 调用是否收费、可用模型和额度由相应供应商决定。
 
-当前 `develop` 分支的供应商配置使用 API Key；ChatGPT 订阅账号登录授权尚未合入该分支。API 调用是否收费、可用模型和额度由相应供应商决定。
+ChatGPT 套餐方式：
 
-供应商 API Key 保存在本机 `<ASTER_HOME>/settings.jsonc` 中，**当前为明文**。默认数据目录是用户主目录下的 `.aster`；请保护该目录，不要提交、分享或上传含密钥的配置文件。目录和备份说明见 [Aster 目录结构与 JSONC 配置](./doc/24-Aster目录结构与JSONC配置.md)。
+1. 在同一设置页的“ChatGPT 登录授权”区域选择 **Continue with ChatGPT**，在 OpenAI 页面登录并授权使用套餐。
+2. 返回 Aster 后同步账号可用模型，在供应商列表或对话输入框中选择模型；如有需要，可重新授权、断开账号或前往 ChatGPT 管理用量。
+
+此方式使用 OpenAI 官方的 [Sign in with ChatGPT](https://developers.openai.com/siwc/token-sharing-open-source) 和 Responses API，不读取 ChatGPT 历史对话。可用账号、模型和额度以 OpenAI 实际授权为准；付费或远程托管场景请先查看官方接入条件。该功能处于预览阶段，部分工具和请求参数受[官方限制](https://developers.openai.com/siwc/token-sharing-open-source/preview-limitations)。
+
+供应商 API Key 保存在本机 `<ASTER_HOME>/settings.jsonc` 中，**当前为明文**；ChatGPT 授权令牌单独使用系统安全存储加密。默认数据目录是用户主目录下的 `.aster`；请保护该目录，不要提交、分享或上传含密钥的配置文件。目录和备份说明见 [Aster 目录结构与 JSONC 配置](./doc/24-Aster目录结构与JSONC配置.md)。
 
 也可以在仓库根目录创建被 Git 忽略的 `.env.local`，用于首次导入模型配置：
 

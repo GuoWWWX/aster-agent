@@ -8,6 +8,7 @@ import {
 } from "@agent/protocol";
 
 export type ConfiguredProvider = {
+  authentication?: "chatgpt";
   apiFormat: ModelApiFormat;
   baseUrl: string;
   connectionStatus: ModelProfile["connectionStatus"];
@@ -65,6 +66,7 @@ export function getConfiguredProviders(models: readonly ModelProfile[]): Configu
   for (const model of models) {
     if (!providers.has(model.providerId)) {
       providers.set(model.providerId, {
+        ...(model.providerAuthentication === undefined ? {} : { authentication: model.providerAuthentication }),
         apiFormat: model.providerApiFormat,
         baseUrl: model.providerBaseUrl,
         connectionStatus: model.connectionStatus,

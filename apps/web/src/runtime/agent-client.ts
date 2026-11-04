@@ -1,4 +1,5 @@
 import type { TaskContextScope, TaskCompletionPolicy, SetTaskCompletionPolicyInput, ResolveChatReferencesInput, ChatReference, ListTaskContextsInput, TaskContextPage, TaskContextDetail, UpdateTaskContextInput, TaskContext, LinkTaskContextInput, MergeTaskContextsInput, ReadTeamChatInput, TeamChatPage, PostTeamChatInput, TeamChatMessage, TeamChatMember, MarkTeamChatReadInput } from "@agent/protocol";
+import type { ChatGptConnection, ChatGptConnectResult } from "@agent/protocol";
 import type { HtmlPreview, HtmlPreviewRequest } from "@agent/protocol";
 import type { AnswerUserQuestionInput, UserQuestion, BackgroundCommand, StopBackgroundCommandInput, BackgroundCommandOutput, ReadBackgroundCommandInput } from "@agent/protocol";
 import type { ScheduledTask, SaveScheduledTaskInput, ScheduledTaskReference } from "@agent/protocol";
@@ -222,6 +223,10 @@ export interface AgentClient {
     input: DeleteConfigurationWorkspaceEntryInput,
   ): Promise<void>;
   discoverModels(input: DiscoverModelsInput): Promise<DiscoveredModel[]>;
+  listChatGptConnections?(): Promise<ChatGptConnection[]>;
+  connectChatGpt?(providerId?: string): Promise<ChatGptConnectResult>;
+  disconnectChatGpt?(providerId: string): Promise<boolean>;
+  syncChatGptModels?(providerId: string): Promise<ModelRuntimeStatus>;
   testModelConnection(input: TestModelConnectionInput): Promise<ModelConnectionTestResult>;
   getModelApiKey(providerId: string): Promise<string | null>;
   deleteModelProvider(providerId: string): Promise<ModelRuntimeStatus>;

@@ -7,6 +7,7 @@ import { ModelProviderDirectory } from "./model-provider-directory.js";
 import { ModelProviderConfiguration } from "./model-provider-configuration.js";
 import { ProviderModelList } from "./provider-model-list.js";
 import { ModelConnectionTestDialog } from "./model-connection-test-dialog.js";
+import { ChatGptProviderPanel } from "./chatgpt-provider-panel.js";
 
 export function ModelsSettings({ agentClient }: { agentClient: AgentClient }): ReactElement {
   const controller = useModelSettingsController({ agentClient });
@@ -45,6 +46,7 @@ export function ModelsSettings({ agentClient }: { agentClient: AgentClient }): R
             }
           />
           <div className="settings-provider-editor__body">
+            <ChatGptProviderPanel agentClient={agentClient} onModelsChanged={controller.applyChatGptStatus} />
             <ModelProviderConfiguration controller={controller} />
 
             <ProviderModelList controller={controller} />

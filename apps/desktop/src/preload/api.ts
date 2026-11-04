@@ -374,6 +374,18 @@ export function createDesktopBridge(): DesktopBridge {
     discoverModels(input: DiscoverModelsInput) {
       return invoke<BridgeResult<"discoverModels">>(IPC_CHANNELS.modelDiscover, input);
     },
+    listChatGptConnections() {
+      return invoke<BridgeResult<"listChatGptConnections">>(IPC_CHANNELS.modelChatGptList);
+    },
+    connectChatGpt(providerId?: string) {
+      return invoke<BridgeResult<"connectChatGpt">>(IPC_CHANNELS.modelChatGptConnect, providerId === undefined ? {} : { providerId });
+    },
+    disconnectChatGpt(providerId: string) {
+      return invoke<BridgeResult<"disconnectChatGpt">>(IPC_CHANNELS.modelChatGptDisconnect, { providerId });
+    },
+    syncChatGptModels(providerId: string) {
+      return invoke<BridgeResult<"syncChatGptModels">>(IPC_CHANNELS.modelChatGptSync, { providerId });
+    },
     testModelConnection(input: TestModelConnectionInput) {
       return invoke<BridgeResult<"testModelConnection">>(
         IPC_CHANNELS.modelTestConnection,

@@ -1,5 +1,7 @@
 # LangChain 与 LangGraph 改造方案
 
+ChatGPT 套餐授权复用现有 Responses 适配器和 Runtime／LangGraph 工具循环。主进程在每次请求前取得当前账号令牌，套餐请求限定官方地址，移除预览不支持的参数并以 `additional_tools` 传递本地工具；服务明确报告套餐用量限制时不自动重试，普通 Responses 供应商的请求保持不变。〔FACT｜`apps/desktop/src/main/model/chatgpt-plan-fetch.ts`、`apps/desktop/src/main/model/langchain-model-adapter.ts`〕
+
 > 文档状态：技术选型与迁移决策；生产主链已迁移到 `createAgent`，Desktop 与全仓 lint/typecheck/test/build 已通过，桌面端已重启加载最新构建；真实 Provider、审批和恢复场景仍需手工验收
 > 决策日期：2026-08-19
 > 适用范围：`apps/desktop` 的 Agent Runtime、模型适配、工具循环、Skill 上下文和可恢复执行

@@ -747,6 +747,7 @@ export const modelProfileSchema = z
     modelId: z.string().trim().min(1).max(200),
     lastSuccessfulAt: isoTimestampSchema.nullable().default(null),
     providerApiFormat: modelApiFormatSchema,
+    providerAuthentication: z.literal("chatgpt").optional(),
     providerBaseUrl: z.string().url(),
     providerId: providerIdSchema,
     providerName: providerNameSchema,

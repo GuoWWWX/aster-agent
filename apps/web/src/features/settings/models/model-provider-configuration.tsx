@@ -16,6 +16,7 @@ import type { ModelSettingsController } from "./use-model-settings-controller.js
 export function ModelProviderConfiguration({ controller }: {
   controller: Pick<ModelSettingsController,
     | "draft"
+    | "activeProvider"
     | "setDraft"
     | "isApiKeyVisible"
     | "setIsApiKeyVisible"
@@ -26,6 +27,7 @@ export function ModelProviderConfiguration({ controller }: {
 }): ReactElement {
   const {
     draft,
+    activeProvider,
     setDraft,
     isApiKeyVisible,
     setIsApiKeyVisible,
@@ -69,6 +71,7 @@ export function ModelProviderConfiguration({ controller }: {
         <label>
           API 格式
           <Select
+            disabled={activeProvider?.authentication === "chatgpt"}
             value={draft.apiFormat}
             onValueChange={(value) => {
               const apiFormat = value as ModelApiFormat;
@@ -98,12 +101,18 @@ export function ModelProviderConfiguration({ controller }: {
           请求地址
           <input
             name="baseUrl"
+            disabled={activeProvider?.authentication === "chatgpt"}
             placeholder={modelApiBaseUrlPlaceholder(draft.apiFormat)}
             value={draft.baseUrl}
             onChange={updateDraft}
           />
         </label>
-        <label>
+        {activeProvider?.authentication === "chatgpt" ? (
+          <div className="flex flex-col justify-center gap-1 text-[length:var(--app-font-size-control)]">
+            <span>授权方式</span>
+            <span className="text-[var(--app-muted-foreground)]">ChatGPT 登录授权</span>
+          </div>
+        ) : <label>
           API Key
           <div className="settings-secret-input">
             <input
@@ -123,7 +132,7 @@ export function ModelProviderConfiguration({ controller }: {
               {isApiKeyVisible ? <EyeOff aria-hidden="true" size={15} /> : <Eye aria-hidden="true" size={15} />}
             </button>
           </div>
-        </label>
+        </label>}
         <label className="settings-provider-fields__note">
           备注
           <input

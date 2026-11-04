@@ -79,6 +79,7 @@ describe("Runtime model retry observations", () => {
     expect(policy.maxRetries).toBe(5);
     expect([1, 2, 3, 4, 5, 6].map(attempt => policy.getDelay(attempt))).toEqual([1_000, 2_000, 4_000, 8_000, 16_000, 16_000]);
     expect(policy.shouldRetry(new ModelRequestError(429, "limited"))).toBe(true);
+    expect(policy.shouldRetry(new ModelRequestError(429, "plan limit", false))).toBe(false);
     expect(policy.shouldRetry(new ModelRequestError(401, "denied"))).toBe(false);
     expect(policy.shouldFailEmptyResponse?.()).toBe(true);
     input.hasSuccessfulToolExecution.mockReturnValue(true);

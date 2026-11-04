@@ -16,7 +16,7 @@ export default defineConfig({
     ".ps1": "text"
   },
   minify: false,
-  noExternal: ["@agent/protocol", "zod"],
+  noExternal: ["@agent/protocol", "zod", "jose"],
   outDir: "dist",
   outExtension: () => ({
     js: ".cjs"

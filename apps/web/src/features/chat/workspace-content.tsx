@@ -1,4 +1,5 @@
 import { AttachmentChip, AttachmentStrip } from "./conversation-attachments.js";
+import { ChatGptPlanIndicator } from "./chatgpt-plan-indicator.js";
 import { ToolErrorNotice } from "./tool-result-content.js";
 export { CommandLifecycleResult } from "./command-tool-result.js";
 import { ToolRawCallDialog } from "./tool-raw-call-dialog.js";
@@ -3960,6 +3961,7 @@ export function ConversationWorkspace({
                 onPaste={handlePasteAttachments}
               />
             </div>
+            <ChatGptPlanIndicator authentication={activeModel?.providerAuthentication} />
             <div className="conversation-workspace__composer-toolbar">
               <div className="conversation-workspace__composer-options">
                 <IconButton
