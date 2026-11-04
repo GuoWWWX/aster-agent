@@ -207,7 +207,7 @@ git switch -c hotfix/crash-on-startup
 - [x] 推送本地 `main` 到正确的 GitHub 组织/仓库，并创建 `develop`。
 - [ ] 配置本文件第 4 节的分支保护、安全扫描、Actions 权限与合并方式。
 - [ ] 在 Actions 页面确认 `CI` 能在一个文档 PR 上完整运行。
-- [ ] 选择并提交许可证；在 README 中写明。
+- [x] 选择 MIT 许可证，在仓库根目录和 README 中说明；合入默认分支后由 GitHub 识别。
 - [ ] 明确 Issue 模板、维护者/Code Owners 和安全披露渠道。
 - [ ] 在首次发布前实现打包、签名、GitHub Release 与更新链路，并在测试设备完成升级和失败恢复验证。
 
