@@ -10,13 +10,18 @@ module.exports = {
   electronDist: path.dirname(requireFromDesktop("electron")),
   directories: { app: "apps/desktop", output: "release" },
   files: ["dist/**/*.cjs", "package.json", { from: "../web/dist", to: "renderer", filter: ["**/*"] }],
+  extraResources: [
+    { from: "LICENSE", to: "licenses/Aster-LICENSE.txt" },
+    { from: "THIRD_PARTY_NOTICES.md", to: "licenses/THIRD_PARTY_NOTICES.md" },
+    { from: "licenses", to: "licenses" },
+  ],
   asar: true,
   // The preview compiler and its browser runtimes are read by esbuild's native child process.
   // Node's conversation reader worker also needs a physical entry point.
   asarUnpack: ["dist/main/storage/thread-log-reader-worker.cjs", "node_modules/esbuild/**", "node_modules/@esbuild/**", "node_modules/react/**", "node_modules/react-dom/**", "node_modules/scheduler/**", "node_modules/vue/**", "node_modules/@vue/**"],
   // node-pty 1.1 supplies Node-API prebuilds; package scripts verify them in Electron.
   npmRebuild: false,
-  win: { icon: "apps/web/public/aster-logo.png", target: [{ target: "nsis", arch: ["x64"] }] },
+  win: { icon: "apps/web/public/aster-logo.ico", target: [{ target: "nsis", arch: ["x64"] }] },
   nsis: {
     differentialPackage: true,
     oneClick: false,
