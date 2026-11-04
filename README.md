@@ -1,5 +1,7 @@
 # Aster
 
+> 最新开发版包含 ChatGPT 登录授权和更新后的使用说明，请查看 [develop 分支](https://github.com/GuoWWWX/aster-agent/tree/develop)。当前 `main` 是较早的发布基线。
+
 > 一个本地优先的桌面 AI Agent 工作台：让用户在明确授权的项目中与 Agent 协作，并查看、审批和追溯实际执行过程。
 
 Aster 的目标不是把模型回复停留在聊天窗口，而是形成一条受控的本地执行闭环：理解目标、读取项目、调用工具、展示变更与命令结果、持久化过程，并在需要时继续处理任务。
@@ -92,7 +94,6 @@ git status --short
 
 公开发布前仍需由项目负责人确认：
 
-- GitHub 组织/仓库名与域名。
 - Windows 代码签名证书，以及未来 macOS 的签名与公证账户。
 - 首发支持的平台、架构与 Beta 用户范围。
 
