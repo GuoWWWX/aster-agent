@@ -25,7 +25,6 @@ export class ResumableNsisUpdater extends NsisUpdater {
     super(null, app);
     this.autoDownload = false;
     this.autoInstallOnAppQuit = false;
-    this.allowPrerelease = false;
     this.disableWebInstaller = true;
   }
 

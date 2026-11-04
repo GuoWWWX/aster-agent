@@ -172,7 +172,7 @@ git push origin v0.2.0
 3. 将 `release/v0.2.0` 的发布修复合回 `develop`。
 4. 在 GitHub Release 记录用户可读变更、已知限制和回滚说明，再删除 release 分支。
 
-本地 Windows x64 NSIS 安装包由 `pnpm package:win` 构建，解包验证使用 `pnpm package:dir`；制品位于 `release/` 并被 Git 忽略。本地构建不自动上传，当前未配置 Windows 代码签名。正式版本标签触发 [Windows release 工作流](../.github/workflows/release.yml)，通过检查后构建并上传安装包、blockmap 与 `latest.yml`；客户端从 GitHub 正式 Release 检查更新。保留历史 blockmap 可提高跨版本差量更新的命中率，缺失时客户端回退完整下载。
+本地 Windows x64 NSIS 安装包由 `pnpm package:win` 构建，解包验证使用 `pnpm package:dir`；制品位于 `release/` 并被 Git 忽略。本地构建不自动上传，当前未配置 Windows 代码签名。正式版和 `-beta.N` 标签触发 [Windows release 工作流](../.github/workflows/release.yml)，通过检查后上传安装包、blockmap 与对应的 `latest.yml`／`beta.yml`。Beta Release 标记为 Prerelease；正式版不接收 Beta 更新，Beta 版可接收 Beta 和更新的正式版。保留历史 blockmap 可提高跨版本差量更新的命中率，缺失时客户端回退完整下载。
 
 ### 5.3 Hotfix 与回滚
 
