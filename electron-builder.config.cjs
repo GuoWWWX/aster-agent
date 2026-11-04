@@ -15,7 +15,7 @@ module.exports = {
   asarUnpack: ["node_modules/esbuild/**", "node_modules/@esbuild/**", "node_modules/react/**", "node_modules/react-dom/**", "node_modules/scheduler/**", "node_modules/vue/**", "node_modules/@vue/**"],
   // node-pty 1.1 supplies Node-API prebuilds; package scripts verify them in Electron.
   npmRebuild: false,
-  win: { target: [{ target: "nsis", arch: ["x64"] }] },
+  win: { icon: "apps/web/public/aster-logo.png", target: [{ target: "nsis", arch: ["x64"] }] },
   nsis: {
     oneClick: false,
     perMachine: false,
