@@ -2,9 +2,11 @@ import { createHash } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { CancellationToken } from "builder-util-runtime";
+import { CancellationToken, HttpError } from "builder-util-runtime";
 import type { AppAdapter } from "electron-updater/out/AppAdapter.js";
 import type { DownloadUpdateOptions } from "electron-updater/out/AppUpdater.js";
+import { GitHubProvider } from "electron-updater/out/providers/GitHubProvider.js";
+import type { ProviderRuntimeOptions } from "electron-updater/out/providers/Provider.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ResumableNsisUpdater } from "./resumable-nsis-updater.js";
 
@@ -21,13 +23,13 @@ class TestUpdater extends ResumableNsisUpdater {
   public perform(options: DownloadUpdateOptions) { return this.doDownloadUpdate(options); }
 }
 
-async function fixture(publisher?: string) {
+async function fixture(publisher?: string, version = "0.1.0") {
   const directory = await mkdtemp(path.join(os.tmpdir(), "aster-nsis-update-"));
   directories.push(directory);
   const config = path.join(directory, "app-update.yml");
   await writeFile(config, `updaterCacheDirName: aster-updater\n${publisher === undefined ? "" : `publisherName: ${publisher}\n`}`);
   const app: AppAdapter = {
-    version: "0.1.0", name: "Aster", isPackaged: true, appUpdateConfigPath: config,
+    version, name: "Aster", isPackaged: true, appUpdateConfigPath: config,
     userDataPath: path.join(directory, "user"), baseCachePath: path.join(directory, "cache"),
     whenReady: () => Promise.resolve(), relaunch: () => undefined, quit: () => undefined, onQuit: () => undefined,
   };
@@ -48,6 +50,55 @@ async function fixture(publisher?: string) {
 }
 
 describe("ResumableNsisUpdater", () => {
+  it("receives prereleases only when the installed version is a prerelease", async () => {
+    const stable = await fixture();
+    const beta = await fixture(undefined, "0.1.0-beta.1");
+    expect(stable.updater.allowPrerelease).toBe(false);
+    expect(beta.updater.allowPrerelease).toBe(true);
+    expect(stable.updater.allowDowngrade).toBe(false);
+    expect(beta.updater.allowDowngrade).toBe(false);
+  });
+
+  it("selects the stable release for stable clients and beta for beta clients", async () => {
+    const stable = await fixture(undefined, "0.0.9");
+    const beta = await fixture(undefined, "0.1.0-beta.1");
+    const feed = `<feed xmlns="http://www.w3.org/2005/Atom">
+      <entry><title>beta</title><link href="https://github.com/GuoWWWX/aster-agent/releases/tag/v0.1.0-beta.2"/><content>beta</content></entry>
+      <entry><title>stable</title><link href="https://github.com/GuoWWWX/aster-agent/releases/tag/v0.0.9"/><content>stable</content></entry>
+    </feed>`;
+    const request = vi.fn((options: { path?: string }) => {
+      const requested = options.path ?? "";
+      if (requested.endsWith(".atom")) return Promise.resolve(feed);
+      if (requested.endsWith("/latest")) return Promise.resolve(JSON.stringify({ tag_name: "v0.0.9" }));
+      if (requested.endsWith("/beta.yml")) return Promise.resolve("version: 0.1.0-beta.2\npath: setup.exe\nsha512: hash\n");
+      if (requested.endsWith("/latest.yml")) return Promise.resolve("version: 0.0.9\npath: setup.exe\nsha512: hash\n");
+      return Promise.reject(new Error(`Unexpected request: ${requested}`));
+    });
+    const runtime = { platform: "win32", isUseMultipleRangeRequest: false, executor: { request } } as unknown as ProviderRuntimeOptions;
+    const github = { provider: "github" as const, owner: "GuoWWWX", repo: "aster-agent" };
+    const stableProvider = new GitHubProvider({ ...github, channel: "latest" }, stable.updater, runtime);
+    const betaProvider = new GitHubProvider({ ...github, channel: "beta" }, beta.updater, runtime);
+    expect((await stableProvider.getLatestVersion()).version).toBe("0.0.9");
+    expect((await betaProvider.getLatestVersion()).version).toBe("0.1.0-beta.2");
+    expect(request.mock.calls.some(([options]) => options.path?.includes("v0.1.0-beta.2/beta.yml"))).toBe(true);
+  });
+
+  it("lets beta clients advance to a newer stable release", async () => {
+    const beta = await fixture(undefined, "0.1.0-beta.2");
+    const feed = `<feed xmlns="http://www.w3.org/2005/Atom"><entry><title>stable</title>
+      <link href="https://github.com/GuoWWWX/aster-agent/releases/tag/v0.1.0"/><content>stable</content></entry></feed>`;
+    const request = vi.fn((options: { path?: string }) => {
+      const requested = options.path ?? "";
+      if (requested.endsWith(".atom")) return Promise.resolve(feed);
+      if (requested.endsWith("/beta.yml")) return Promise.reject(new HttpError(404));
+      if (requested.endsWith("/latest.yml")) return Promise.resolve("version: 0.1.0\npath: setup.exe\nsha512: hash\n");
+      return Promise.reject(new Error(`Unexpected request: ${requested}`));
+    });
+    const runtime = { platform: "win32", isUseMultipleRangeRequest: false, executor: { request } } as unknown as ProviderRuntimeOptions;
+    const provider = new GitHubProvider({ provider: "github", owner: "GuoWWWX", repo: "aster-agent", channel: "beta" }, beta.updater, runtime);
+    expect((await provider.getLatestVersion()).version).toBe("0.1.0");
+  });
+
   it("hands a verified installer to the upstream NSIS update lifecycle", async () => {
     const { updater, options, data, progress } = await fixture();
     const downloaded = vi.fn(); updater.on("update-downloaded", downloaded);

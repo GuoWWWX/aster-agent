@@ -2,6 +2,7 @@ const path = require("node:path");
 const { createRequire } = require("node:module");
 const desktopPackage = require("./apps/desktop/package.json");
 const requireFromDesktop = createRequire(path.join(__dirname, "apps/desktop/package.json"));
+const beta = /-beta\.\d+$/.test(desktopPackage.version);
 
 module.exports = {
   appId: "com.agent.workbench",
@@ -29,5 +30,6 @@ module.exports = {
     allowToChangeInstallationDirectory: true,
     artifactName: "Aster-${version}-${arch}-setup.${ext}",
   },
-  publish: [{ provider: "github", owner: "GuoWWWX", repo: "aster-agent", releaseType: "release" }],
+  publish: [{ provider: "github", owner: "GuoWWWX", repo: "aster-agent",
+    channel: beta ? "beta" : "latest", releaseType: beta ? "prerelease" : "release" }],
 };
