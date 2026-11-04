@@ -17,10 +17,11 @@ module.exports = {
   npmRebuild: false,
   win: { icon: "apps/web/public/aster-logo.png", target: [{ target: "nsis", arch: ["x64"] }] },
   nsis: {
+    differentialPackage: true,
     oneClick: false,
     perMachine: false,
     allowToChangeInstallationDirectory: true,
     artifactName: "Aster-${version}-${arch}-setup.${ext}",
   },
-  publish: null,
+  publish: [{ provider: "github", owner: "GuoWWWX", repo: "aster-agent", releaseType: "release" }],
 };

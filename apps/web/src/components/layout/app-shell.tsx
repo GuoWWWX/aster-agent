@@ -270,6 +270,7 @@ export function AppShell({
       />}
     >
         <ActivityBar
+          agentClient={agentClient}
           {...(onOpenGlobalSearch === undefined ? {} : { onOpenGlobalSearch })}
           onConversationHoverChange={scheduleNavigatorPeek}
         />

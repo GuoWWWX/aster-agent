@@ -148,6 +148,14 @@ import type {
  * dependency and keeps host-specific globals outside UI components.
  */
 export class DesktopAgentClientAdapter implements AgentClient {
+  public getAppUpdateState() { return this.desktopBridge.getAppUpdateState(); }
+  public checkAppUpdate() { return this.desktopBridge.checkAppUpdate(); }
+  public downloadAppUpdate() { return this.desktopBridge.downloadAppUpdate(); }
+  public pauseAppUpdate() { return this.desktopBridge.pauseAppUpdate(); }
+  public installAppUpdate() { return this.desktopBridge.installAppUpdate(); }
+  public onAppUpdateChanged(listener: (state: import("@agent/protocol").AppUpdateState) => void) {
+    return this.desktopBridge.onAppUpdateChanged(listener);
+  }
   public htmlPreview(input: HtmlPreviewRequest): Promise<HtmlPreview | null> { return this.desktopBridge.htmlPreview(input); }
   private readonly conversationRunEventListeners = new Set<ConversationRunEventListener>();
   private readonly conversationStreamScopes = new Map<ConversationRunEventListener, readonly string[]>();

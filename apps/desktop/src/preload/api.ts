@@ -8,6 +8,7 @@ import { IPC_CHANNELS } from "../../../../packages/protocol/src/ipc-channels.js"
 // Skill YAML parsing, which pulls a Node-only `yaml` dependency into the
 // sandboxed preload bundle and prevents Electron from loading the bridge.
 import { applicationSettingsSchema } from "../../../../packages/protocol/src/application-settings.js";
+import { appUpdateStateSchema } from "../../../../packages/protocol/src/app-update.js";
 import {
   managedBrowserEventSchema,
   terminalSessionEventSchema,
@@ -135,6 +136,16 @@ async function invoke<Result>(channel: IpcChannel, input?: unknown): Promise<Res
 
 export function createDesktopBridge(): DesktopBridge {
   return {
+    getAppUpdateState() { return invoke<unknown>(IPC_CHANNELS.appUpdateGetState).then((value) => appUpdateStateSchema.parse(value)); },
+    checkAppUpdate() { return invoke<unknown>(IPC_CHANNELS.appUpdateCheck).then((value) => appUpdateStateSchema.parse(value)); },
+    downloadAppUpdate() { return invoke<unknown>(IPC_CHANNELS.appUpdateDownload).then((value) => appUpdateStateSchema.parse(value)); },
+    pauseAppUpdate() { return invoke<unknown>(IPC_CHANNELS.appUpdatePause).then((value) => appUpdateStateSchema.parse(value)); },
+    installAppUpdate() { return invoke<unknown>(IPC_CHANNELS.appUpdateInstall).then((value) => appUpdateStateSchema.parse(value)); },
+    onAppUpdateChanged(listener) {
+      const handle = (_event: IpcRendererEvent, state: unknown): void => { listener(appUpdateStateSchema.parse(state)); };
+      ipcRenderer.on(IPC_CHANNELS.appUpdateChanged, handle);
+      return () => ipcRenderer.removeListener(IPC_CHANNELS.appUpdateChanged, handle);
+    },
     htmlPreview(input: HtmlPreviewRequest) { return invoke<BridgeResult<"htmlPreview">>(IPC_CHANNELS.htmlPreview, input); },
     addProject() {
       return invoke<BridgeResult<"addProject">>(IPC_CHANNELS.projectAdd);
