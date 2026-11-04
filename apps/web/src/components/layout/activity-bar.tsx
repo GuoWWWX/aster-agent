@@ -1,4 +1,5 @@
 import {
+  ArrowDownToLine,
   CalendarClock,
   MessageSquareText,
   Moon,
@@ -12,6 +13,8 @@ import type { ReactElement } from "react";
 
 import { useWorkbenchUiStore, type ActivityView } from "../../stores/workbench-ui-store.js";
 import { IconButton } from "../ui/icon-button.js";
+import type { AgentClient } from "../../runtime/index.js";
+import { useAppUpdate } from "../../features/updates/use-app-update.js";
 
 type ActivityItem = {
   icon: LucideIcon;
@@ -25,7 +28,8 @@ const ACTIVITY_ITEMS: readonly ActivityItem[] = [
   { id: "schedules", label: "定时任务", icon: CalendarClock },
 ];
 
-export function ActivityBar({ onOpenGlobalSearch, onConversationHoverChange }: {
+export function ActivityBar({ agentClient, onOpenGlobalSearch, onConversationHoverChange }: {
+  agentClient?: AgentClient;
   onOpenGlobalSearch?: () => void;
   onConversationHoverChange?: (isHovered: boolean) => void;
 }): ReactElement {
@@ -38,6 +42,8 @@ export function ActivityBar({ onOpenGlobalSearch, onConversationHoverChange }: {
     (state) => state.toggleThemeMode,
   );
   const setSettings = useWorkbenchUiStore((state) => state.setSettings);
+  const setSettingsSection = useWorkbenchUiStore((state) => state.setSettingsSection);
+  const { state: update } = useAppUpdate(agentClient);
   const ThemeIcon = themeMode === "dark" ? Sun : Moon;
   const themeLabel = themeMode === "dark" ? "切换为浅色主题" : "切换为深色主题";
 
@@ -81,6 +87,18 @@ export function ActivityBar({ onOpenGlobalSearch, onConversationHoverChange }: {
       />
 
       <div className="activity-bar__footer">
+        {update?.availableVersion !== null && update?.availableVersion !== undefined ? (
+          <IconButton
+            className="relative hover:bg-[var(--app-navigation-hover)]"
+            label={`更新至 ${update.availableVersion}`}
+            size="compact"
+            variant="quiet"
+            onClick={() => { setSettingsSection("about"); setSettings(); }}
+          >
+            <ArrowDownToLine aria-hidden="true" size={16} strokeWidth={1.8} />
+            <span aria-hidden="true" className="absolute right-1 top-1 size-1.5 rounded-full bg-[var(--app-accent)]" />
+          </IconButton>
+        ) : null}
         <IconButton
           className="hover:bg-[var(--app-navigation-hover)]"
           label={themeLabel}

@@ -1,5 +1,6 @@
 import type { TaskContextScope, TaskCompletionPolicy, SetTaskCompletionPolicyInput, ResolveChatReferencesInput, ChatReference, ListTaskContextsInput, TaskContextPage, TaskContextDetail, UpdateTaskContextInput, TaskContext, LinkTaskContextInput, MergeTaskContextsInput } from "./task-context.js";
 import type { ChatGptConnection, ChatGptConnectResult } from "./chatgpt-plan.js";
+import type { AppUpdateState } from "./app-update.js";
 import type { ReadTeamChatInput, TeamChatPage, PostTeamChatInput, TeamChatMessage, TeamChatMember, MarkTeamChatReadInput } from "./team-chat.js";
 import type { HtmlPreview, HtmlPreviewRequest } from "./html-preview.js";
 import type { AnswerUserQuestionInput, UserQuestion } from "./user-question.js";
@@ -160,6 +161,12 @@ import type {
  * shell. It deliberately exposes operations, not a generic IPC transport.
  */
 export interface DesktopBridge {
+  getAppUpdateState(): Promise<AppUpdateState>;
+  checkAppUpdate(): Promise<AppUpdateState>;
+  downloadAppUpdate(): Promise<AppUpdateState>;
+  pauseAppUpdate(): Promise<AppUpdateState>;
+  installAppUpdate(): Promise<AppUpdateState>;
+  onAppUpdateChanged(listener: (state: AppUpdateState) => void): () => void;
   htmlPreview(input: HtmlPreviewRequest): Promise<HtmlPreview | null>;
   listUserQuestions(input: ConversationReferenceInput): Promise<UserQuestion[]>;
   answerUserQuestion(input: AnswerUserQuestionInput): Promise<UserQuestion>;

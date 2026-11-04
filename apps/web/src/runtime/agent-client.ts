@@ -151,6 +151,12 @@ export type ManagedBrowserEventListener = (event: ManagedBrowserEvent) => void;
  * browser mock and Electron preload surface stay interchangeable.
  */
 export interface AgentClient {
+  getAppUpdateState?(): Promise<import("@agent/protocol").AppUpdateState>;
+  checkAppUpdate?(): Promise<import("@agent/protocol").AppUpdateState>;
+  downloadAppUpdate?(): Promise<import("@agent/protocol").AppUpdateState>;
+  pauseAppUpdate?(): Promise<import("@agent/protocol").AppUpdateState>;
+  installAppUpdate?(): Promise<import("@agent/protocol").AppUpdateState>;
+  onAppUpdateChanged?(listener: (state: import("@agent/protocol").AppUpdateState) => void): () => void;
   htmlPreview(input: HtmlPreviewRequest): Promise<HtmlPreview | null>;
   listUserQuestions(input: ConversationReferenceInput): Promise<UserQuestion[]>;
   answerUserQuestion(input: AnswerUserQuestionInput): Promise<UserQuestion>;

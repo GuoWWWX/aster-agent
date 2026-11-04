@@ -81,8 +81,11 @@ import { dispatchBackendSendCommand as submitBackendSendCommand } from "./backen
 import { ConversationControl } from "../control/conversation-control.js";
 import { LocalControlServer } from "../control/local-control-server.js";
 import { stopDesktopWork } from "./desktop-work-lifecycle.js";
+import { AppUpdateController } from "../updates/app-update-controller.js";
+import { ResumableNsisUpdater } from "../updates/resumable-nsis-updater.js";
 
 type DesktopServices = {
+  appUpdates: AppUpdateController;
   htmlPreviews: HtmlPreviewServer;
   scheduledTasks: ScheduledTaskController;
   agentRuntime: AgentRuntime;
@@ -142,7 +145,7 @@ async function shutdownDesktop(): Promise<void> {
   }
   const closingControl = localControl;
   localControl = undefined;
-  const results = await Promise.allSettled([closingControl?.close(), stopOwnedDesktopWork()]);
+  const results = await Promise.allSettled([closingControl?.close(), stopOwnedDesktopWork(), services?.appUpdates.dispose()]);
   for (const result of results) {
     if (result.status === "rejected") reportUnhandledError(result.reason, "desktop.shutdown");
   }
@@ -246,6 +249,9 @@ function loadLocalEnvironment(): void {
 }
 
 async function initializeServices(): Promise<DesktopServices> {
+  const appUpdates: AppUpdateController = new AppUpdateController(
+    new ResumableNsisUpdater((progress) => appUpdates.reportProgress(progress)), path.join(app.getPath("userData"), "update-downloads"),
+    app.getVersion(), app.isPackaged && process.platform === "win32");
   const agentHome = await initializeAgentHome({
     additionalLegacyRootPaths: [legacyPackageUserDataPath],
     environment: process.env,
@@ -488,6 +494,7 @@ async function initializeServices(): Promise<DesktopServices> {
     sendConversationRunEvent, (error) => reportMainError(toMainAgentError(error, { operation: "scheduled_task.execute" }), error),
   );
   return {
+    appUpdates,
     scheduledTasks,
     agentRuntime,
     applicationStorageLocation,
@@ -692,6 +699,7 @@ async function bootstrap(): Promise<void> {
   archivedConversationCleanupTimer.unref();
 
   await openMainWindow();
+  services.appUpdates.start();
   services.scheduledTasks.start();
   dispatchBackendSendCommand(process.argv);
 

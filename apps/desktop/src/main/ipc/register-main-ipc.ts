@@ -1,5 +1,5 @@
 import { ConversationStreamSubscriptions } from "./conversation-stream-subscriptions.js";
-import { htmlPreviewRequestSchema, htmlPreviewResponseSchema } from "@agent/protocol";
+import { appUpdateStateSchema, htmlPreviewRequestSchema, htmlPreviewResponseSchema } from "@agent/protocol";
 import {
   scheduledTaskListSchema,
   scheduledTaskSchema,
@@ -92,6 +92,7 @@ import { registerBrowserSettingsHandlers, registerManagedBrowserHandlers } from 
 import { registerTerminalSettingsHandlers, registerTerminalSessionHandlers } from "./terminal-handlers.js";
 import { registerSkillDocumentHandlers } from "./skill-document-handlers.js";
 import { registerConfigurationWorkspaceHandlers } from "./configuration-workspace-handlers.js";
+import { registerAppUpdateHandlers } from "./app-update-handlers.js";
 
 function getWindowState(window: BrowserWindow) {
   return windowStateSchema.parse({
@@ -144,6 +145,7 @@ function sendWindowConversationRunEvent(
 export function registerMainIpcHandlers(
   getMainWindow: () => BrowserWindow | undefined,
   {
+    appUpdates,
     agentRuntime,
     scheduledTasks,
     applicationStorageLocation,
@@ -189,6 +191,11 @@ export function registerMainIpcHandlers(
     removeHandler(channel): void {
       electronIpcMain.removeHandler(channel);
     },
+  });
+  registerAppUpdateHandlers({ ipcMain, getMainWindow }, appUpdates);
+  const disposeAppUpdateListener = appUpdates.subscribe((state) => {
+    const window = getMainWindow();
+    if (window !== undefined && !window.isDestroyed()) window.webContents.send(IPC_CHANNELS.appUpdateChanged, appUpdateStateSchema.parse(state));
   });
   ipcMain.handle(IPC_CHANNELS.conversationSetStreamSubscriptions, (event, ...args: unknown[]) => {
     const window = getTrustedWindow(event, getMainWindow);
@@ -615,6 +622,7 @@ export function registerMainIpcHandlers(
   try {
     ipcMain.assertRegisteredChannels(DESKTOP_IPC_HANDLER_CHANNELS);
   } catch (error) {
+    disposeAppUpdateListener();
     if (configuredStreams === undefined) eventStreams.dispose();
     disposeApplicationSettingsListener();
     disposeTerminalSessionListener();
@@ -641,6 +649,7 @@ export function registerMainIpcHandlers(
   }
 
   return () => {
+    disposeAppUpdateListener();
     if (configuredStreams === undefined) eventStreams.dispose();
     disposeApplicationSettingsListener();
     disposeTerminalSessionListener();

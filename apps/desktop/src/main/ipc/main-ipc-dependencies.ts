@@ -30,8 +30,10 @@ import type { TerminalConfigurationStore } from "../settings/terminal-configurat
 import type { TeamWorkItemRuntime } from "../teams/team-work-item-runtime.js";
 import type { ComputerUseConfigurationStore } from "../settings/computer-use-configuration-store.js";
 import type { WindowsComputerController } from "../computer-use/windows-computer-controller.js";
+import type { AppUpdateController } from "../updates/app-update-controller.js";
 
 export type MainIpcDependencies = {
+  appUpdates: AppUpdateController;
   scheduledTasks: ScheduledTaskController;
   agentRuntime: AgentRuntime;
   applicationStorageLocation: ApplicationStorageLocationStore;

@@ -3,6 +3,12 @@
  * stay dependency-free so it can also be loaded from a sandboxed preload.
  */
 export const IPC_CHANNELS = {
+  appUpdateGetState: "app_update.get_state",
+  appUpdateCheck: "app_update.check",
+  appUpdateDownload: "app_update.download",
+  appUpdatePause: "app_update.pause",
+  appUpdateInstall: "app_update.install",
+  appUpdateChanged: "app_update.changed",
   htmlPreview: "html.preview",
   modelSaveCatalog: "model.save_catalog",
   userQuestionList: "user_question.list",

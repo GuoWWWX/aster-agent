@@ -1,4 +1,4 @@
-import { Archive, Boxes, Globe2, MonitorCog, PlugZap, Search, ShieldCheck, Sparkles, SlidersHorizontal, Terminal, UsersRound, type LucideIcon } from "lucide-react";
+import { Archive, Boxes, CircleHelp, Globe2, MonitorCog, PlugZap, Search, ShieldCheck, Sparkles, SlidersHorizontal, Terminal, UsersRound, type LucideIcon } from "lucide-react";
 import { ModelReasoningCatalogSettings } from "./model-reasoning-catalog-settings.js";
 import { ComputerUseSettings } from "./computer-use-settings.js";
 import { useEffect, useRef, useState, type ReactElement, type CSSProperties } from "react";
@@ -17,6 +17,7 @@ import { PermissionsSettings } from "./permissions/permissions-settings-page.js"
 import { BrowserSettings } from "./browser/browser-settings-page.js";
 import { TerminalSettings } from "./terminal/terminal-settings-page.js";
 import { AppearanceSettings } from "./appearance/appearance-settings-page.js";
+import { AboutSettings } from "./about/about-settings-page.js";
 
 type SettingsNavItem = {
   icon: LucideIcon;
@@ -38,6 +39,7 @@ const SETTINGS_NAVIGATION: readonly SettingsNavItem[] = [
   { id: "computer-use", label: "电脑控制", icon: MonitorCog, group: "工作区" },
   { id: "terminal", label: "终端", icon: Terminal, group: "工作区" },
   { id: "archived", label: "已归档对话", icon: Archive, group: "数据" },
+  { id: "about", label: "关于", icon: CircleHelp, group: "应用" },
 ];
 
 export function SettingsWorkspace({ agentClient }: { agentClient: AgentClient }): ReactElement {
@@ -183,6 +185,7 @@ export function SettingsWorkspace({ agentClient }: { agentClient: AgentClient })
             <p role="status" className="m-0 mb-3 text-[length:var(--app-font-size-control)] text-[var(--app-muted-foreground)]">选择或创建包含“{searchTarget.label}”的配置后可定位此项{activeSection === "mcp" ? "，请使用表单视图" : ""}。</p>
           ) : null}
           {activeSection === "general" ? <GeneralSettings agentClient={agentClient} /> : null}
+          {activeSection === "about" ? <AboutSettings agentClient={agentClient} /> : null}
           {activeSection === "models" ? (
             <ModelsSettings agentClient={agentClient} />
           ) : null}

@@ -70,7 +70,15 @@ AGENT_MODEL_ID=your-model-id
 | `pnpm package:dir` | 构建 Windows x64 解包目录 |
 | `pnpm package:win` | 构建 Windows x64 NSIS 安装包 |
 
-安装包生成在 `release/`，当前构建不自动上传、不签名，也不提供自动更新。首次公开分发二进制产物前，还需要核对其包含的第三方许可证和版权声明。
+安装包和更新元数据生成在 `release/`，本地构建不会自动上传。当前配置没有 Windows 代码签名；首次公开分发二进制产物前，还需要核对其包含的第三方许可证和版权声明。
+
+### 发布和更新
+
+包含更新功能的 Windows 安装版启动后会自动检查 GitHub Releases，发现新版本时在左侧栏底部提示。用户可在“设置 → 关于”检查更新、下载或暂停，并在下载校验完成后选择重启安装。中断后的下载会从本地已保存的位置继续；检查到更新的版本后可转而下载最新版本。
+
+安装程序和旧版 blockmap 可用时，更新器直接比较当前版本与最新版本，尽量复用未变化的数据，不必依次安装中间版本。如果旧安装程序、blockmap 或服务器的范围下载不可用，会回退到完整下载安装包。下载结果始终校验 SHA-512；配置了发行者签名时还会检查 Windows 签名。
+
+维护者发布正式版时，将根目录和 `apps/desktop/package.json` 的版本同步为相同的正式版本号，将代码合并到 `main` 后推送对应的 `v版本号` 标签。GitHub Actions 的 [Windows release](./.github/workflows/release.yml) 会运行质量检查，构建并创建 GitHub Release，上传安装程序、`.blockmap` 和 `latest.yml`。请保留历史 Release 的 blockmap，以便旧版用户进行差量下载；删除后仍可完整更新。旧的、不含更新功能的安装版需要先手动安装一次包含更新功能的新版本。开发模式不执行自动更新。
 
 开发服务默认使用 `http://127.0.0.1:5173`。多个 worktree 并行开发时，可为当前 worktree 指定独立端口：
 

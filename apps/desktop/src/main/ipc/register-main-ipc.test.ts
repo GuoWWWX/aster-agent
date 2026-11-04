@@ -87,6 +87,7 @@ describe("result viewed IPC notification", () => {
     const unsubscribe = () => undefined;
     // Only subscription owners and the handler's lifecycle owner are used at registration.
     dependencies = {
+      appUpdates: { subscribe: () => unsubscribe },
       scheduledTasks,
       credentials: { deleteProvider },
       skillDocuments: { deleteDocument: deleteSkill },

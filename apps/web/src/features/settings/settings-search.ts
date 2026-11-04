@@ -10,6 +10,8 @@ export type SettingsSearchItem = {
 
 // Index setting names and aliases, never configuration values or credentials.
 export const SETTINGS_SEARCH_ITEMS: readonly SettingsSearchItem[] = [
+  { section: "about", label: "软件更新", selector: "#about-update-heading", keywords: "检查 下载 版本 更新 补丁" },
+  { section: "about", label: "GitHub 项目", selector: "#about-app-heading", keywords: "关于 仓库 源码 发布" },
   { section: "reasoning", label: "推理程度", selector: '[aria-label="推理程度配置"]', keywords: "推理强度 思考能力 effort thinking 协议 Gemini Claude 模型目录 供应商 Logo" },
   { section: "general", label: "显示上下文与缓存用量", selector: '[aria-label="显示上下文与缓存用量"]', keywords: "Token 消耗" },
   { section: "general", label: "发送快捷键", selector: '[aria-label="发送快捷键"]', keywords: "Enter Ctrl 回车" },
