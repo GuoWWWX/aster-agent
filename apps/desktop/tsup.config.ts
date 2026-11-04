@@ -3,19 +3,28 @@ import { defineConfig } from "tsup";
 export default defineConfig({
   entry: {
     "main/index": "src/main/bootstrap/index.ts",
-    "preload/index": "src/preload/index.ts"
+    "main/storage/thread-log-reader-worker": "src/main/storage/thread-log-reader-worker.ts",
+    "preload/index": "src/preload/index.ts",
+    "preload/browser-passwords": "src/preload/browser-passwords.ts",
+    "preload/native-overlay": "src/preload/native-overlay.ts"
   },
   clean: true,
   dts: false,
   external: ["electron", "node:sqlite"],
   format: ["cjs"],
+  loader: {
+    ".md": "text",
+    ".ps1": "text"
+  },
   minify: false,
-  noExternal: ["@agent/protocol", "zod"],
+  noExternal: ["@agent/protocol", "zod", "jose", "yaml"],
   outDir: "dist",
   outExtension: () => ({
     js: ".cjs"
   }),
   platform: "node",
+  // Prefix-only builtins such as node:sqlite cannot be resolved as bare packages.
+  removeNodeProtocol: false,
   sourcemap: true,
   splitting: false,
   target: "node22"

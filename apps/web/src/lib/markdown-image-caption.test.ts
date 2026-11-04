@@ -1,0 +1,85 @@
+/* eslint-disable no-restricted-imports -- Node assertions are confined to migrated tests. */
+import assert from "node:assert/strict";
+import { test } from "vitest";
+
+import { extractExplicitImageCaptions } from "./markdown-image-caption.js";
+
+test("将紧邻图片的 Pandoc Image Caption Div 转为预览题注", () => {
+  const extracted = extractExplicitImageCaptions([
+    "![辅助说明](network.png)",
+    "",
+    '::: {custom-style="Image Caption"}',
+    "**图 2-1 网络结构图**",
+    ":::",
+    "",
+    "正文。",
+  ].join("\n"));
+
+  assert.equal(extracted.captionsByImageIndex.get(0), "图 2-1 网络结构图");
+  assert.equal(extracted.markdown.includes("custom-style"), false);
+  assert.equal(extracted.markdown.includes("图 2-1 网络结构图"), false);
+  assert.match(extracted.markdown, /正文。/);
+});
+
+test("不处理代码块和未闭合的 Image Caption Div", () => {
+  const source = [
+    "```markdown",
+    '::: {custom-style="Image Caption"}',
+    ":::",
+    "```",
+    "",
+    "![图](image.png)",
+    '::: {custom-style="Image Caption"}',
+    "未闭合题注",
+  ].join("\n");
+  const extracted = extractExplicitImageCaptions(source);
+
+  assert.equal(extracted.captionsByImageIndex.size, 0);
+  assert.equal(extracted.markdown, source);
+});
+
+test("旧题注指令不再被识别", () => {
+  const source = "![网络拓扑](network.png)\n::caption[图2-1 网络结构图]";
+  const extracted = extractExplicitImageCaptions(source);
+  assert.equal(extracted.captionsByImageIndex.size, 0);
+  assert.equal(extracted.markdown, source);
+});
+
+test("普通图片支持前后紧邻的整行加粗题注", () => {
+  const extracted = extractExplicitImageCaptions([
+    "**图2-1 前置题注**",
+    "![前置辅助说明](before.png)",
+    "",
+    "![后置辅助说明](after.png)",
+    "**图2-2 后置题注**",
+    "",
+    "![无题注](plain.png)",
+    "",
+    "**普通加粗正文**",
+  ].join("\n"));
+
+  assert.equal(extracted.captionsByImageIndex.get(0), "图2-1 前置题注");
+  assert.equal(extracted.captionsByImageIndex.get(1), "图2-2 后置题注");
+  assert.equal(extracted.captionsByImageIndex.has(2), false);
+  assert.equal(extracted.markdown.includes("图2-1 前置题注"), false);
+  assert.equal(extracted.markdown.includes("图2-2 后置题注"), false);
+  assert.equal(extracted.markdown.includes("**普通加粗正文**"), true);
+});
+
+test("附录字母编号图片题注跨空行关联，保留原编号", () => {
+  for (const title of ["图A-1 附录图", "图 B.2 附录示意", "Figure C-3 Appendix diagram"]) {
+    for (const source of [`**${title}**\n\n![图](a.png)`, `![图](a.png)\n\n**${title}**`]) {
+      const result = extractExplicitImageCaptions(source);
+      assert.equal(result.captionsByImageIndex.get(0), title);
+      assert.ok(!result.markdown.includes(title));
+    }
+  }
+});
+
+test("隔空行的编号图片题注仍关联图片，保留原编号", () => {
+  for (const source of ["**图3-1 系统图**\n\n![示意图](a.png)", "![示意图](a.png)\n\n**图3-1 系统图**"]) {
+    const result = extractExplicitImageCaptions(source);
+    assert.equal(result.captionsByImageIndex.get(0), "图3-1 系统图");
+    assert.ok(!result.markdown.includes("**图3-1"));
+  }
+});

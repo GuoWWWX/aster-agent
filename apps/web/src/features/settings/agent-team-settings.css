@@ -1,9 +1,12 @@
+/* CSS triggers: descendant selectors, shared descendant variables and responsive container queries. */
 .agent-team-settings {
+  --settings-directory-row-height: 58px;
   display: flex;
   min-height: 0;
   height: 100%;
   flex-direction: column;
   container-type: inline-size;
+  container-name: agent-team-settings;
   background: transparent;
 }
 
@@ -12,25 +15,27 @@
   min-height: 0;
   flex: 1;
   flex-direction: column;
-  gap: 5px;
+  gap: 0;
   overflow: hidden;
   border: 0;
   border-radius: 0;
   background: transparent;
+  padding-left: var(--settings-page-inset);
 }
 
 .team-management-toolbar {
   display: flex;
-  min-height: 43px;
+  min-height: 0;
   flex: 0 0 auto;
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  padding: 5px 10px;
-  order: 2;
-  border: 1px solid var(--app-border);
-  border-radius: var(--app-radius);
-  background: var(--app-panel);
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  border-bottom: 0;
+  margin-right: 0;
 }
 
 .team-management-tabs {
@@ -62,6 +67,7 @@
 .team-management-tabs button[aria-selected="true"] {
   background: var(--app-selection);
   color: var(--app-selection-foreground);
+  box-shadow: inset 0 0 0 1px var(--app-selection-border), var(--app-selection-shadow);
 }
 
 .team-management-tabs button:focus-visible,
@@ -129,7 +135,7 @@
 }
 
 .team-metric svg {
-  color: var(--app-accent);
+  color: var(--app-muted-foreground);
 }
 
 .team-metric span {
@@ -148,30 +154,32 @@
 
 .team-management-layout {
   display: grid;
-  height: 100%;
+  height: auto;
   min-height: 0;
   flex: 1;
   grid-template-columns: var(--settings-list-card-width, 270px) minmax(0, 1fr);
   grid-template-rows: minmax(0, 1fr);
   gap: 5px;
   order: 3;
+  overflow: hidden;
+  align-items: stretch;
 }
 
 .agent-management-layout {
   display: grid;
-  height: 100%;
+  height: auto;
   min-height: 0;
   flex: 1;
-  grid-template-columns: var(--settings-list-card-width, 270px) minmax(540px, 1fr);
+  grid-template-columns: var(--settings-list-card-width, 270px) minmax(0, 1fr);
   grid-template-rows: minmax(0, 1fr);
   gap: 5px;
   order: 3;
+  overflow: hidden;
+  align-items: stretch;
 }
 
 .team-directory-pane,
-.team-configuration-pane,
-.agent-directory-pane,
-.agent-configuration-pane {
+.agent-directory-pane {
   display: flex;
   height: 100%;
   min-width: 0;
@@ -183,7 +191,7 @@
   background: var(--app-panel);
 }
 
-.team-section-heading {
+.agent-team-section-heading {
   display: flex;
   height: 39px;
   align-items: center;
@@ -192,26 +200,26 @@
   border-bottom: 1px solid var(--app-border);
 }
 
-.team-directory-pane > .team-section-heading,
-.agent-directory-pane > .team-section-heading {
+.team-directory-pane > .agent-team-section-heading,
+.agent-directory-pane > .agent-team-section-heading {
   height: var(--settings-list-card-header-height, 50px);
   min-height: var(--settings-list-card-header-height, 50px);
   flex: 0 0 var(--settings-list-card-header-height, 50px);
 }
 
-.team-directory-pane > .team-section-heading h2,
-.agent-directory-pane > .team-section-heading h2 {
+.team-directory-pane > .agent-team-section-heading h2,
+.agent-directory-pane > .agent-team-section-heading h2 {
   font-size: var(--app-font-size-body);
 }
 
-.team-section-heading h2 {
+.agent-team-section-heading h2 {
   margin: 0;
   color: var(--app-foreground);
   font-size: var(--app-font-size-control);
   font-weight: 700;
 }
 
-.team-section-heading span {
+.agent-team-section-heading span {
   display: grid;
   min-width: 20px;
   height: 20px;
@@ -233,10 +241,10 @@
 }
 
 .team-directory-list,
-.agent-directory-list,
-.management-detail-body {
+.agent-directory-list {
   min-height: 0;
   overflow: auto;
+  scrollbar-gutter: stable;
 }
 
 .team-directory-list,
@@ -245,7 +253,20 @@
 }
 
 .management-detail-body {
+  min-height: 0;
+  overflow: visible;
   flex: 1;
+}
+
+.team-configuration-pane > .management-detail-body {
+  display: grid;
+  align-content: start;
+  gap: 18px;
+}
+
+.management-profile-card > .management-form,
+.management-profile-card .management-policy-section:last-child {
+  border-bottom: 0;
 }
 
 .team-directory-footer {
@@ -283,9 +304,9 @@
 }
 
 .team-directory-pagination-controls button:not(:disabled):hover {
-  border-color: color-mix(in srgb, var(--app-accent) 48%, var(--app-border));
-  background: color-mix(in srgb, var(--app-accent) 7%, var(--app-panel));
-  color: var(--app-accent);
+  border-color: var(--app-border);
+  background: var(--app-hover);
+  color: var(--app-foreground);
 }
 
 .team-directory-pagination-controls button:focus-visible {
@@ -310,7 +331,7 @@
 .agent-directory-row {
   display: grid;
   min-width: 0;
-  min-height: 58px;
+  min-height: var(--settings-directory-row-height);
   grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
   gap: 8px;
@@ -374,7 +395,7 @@
   place-items: center;
   border: 1px solid var(--app-border);
   border-radius: var(--app-radius);
-  background: var(--app-panel-subtle);
+  background: var(--app-panel);
   color: var(--app-muted-foreground);
 }
 
@@ -401,8 +422,10 @@
   display: grid;
   grid-template-columns: minmax(0, 1fr) 32px;
   gap: 5px;
-  padding: 7px;
-  border-bottom: 1px solid var(--app-border);
+  width: 240px;
+  max-width: 100%;
+  min-width: 0;
+  flex: 0 0 auto;
 }
 
 .team-member-add [data-slot="select-trigger"] {
@@ -422,22 +445,53 @@
 }
 
 .team-member-add__button:hover {
-  border-color: #93c5fd;
+  border-color: var(--app-border);
+  background: var(--app-hover);
   color: #2563eb;
 }
 
 .team-member-add--complete {
   display: flex;
-  min-height: 39px;
+  min-height: 32px;
+  width: auto;
   align-items: center;
   color: var(--app-muted-foreground);
   font-size: var(--app-font-size-auxiliary);
 }
 
+.team-members-section {
+  --team-member-columns: minmax(200px, 0.72fr) minmax(280px, 1.28fr);
+  padding: 16px;
+}
+
+.team-members-section__heading {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+.team-members-section__heading p {
+  margin: 4px 0 0;
+  color: var(--app-muted-foreground);
+  font-size: var(--app-font-size-auxiliary);
+}
+
+.management-form.team-members-section__controls {
+  padding: 0;
+  border-bottom: 0;
+  margin-bottom: 16px;
+}
+
+.team-members-section__controls .management-form__row,
 .team-member-editor {
   display: grid;
-  grid-template-columns: minmax(238px, 0.78fr) minmax(340px, 1.22fr);
-  border-bottom: 1px solid var(--app-border);
+  grid-template-columns: var(--team-member-columns);
+  gap: 20px;
+  align-items: start;
 }
 
 .team-member-management,
@@ -445,12 +499,9 @@
   min-width: 0;
 }
 
-.team-member-management {
-  border-right: 1px solid var(--app-border);
-}
-
 .team-member-list--embedded {
-  padding-block: 4px 6px;
+  padding: 0;
+  gap: 5px;
 }
 
 .team-member-row {
@@ -473,7 +524,7 @@
 .team-member-row__main {
   display: grid;
   min-width: 0;
-  min-height: 57px;
+  min-height: 48px;
   grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
   gap: 8px;
@@ -522,30 +573,19 @@
 
 .team-member-configuration__heading {
   display: grid;
-  min-height: 56px;
+  min-height: 48px;
   grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
   gap: 9px;
-  padding: 9px 14px;
-  background: var(--app-panel-subtle);
+  padding: 0 0 12px;
+  background: transparent;
 }
 
-.team-member-configuration__heading p,
 .team-member-configuration__heading h3 {
   margin: 0;
-}
-
-.team-member-configuration__heading p {
-  color: var(--app-muted-foreground);
-  font-size: var(--app-font-size-caption);
-  font-weight: 600;
-}
-
-.team-member-configuration__heading h3 {
-  margin-top: 2px;
   color: var(--app-foreground);
-  font-size: var(--app-font-size-control);
-  font-weight: 700;
+  font-size: var(--app-font-size-body);
+  font-weight: 600;
 }
 
 .team-member-configuration__heading > button {
@@ -561,7 +601,8 @@
 }
 
 .team-member-configuration__heading > button:hover {
-  border-color: #93c5fd;
+  border-color: var(--app-border);
+  background: var(--app-hover);
   color: var(--app-accent);
 }
 
@@ -583,6 +624,7 @@
 
 .team-configuration-pane,
 .agent-configuration-pane {
+  container-type: inline-size;
   background: var(--app-panel);
 }
 
@@ -704,8 +746,7 @@
 
 .management-form input:focus,
 .management-form textarea:focus {
-  border-color: #60a5fa;
-  box-shadow: 0 0 0 2px rgba(191, 219, 254, 0.5);
+  border-color: var(--app-focus-ring);
 }
 
 .management-form [data-slot="select-trigger"] {
@@ -720,14 +761,8 @@
 }
 
 .team-member-configuration__form {
+  padding: 0;
   border-bottom: 0;
-}
-
-.team-member-configuration__description {
-  margin: 0;
-  color: var(--app-muted-foreground);
-  font-size: var(--app-font-size-auxiliary);
-  line-height: 1.5;
 }
 
 .management-policy-section {
@@ -741,8 +776,8 @@
 
 .management-policy-section__heading {
   display: flex;
+  min-width: 0;
   align-items: center;
-  justify-content: space-between;
   gap: 8px;
   margin-bottom: 8px;
 }
@@ -789,7 +824,8 @@
 }
 
 .management-choice-row button:hover {
-  border-color: #93c5fd;
+  border-color: var(--app-border);
+  background: var(--app-hover);
   color: var(--app-foreground);
 }
 
@@ -805,78 +841,18 @@
 
 .agent-editor-grid {
   display: grid;
-  grid-template-columns: minmax(300px, 1.1fr) minmax(320px, 0.9fr);
+  min-width: 0;
 }
 
 .agent-editor-grid > .management-form {
   align-content: start;
-  border-right: 1px solid var(--app-border);
   border-bottom: 0;
-}
-
-.agent-policy-column {
-  min-width: 0;
 }
 
 .agent-avatar-editor-section > h3 {
   margin-bottom: 9px;
 }
 
-.agent-avatar-editor {
-  display: grid;
-  grid-template-columns: minmax(112px, auto) minmax(0, 1fr);
-  align-items: center;
-  gap: 12px;
-}
-
-.agent-avatar-editor__preview {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  gap: 8px;
-}
-
-.agent-avatar-editor__preview > span {
-  max-width: 120px;
-  overflow: hidden;
-  color: var(--app-muted-foreground);
-  font-size: var(--app-font-size-auxiliary);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.agent-avatar-presets {
-  display: grid;
-  grid-template-columns: repeat(6, 30px);
-  justify-content: end;
-  gap: 4px;
-}
-
-.agent-avatar-presets button {
-  display: grid;
-  width: 30px;
-  height: 30px;
-  place-items: center;
-  border: 1px solid var(--app-border);
-  border-radius: var(--app-radius);
-  outline: none;
-  background: var(--app-panel);
-  color: var(--app-muted-foreground);
-}
-
-.agent-avatar-presets button:hover {
-  border-color: #93c5fd;
-  color: var(--app-foreground);
-}
-
-.agent-avatar-presets button[aria-pressed="true"] {
-  border-color: #60a5fa;
-  background: #eff6ff;
-  color: #1d4ed8;
-}
-
-.agent-avatar-presets button:focus-visible,
-.agent-avatar-upload:focus-within,
 .agent-avatar-reset:focus-visible {
   outline: 2px solid var(--app-focus-ring);
   outline-offset: -2px;
@@ -890,7 +866,6 @@
   margin-top: 9px;
 }
 
-.agent-avatar-upload,
 .agent-avatar-reset {
   display: inline-flex;
   min-height: 28px;
@@ -906,9 +881,9 @@
   font-weight: 600;
 }
 
-.agent-avatar-upload:hover,
 .agent-avatar-reset:hover {
-  border-color: #93c5fd;
+  border-color: var(--app-border);
+  background: var(--app-hover);
   color: var(--app-foreground);
 }
 
@@ -939,7 +914,7 @@
 
 .capability-inherited-note svg {
   flex: 0 0 auto;
-  color: var(--app-accent);
+  color: var(--app-muted-foreground);
 }
 
 .capability-picker-grid {
@@ -1022,11 +997,10 @@
   color: #17202c;
 }
 
-[data-theme="dark"] .management-choice-row button[aria-pressed="true"],
-[data-theme="dark"] .agent-avatar-presets button[aria-pressed="true"] {
-  border-color: rgba(96, 165, 250, 0.48);
-  background: rgba(59, 130, 246, 0.2);
-  color: #bfdbfe;
+[data-theme="dark"] .management-choice-row button[aria-pressed="true"] {
+  border-color: var(--app-selection-border);
+  background: var(--app-selection);
+  color: var(--app-selection-foreground);
 }
 
 [data-theme="dark"] .management-toggle[data-enabled="true"] {
@@ -1044,37 +1018,28 @@
   color: #93c5fd;
 }
 
-@container (max-width: 900px) {
+@container agent-team-settings (max-width: 900px) {
   .team-management-layout {
     grid-template-columns: var(--settings-list-card-width, 270px) minmax(0, 1fr);
   }
 
   .agent-management-layout {
-    grid-template-columns: var(--settings-list-card-width, 270px) minmax(430px, 1fr);
+    grid-template-columns: var(--settings-list-card-width, 270px) minmax(0, 1fr);
   }
 
-  .agent-editor-grid {
-    grid-template-columns: 1fr;
+}
+
+@container (max-width: 560px) {
+  .team-members-section {
+    --team-member-columns: minmax(0, 1fr);
   }
 
-  .agent-editor-grid > .management-form {
-    border-right: 0;
-    border-bottom: 1px solid var(--app-border);
+  .team-members-section__heading > .team-member-add {
+    width: 100%;
   }
 }
 
-@container (max-width: 780px) {
-  .team-member-editor {
-    grid-template-columns: 1fr;
-  }
-
-  .team-member-management {
-    border-right: 0;
-    border-bottom: 1px solid var(--app-border);
-  }
-}
-
-@container (max-width: 640px) {
+@container agent-team-settings (max-width: 780px) {
   .team-metrics {
     display: none;
   }
@@ -1082,26 +1047,31 @@
   .team-management-layout,
   .agent-management-layout {
     grid-template-columns: 1fr;
+    grid-template-rows: auto max-content;
+    align-content: start;
+    overflow-y: auto;
+    scrollbar-gutter: stable;
+    row-gap: 20px;
+  }
+
+  .management-detail-body {
+    overflow: visible;
   }
 
   .team-directory-pane,
   .agent-directory-pane {
-    max-height: 220px;
+    height: calc(var(--settings-list-card-header-height, 50px) + var(--settings-list-card-footer-height, 44px) + 3 * var(--settings-directory-row-height) + 12px);
     border: 1px solid var(--app-border);
+    margin-right: var(--settings-page-inset);
   }
 
+}
+
+@container (max-width: 420px) {
   .management-form__row,
   .management-choice-row--three,
   .capability-picker-grid {
     grid-template-columns: 1fr;
-  }
-
-  .agent-avatar-editor {
-    grid-template-columns: 1fr;
-  }
-
-  .agent-avatar-presets {
-    justify-content: start;
   }
 }
 
@@ -1137,4 +1107,11 @@
     grid-column: 1 / -1;
     grid-row: 2;
   }
+}
+
+.team-configuration-pane, .agent-configuration-pane { min-width: 0; min-height: 0; display: block; overflow: auto; scrollbar-gutter: stable; overscroll-behavior: contain; padding-left: 20px; padding-right: calc(var(--settings-page-inset) - var(--settings-scrollbar-width)); border: 0; background: transparent; }
+.team-configuration-pane > header, .agent-configuration-pane > header { border: 0; padding-left: 0; padding-right: 0; background: transparent; }
+.team-configuration-pane .management-detail-body, .agent-configuration-pane .management-detail-body { padding-left: 0; padding-right: 0; }
+@container agent-team-settings (max-width: 780px) {
+  .team-configuration-pane, .agent-configuration-pane { overflow: visible; scrollbar-gutter: auto; padding-left: 0; }
 }

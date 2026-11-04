@@ -1,38 +1,163 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  AGENT_AVATAR_ICONS,
   capabilitySetSchema,
+  agentAvatarIconSchema,
   agentPermissionRuleSchema,
+  applicationSettingsSchema,
+  applicationStorageLocationSchema,
   approveToolChangeInputSchema,
+  browserConfigurationSchema,
   clipboardWriteTextIpcArgumentsSchema,
   contextCompressionConfigurationSchema,
   contextCompressionThresholdSchema,
   conversationContextUsageInputSchema,
   conversationContextUsageSchema,
+  conversationAgentMessageItemSchema,
+  conversationAttachmentPreviewSchema,
+  conversationMessageItemSchema,
   conversationRunEventSchema,
+  conversationSearchInputSchema,
+  conversationSearchResponseSchema,
   conversationSummarySchema,
   conversationTaskListSchema,
+  conversationTimelinePageInputSchema,
   createProjectEntryInputSchema,
   createConversationInputSchema,
+  DEFAULT_APPLICATION_SETTINGS,
   emptyIpcArgumentsSchema,
+  ensureTeamMemberConversationInputSchema,
   forkConversationInputSchema,
+  gitFileDiffInputSchema,
+  gitOperationInputSchema,
+  gitReviewSnapshotSchema,
   IPC_CHANNELS,
+  isGptReasoningSummaryModel,
   isReasoningOptionEnabled,
   isReasoningOptionSupportedByApiFormat,
   listProjectEntriesInputSchema,
+  managedBrowserBoundsInputSchema,
+  managedBrowserCommandInputSchema,
+  managedBrowserEventSchema,
+  managedBrowserSnapshotSchema,
   pluginCatalogEntrySchema,
   runtimeInfoSchema,
   resolveContextCompressionThresholdTokens,
   replaceLatestConversationMessageInputSchema,
+  readConversationAttachmentPreviewInputSchema,
+  renameTeamInstanceInputSchema,
+  reorderTeamInstancesInputSchema,
   saveModelConfigurationInputSchema,
   setDefaultModelInputSchema,
   setConversationModelSelectionInputSchema,
+  setConversationPermissionModeInputSchema,
   testModelConnectionInputSchema,
   setConversationProjectInputSchema,
-  sendConversationMessageInputSchema
+  setProjectTeamsInNavigatorInputSchema,
+  sendConversationMessageInputSchema,
+  terminalSessionEventSchema,
+  terminalSessionOpenInputSchema,
+  workspaceBrowserTabOpenRequestSchema,
+  workspaceTerminalTabCloseRequestSchema,
+  workspaceTerminalTabOpenedInputSchema,
+  workspaceTerminalTabOpenRequestSchema,
 } from "./index.js";
 
 describe("protocol bootstrap contract", () => {
+  it("carries the committed user messages with the pending queue consumption event", () => {
+    const conversationId = "00000000-0000-4000-8000-000000000001";
+    const message = { attachments: [], content: "不用侧边终端", conversationId,
+      createdAt: "2026-09-08T00:00:00.000Z", id: "00000000-0000-4000-8000-000000000002",
+      kind: "message", modelId: null, role: "user", runId: "00000000-0000-4000-8000-000000000003", status: "completed" };
+    const event = { conversationId, pendingMessages: [], type: "pending_messages.updated" };
+    expect(conversationRunEventSchema.parse(event)).toEqual(event);
+    expect(conversationRunEventSchema.parse({ ...event, consumedMessages: [message] }))
+      .toEqual({ ...event, consumedMessages: [message] });
+    expect(conversationRunEventSchema.safeParse({ ...event, consumedMessages: [{ ...message, id: "invalid" }] }).success).toBe(false);
+  });
+
+  it("accepts one timeline cursor and rejects mixed navigation modes", () => {
+    const conversationId = "00000000-0000-4000-8000-000000000001";
+    expect(conversationTimelinePageInputSchema.parse({ conversationId, afterSequence: 120 }).limit).toBe(120);
+    expect(conversationTimelinePageInputSchema.safeParse({ conversationId, aroundItemId: conversationId }).success).toBe(true);
+    expect(conversationTimelinePageInputSchema.safeParse({ conversationId, beforeSequence: 121, afterSequence: 1 }).success).toBe(false);
+    expect(conversationTimelinePageInputSchema.safeParse({ conversationId, aroundItemId: conversationId, beforeSequence: 121 }).success).toBe(false);
+  });
+
+  it("accepts ended Subagents and defaults legacy Agent message file changes", () => {
+    const now = "2026-09-05T00:00:00.000Z";
+    expect(conversationSummarySchema.parse({
+      activeRunId: null,
+      createdAt: now,
+      id: "00000000-0000-4000-8000-000000000001",
+      lastRunStatus: "completed",
+      projectId: null,
+      subagentTaskStatus: "ended",
+      title: "已结束助手",
+      updatedAt: now,
+    }).subagentTaskStatus).toBe("ended");
+    const message = conversationAgentMessageItemSchema.parse({
+      content: "完成",
+      conversationId: "00000000-0000-4000-8000-000000000001",
+      createdAt: now,
+      id: "00000000-0000-4000-8000-000000000002",
+      kind: "agent_message",
+      readAt: null,
+      runId: null,
+      senderConversationId: "00000000-0000-4000-8000-000000000003",
+      senderTitle: "执行助手",
+      status: "unread",
+    });
+    expect(message.fileChanges).toEqual([]);
+    expect(conversationAgentMessageItemSchema.parse({ ...message, deliveryMode: "queue" }).deliveryMode).toBe("queue");
+    expect(conversationAgentMessageItemSchema.parse({ ...message, deliveryMode: "steer" }).deliveryMode).toBe("steer");
+    expect(conversationAgentMessageItemSchema.safeParse({ ...message, deliveryMode: "replace" }).success).toBe(false);
+    expect(conversationRunEventSchema.parse({
+      conversationId: message.conversationId,
+      message,
+      type: "agent_message.received",
+    })).toMatchObject({
+      message: { id: message.id },
+      type: "agent_message.received",
+    });
+    expect(() => conversationRunEventSchema.parse({
+      conversationId: message.conversationId,
+      type: "agent_message.received",
+    })).toThrow();
+  });
+
+  it("accepts an optional Team project association while editing", () => {
+    const teamInstanceId = "00000000-0000-4000-8000-000000000001";
+    const projectId = "00000000-0000-4000-8000-000000000002";
+    expect(renameTeamInstanceInputSchema.parse({
+      name: "项目交付组",
+      projectId,
+      teamInstanceId,
+    })).toEqual({ name: "项目交付组", projectId, teamInstanceId });
+    expect(renameTeamInstanceInputSchema.parse({
+      name: "共享交付组",
+      projectId: null,
+      teamInstanceId,
+    })).toEqual({ name: "共享交付组", projectId: null, teamInstanceId });
+  });
+
+  it("validates complete Team instance reorder identifiers without duplicates", () => {
+    const first = "00000000-0000-4000-8000-000000000001";
+    const second = "00000000-0000-4000-8000-000000000002";
+    expect(reorderTeamInstancesInputSchema.parse({ teamInstanceIds: [second, first] }))
+      .toEqual({ teamInstanceIds: [second, first] });
+    expect(() => reorderTeamInstancesInputSchema.parse({ teamInstanceIds: [first, first] }))
+      .toThrow("duplicate identifiers");
+  });
+
+  it("keeps Agent and Subagent avatar icons in one bounded catalog", () => {
+    expect(AGENT_AVATAR_ICONS).toHaveLength(63);
+    expect(new Set(AGENT_AVATAR_ICONS).size).toBe(AGENT_AVATAR_ICONS.length);
+    expect(agentAvatarIconSchema.parse("brain")).toBe("brain");
+    expect(() => agentAvatarIconSchema.parse("arbitrary-svg")).toThrow();
+  });
+
   it("validates scoped approval and Agent allow rules", () => {
     expect(approveToolChangeInputSchema.parse({
       approved: true,
@@ -42,11 +167,19 @@ describe("protocol bootstrap contract", () => {
     expect(approveToolChangeInputSchema.parse({
       approved: true,
       runId: "00000000-0000-4000-8000-000000000001",
+      scope: "session",
+      toolId: "00000000-0000-4000-8000-000000000002",
+    }).scope).toBe("session");
+    expect(() => approveToolChangeInputSchema.parse({
+      approved: true,
+      runId: "00000000-0000-4000-8000-000000000001",
       scope: "agent",
       toolId: "00000000-0000-4000-8000-000000000002",
-    }).scope).toBe("agent");
+    })).toThrow();
     expect(agentPermissionRuleSchema.parse({ tool: "run_command", pattern: "mvn package *" }))
       .toEqual({ pattern: "mvn package *", tool: "run_command" });
+    expect(agentPermissionRuleSchema.parse({ tool: "browser_control", pattern: "navigate https://example.com/*" }))
+      .toEqual({ pattern: "navigate https://example.com/*", tool: "browser_control" });
     expect(() => agentPermissionRuleSchema.parse({ tool: "run_command", pattern: "mvn * test" }))
       .toThrow();
     expect(() => approveToolChangeInputSchema.parse({
@@ -55,6 +188,80 @@ describe("protocol bootstrap contract", () => {
       scope: "global",
       toolId: "00000000-0000-4000-8000-000000000002",
     })).toThrow();
+  });
+
+  it("defaults browser control to ask when loading settings saved before the policy existed", () => {
+    const { ["browser-control"]: browserControl, ...legacyPermissionPolicies } =
+      DEFAULT_APPLICATION_SETTINGS.permissionPolicies;
+    expect(browserControl).toBe("ask");
+    const settings = applicationSettingsSchema.parse({
+      ...DEFAULT_APPLICATION_SETTINGS,
+      permissionPolicies: legacyPermissionPolicies,
+    });
+
+    expect(settings.permissionPolicies["browser-control"]).toBe("ask");
+    expect(settings.general.approvalReviewer).toBe("user");
+  });
+
+  it("accepts AI approval review independently from the permission mode", () => {
+    const settings = applicationSettingsSchema.parse({
+      ...DEFAULT_APPLICATION_SETTINGS,
+      general: {
+        ...DEFAULT_APPLICATION_SETTINGS.general,
+        approvalReviewer: "auto_review",
+        defaultPermissionMode: "ask_before_changes",
+      },
+    });
+
+    expect(settings.general.approvalReviewer).toBe("auto_review");
+    expect(settings.general.defaultPermissionMode).toBe("ask_before_changes");
+  });
+
+  it("accepts the persisted Agent conversation-selector preference", () => {
+    const settings = structuredClone(DEFAULT_APPLICATION_SETTINGS);
+    const firstAgent = settings.agentDirectory.agents[0];
+    expect(firstAgent).toBeDefined();
+    if (firstAgent === undefined) return;
+
+    const parsed = applicationSettingsSchema.parse({
+      ...settings,
+      agentDirectory: {
+        ...settings.agentDirectory,
+        agents: settings.agentDirectory.agents.map((agent, index) => (
+          index === 0 ? { ...agent, conversationSelectable: false } : agent
+        )),
+      },
+    });
+
+    expect(parsed.agentDirectory.agents[0]?.conversationSelectable).toBe(false);
+  });
+
+  it("ships a focused six-role development team with mandatory specialist delegation", () => {
+    const team = DEFAULT_APPLICATION_SETTINGS.agentDirectory.teams.find(
+      (candidate) => candidate.id === "default-team",
+    );
+    expect(team).toMatchObject({
+      leadAgentId: "team-lead",
+      memberIds: [
+        "team-lead",
+        "requirements-analyst",
+        "solution-architect",
+        "frontend-engineer",
+        "backend-engineer",
+        "qa-engineer",
+      ],
+    });
+    expect(team?.instructions).toContain("每个工作项至少委派一位专业成员");
+    expect(team?.memberIds.map((agentId) =>
+      DEFAULT_APPLICATION_SETTINGS.agentDirectory.agents.find((agent) => agent.id === agentId)?.name
+    )).toEqual([
+      "Team Lead",
+      "需求分析师",
+      "架构师",
+      "前端开发",
+      "后端开发",
+      "测试工程师",
+    ]);
   });
 
   it("bounds clipboard text at the IPC boundary", () => {
@@ -109,6 +316,39 @@ describe("protocol bootstrap contract", () => {
     })).toThrow();
   });
 
+  it("validates application storage location state", () => {
+    expect(applicationStorageLocationSchema.parse({
+      activePath: "C:\\Users\\demo\\.aster",
+      canChange: true,
+      configuredPath: "D:\\AsterData",
+      configurationError: false,
+      defaultPath: "C:\\Users\\demo\\.aster",
+      restartRequired: true,
+      source: "custom",
+    })).toMatchObject({ source: "custom", restartRequired: true });
+
+    expect(() => applicationStorageLocationSchema.parse({
+      activePath: "",
+      canChange: true,
+      configuredPath: "D:\\AsterData",
+      configurationError: false,
+      defaultPath: "C:\\Users\\demo\\.aster",
+      restartRequired: true,
+      source: "custom",
+    })).toThrow();
+  });
+
+  it("validates a persisted Conversation permission preference", () => {
+    expect(setConversationPermissionModeInputSchema.parse({
+      conversationId: "00000000-0000-4000-8000-000000000002",
+      permissionMode: "full_access",
+    }).permissionMode).toBe("full_access");
+    expect(() => setConversationPermissionModeInputSchema.parse({
+      conversationId: "00000000-0000-4000-8000-000000000002",
+      permissionMode: "allow_once",
+    })).toThrow();
+  });
+
   it("accepts the minimal desktop runtime contract", () => {
     const runtime = runtimeInfoSchema.parse({
       appVersion: "0.1.0",
@@ -129,6 +369,8 @@ describe("protocol bootstrap contract", () => {
 
     expect(runtime.platform).toBe("win32");
     expect(IPC_CHANNELS.windowToggleMaximize).toBe("window.toggle_maximize");
+    expect(IPC_CHANNELS.applicationSettingsChooseStorageLocation)
+      .toBe("application_settings.choose_storage_location");
   });
 
   it("rejects undeclared capability fields", () => {
@@ -151,6 +393,210 @@ describe("protocol bootstrap contract", () => {
 
   it("rejects IPC arguments during bootstrap", () => {
     expect(() => emptyIpcArgumentsSchema.parse(["unexpected"])).toThrow();
+  });
+
+  it("validates the terminal-tab open handshake without accepting blank names", () => {
+    const requestId = "00000000-0000-4000-8000-000000000001";
+    expect(workspaceTerminalTabOpenRequestSchema.parse({
+      conversationId: "00000000-0000-4000-8000-000000000002",
+      projectId: "00000000-0000-4000-8000-000000000003",
+      requestedName: "构建日志",
+      requestId,
+      session: {
+        projectId: "00000000-0000-4000-8000-000000000003",
+        sessionId: "00000000-0000-4000-8000-000000000004",
+        shellLabel: "PWSH（PowerShell 7）",
+      },
+    })).toMatchObject({ requestedName: "构建日志" });
+    expect(workspaceTerminalTabOpenedInputSchema.parse({
+      requestId,
+      resolvedName: "构建日志 (1)",
+    })).toMatchObject({ resolvedName: "构建日志 (1)" });
+    expect(() => workspaceTerminalTabOpenedInputSchema.parse({ requestId, resolvedName: "  " }))
+      .toThrow();
+  });
+
+  it("validates the browser-tab open handshake with an already-created isolated session", () => {
+    expect(workspaceBrowserTabOpenRequestSchema.parse({
+      conversationId: "00000000-0000-4000-8000-000000000002",
+      projectId: "00000000-0000-4000-8000-000000000003",
+      requestedName: "资料",
+      requestId: "00000000-0000-4000-8000-000000000001",
+      session: {
+        canGoBack: false,
+        canGoForward: false,
+        isLoading: false,
+        sessionId: "00000000-0000-4000-8000-000000000004",
+        title: "Example",
+        url: "https://example.test/",
+        zoomPercent: 100,
+      },
+    })).toMatchObject({ requestedName: "资料" });
+  });
+
+  it("validates bounded developer-tool contracts", () => {
+    const sessionId = "00000000-0000-4000-8000-000000000001";
+    const projectId = "00000000-0000-4000-8000-000000000002";
+    expect(terminalSessionOpenInputSchema.parse({ columns: 120, projectId, rows: 36 }))
+      .toEqual({ columns: 120, projectId, rows: 36 });
+    expect(() => terminalSessionOpenInputSchema.parse({ columns: 0, projectId, rows: 36 }))
+      .toThrow();
+    expect(terminalSessionEventSchema.parse({ data: "ready\r\n", nextCursor: 7, sessionId, type: "data" }))
+      .toMatchObject({ type: "data" });
+    expect(() => terminalSessionEventSchema.parse({ data: "ready", nextCursor: -1, sessionId, type: "data" }))
+      .toThrow();
+    expect(() => terminalSessionEventSchema.parse({ data: "ready", sessionId, type: "data" }))
+      .toThrow();
+    expect(workspaceTerminalTabCloseRequestSchema.parse({
+      conversationId: "00000000-0000-4000-8000-000000000003",
+      sessionId,
+    })).toEqual({
+      conversationId: "00000000-0000-4000-8000-000000000003",
+      sessionId,
+    });
+    expect(managedBrowserBoundsInputSchema.parse({
+      height: 600,
+      sessionId,
+      visible: true,
+      width: 900,
+      x: 400,
+      y: 80,
+    })).toMatchObject({ visible: true, width: 900 });
+    expect(managedBrowserCommandInputSchema.parse({
+      command: "zoomIn",
+      sessionId,
+    })).toEqual({ command: "zoomIn", sessionId });
+    expect(managedBrowserCommandInputSchema.parse({
+      command: "showMenu",
+      sessionId,
+      x: 880,
+      y: 112,
+    })).toEqual({ command: "showMenu", sessionId, x: 880, y: 112 });
+    expect(managedBrowserCommandInputSchema.parse({
+      command: "showDownloads",
+      sessionId,
+      x: 848,
+      y: 112,
+    })).toEqual({ command: "showDownloads", sessionId, x: 848, y: 112 });
+    expect(managedBrowserCommandInputSchema.parse({
+      command: "showFind",
+      sessionId,
+      x: 848,
+      y: 112,
+    })).toEqual({ command: "showFind", sessionId, x: 848, y: 112 });
+    expect(managedBrowserEventSchema.parse({
+      sessionId,
+      type: "openGlobalSearch",
+    })).toEqual({ sessionId, type: "openGlobalSearch" });
+    expect(managedBrowserCommandInputSchema.parse({
+      colorScheme: "light",
+      command: "setColorScheme",
+      sessionId,
+    })).toEqual({ colorScheme: "light", command: "setColorScheme", sessionId });
+    expect(managedBrowserCommandInputSchema.parse({
+      canCreateSideChat: true,
+      canOpenGitReview: false,
+      canOpenTerminal: true,
+      command: "showWorkspaceAddMenu",
+      sessionId,
+      x: 400,
+      y: 80,
+    })).toMatchObject({ command: "showWorkspaceAddMenu", x: 400, y: 80 });
+    expect(managedBrowserEventSchema.parse({
+      session: {
+        canGoBack: false,
+        canGoForward: false,
+        isLoading: false,
+        sessionId,
+        title: "Example",
+        url: "https://example.com/",
+        zoomPercent: 125,
+      },
+      type: "state",
+    })).toMatchObject({ session: { zoomPercent: 125 }, type: "state" });
+    expect(() => managedBrowserEventSchema.parse({
+      message: "x".repeat(2_001),
+      sessionId,
+      type: "error",
+    })).toThrow();
+    expect(managedBrowserEventSchema.parse({
+      sessionId,
+      type: "openSettings",
+    })).toEqual({ sessionId, type: "openSettings" });
+    expect(managedBrowserEventSchema.parse({
+      action: "openFiles",
+      sessionId,
+      type: "workspaceAddMenu",
+    })).toEqual({ action: "openFiles", sessionId, type: "workspaceAddMenu" });
+    expect(managedBrowserSnapshotSchema.parse({
+      data: "c25hcHNob3Q=",
+      height: 600,
+      mimeType: "image/jpeg",
+      width: 900,
+    })).toMatchObject({ height: 600, width: 900 });
+    expect(gitReviewSnapshotSchema.parse({
+      ahead: 0,
+      behind: 1,
+      branch: "develop",
+      branches: [{ current: true, name: "develop", upstream: "origin/develop" }],
+      changes: [{
+        additions: 2,
+        deletions: 1,
+        isStaged: false,
+        originalPath: null,
+        path: "src/app.ts",
+        status: " M",
+      }],
+      isRepository: true,
+      projectId,
+      refreshedAt: "2026-08-28T00:00:00.000Z",
+      upstream: "origin/develop",
+    }).changes).toHaveLength(1);
+    expect(gitFileDiffInputSchema.parse({ path: "src/app.ts", projectId }))
+      .toEqual({ path: "src/app.ts", projectId });
+    expect(gitOperationInputSchema.parse({
+      action: "untrackFiles",
+      paths: ["src/app.ts"],
+      projectId,
+    })).toMatchObject({ action: "untrackFiles" });
+    expect(gitOperationInputSchema.parse({
+      action: "stageFiles",
+      paths: ["src/app.ts", "src/new-file.ts"],
+      projectId,
+    })).toMatchObject({ action: "stageFiles" });
+    expect(gitOperationInputSchema.parse({
+      action: "commit",
+      message: "feat: test",
+      paths: ["src/app.ts"],
+      projectId,
+    })).toMatchObject({ action: "commit" });
+    expect(() => gitOperationInputSchema.parse({ action: "commit", message: "feat: test", projectId }))
+      .toThrow();
+    expect(gitOperationInputSchema.parse({
+      action: "createBranch",
+      branch: "feature/review-menu",
+      projectId,
+      startPoint: "develop",
+    })).toEqual({
+      action: "createBranch",
+      branch: "feature/review-menu",
+      projectId,
+      startPoint: "develop",
+    });
+    expect(() => gitOperationInputSchema.parse({ action: "stageFile", path: "../outside", projectId }))
+      .toThrow();
+    expect(IPC_CHANNELS.managedBrowserOpen).toBe("managed_browser.open");
+    expect(IPC_CHANNELS.managedBrowserCapture).toBe("managed_browser.capture");
+    expect(IPC_CHANNELS.browserClearData).toBe("browser.clear_data");
+    expect(browserConfigurationSchema.parse({ defaultZoomPercent: 125, version: 1 }))
+      .toEqual({
+        askForDownloadLocation: false,
+        downloadDirectory: "",
+        savePasswords: true,
+        defaultZoomPercent: 125,
+        searchEngine: "google",
+        version: 1,
+      });
   });
 
   it("validates project entry creation paths", () => {
@@ -183,6 +629,7 @@ describe("protocol bootstrap contract", () => {
       activeSubagentCount: 0,
       archivedAt: null,
       hasUnreadResult: false,
+      teamWorkItemId: null,
       threadKind: "agent",
     });
     expect(
@@ -200,6 +647,7 @@ describe("protocol bootstrap contract", () => {
 
   it("validates Agent thread identity at the protocol boundary", () => {
     const agent = {
+      avatarIcon: "sparkles" as const,
       id: "team-lead",
       instructions: "负责拆分和汇总任务。",
       isDefault: false,
@@ -212,6 +660,15 @@ describe("protocol bootstrap contract", () => {
       teamId: "default-team",
       threadKind: "team_lead",
     })).toMatchObject({ agent, teamId: "default-team", threadKind: "team_lead" });
+    expect(createConversationInputSchema.parse({
+      agent,
+      parentConversationId: "00000000-0000-4000-8000-000000000009",
+      teamId: "default-team",
+      threadKind: "team_lead",
+    })).toMatchObject({ parentConversationId: "00000000-0000-4000-8000-000000000009" });
+    expect(() => createConversationInputSchema.parse({
+      agent: { ...agent, avatarIcon: "arbitrary-svg" },
+    })).toThrow();
     expect(() => createConversationInputSchema.parse({
       agent,
       threadKind: "team_lead",
@@ -223,6 +680,10 @@ describe("protocol bootstrap contract", () => {
       teamId: "default-team",
       threadKind: "agent",
     })).toThrow("must identify its Agent profile");
+    expect(() => createConversationInputSchema.parse({
+      parentConversationId: "00000000-0000-4000-8000-000000000009",
+      threadKind: "agent",
+    })).toThrow("Only Team Lead execution conversations");
     expect(() => createConversationInputSchema.parse({
       threadKind: "subagent",
     })).toThrow();
@@ -289,6 +750,19 @@ describe("protocol bootstrap contract", () => {
     expect(taskList.tasks.map((task) => task.reason)).toEqual(["等待用户确认写入", "构建命令退出"]);
   });
 
+  it("accepts multiple running tasks in one conversation task list", () => {
+    const taskList = conversationTaskListSchema.parse({
+      conversationId: "00000000-0000-4000-8000-000000000001",
+      tasks: [
+        { id: "00000000-0000-4000-8000-000000000002", status: "running", title: "调查问题" },
+        { id: "00000000-0000-4000-8000-000000000003", status: "running", title: "补充测试" },
+      ],
+      updatedAt: "2026-09-05T00:00:00.000Z",
+    });
+
+    expect(taskList.tasks.map((task) => task.status)).toEqual(["running", "running"]);
+  });
+
   it("keeps task lists saved before task reasons compatible", () => {
     const taskList = conversationTaskListSchema.parse({
       conversationId: "00000000-0000-4000-8000-000000000001",
@@ -328,18 +802,27 @@ describe("protocol bootstrap contract", () => {
   it("validates replacement of the latest sent user message", () => {
     const conversationId = "00000000-0000-4000-8000-000000000001";
     const messageId = "00000000-0000-4000-8000-000000000002";
+    const attachmentId = "00000000-0000-4000-8000-000000000003";
 
     expect(replaceLatestConversationMessageInputSchema.parse({
+      attachmentIds: [attachmentId],
       content: "修改后的任务",
       conversationId,
       messageId,
       permissionMode: "ask_before_changes",
     })).toEqual({
+      attachmentIds: [attachmentId],
       content: "修改后的任务",
       conversationId,
       messageId,
       permissionMode: "ask_before_changes",
     });
+    expect(replaceLatestConversationMessageInputSchema.parse({
+      attachmentIds: [attachmentId],
+      content: "",
+      conversationId,
+      messageId,
+    })).toMatchObject({ attachmentIds: [attachmentId], content: "" });
     expect(() => replaceLatestConversationMessageInputSchema.parse({
       content: "",
       conversationId,
@@ -420,6 +903,8 @@ describe("protocol bootstrap contract", () => {
       conversationId: "00000000-0000-4000-8000-000000000001",
       delta: "正在检查模型适配器",
       kind: "summary",
+      messageId: "00000000-0000-4000-8000-000000000003",
+      modelId: "test-model",
       reset: true,
       runId: "00000000-0000-4000-8000-000000000002",
       type: "assistant.reasoning_delta"
@@ -428,6 +913,119 @@ describe("protocol bootstrap contract", () => {
       kind: "summary",
       reset: true,
       type: "assistant.reasoning_delta"
+    });
+  });
+
+  it("validates bounded conversation search requests and results", () => {
+    const conversationId = "00000000-0000-4000-8000-000000000001";
+    const itemId = "00000000-0000-4000-8000-000000000002";
+    expect(conversationSearchInputSchema.parse({ query: "缓存命中" }))
+      .toEqual({ limit: 50, query: "缓存命中" });
+    expect(conversationSearchResponseSchema.parse([{
+      content: "分析缓存命中率",
+      conversationId,
+      conversationTitle: "性能排查",
+      createdAt: "2026-09-04T00:00:00.000Z",
+      itemId,
+      parentConversationId: null,
+      projectId: null,
+      role: "assistant",
+      sequence: 1,
+      threadKind: "agent",
+    }])).toHaveLength(1);
+    expect(() => conversationSearchInputSchema.parse({ query: "" })).toThrow();
+  });
+
+  it("carries a transient model progress update", () => {
+    expect(conversationRunEventSchema.parse({
+      conversationId: "00000000-0000-4000-8000-000000000001",
+      delta: "已确认问题位置，准备修改文件",
+      kind: "progress",
+      messageId: "00000000-0000-4000-8000-000000000003",
+      modelId: "test-model",
+      reset: true,
+      runId: "00000000-0000-4000-8000-000000000002",
+      type: "assistant.reasoning_delta"
+    })).toMatchObject({
+      delta: "已确认问题位置，准备修改文件",
+      kind: "progress",
+      reset: true,
+      type: "assistant.reasoning_delta"
+    });
+  });
+
+  it("carries a durable model retry timeline update", () => {
+    const conversationId = "00000000-0000-4000-8000-000000000001";
+    const runId = "00000000-0000-4000-8000-000000000002";
+    expect(conversationRunEventSchema.parse({
+      conversationId,
+      retry: {
+        attempt: 2,
+        conversationId,
+        createdAt: "2026-09-02T00:00:00.000Z",
+        id: "00000000-0000-4000-8000-000000000003",
+        kind: "model_retry",
+        maxAttempts: 5,
+        reason: "HTTP 402: Insufficient Balance",
+        retryInMs: 2_000,
+        runId,
+        status: "retrying",
+        updatedAt: "2026-09-02T00:00:02.000Z",
+      },
+      runId,
+      type: "model.retry_updated",
+    })).toMatchObject({
+      retry: {
+        attempt: 2,
+        kind: "model_retry",
+        status: "retrying",
+      },
+      type: "model.retry_updated",
+    });
+  });
+
+  it("validates the project team navigator visibility preference", () => {
+    const projectId = "00000000-0000-4000-8000-000000000001";
+    expect(setProjectTeamsInNavigatorInputSchema.parse({
+      projectId,
+      showTeamsInNavigator: true,
+    })).toEqual({ projectId, showTeamsInNavigator: true });
+    expect(() => setProjectTeamsInNavigatorInputSchema.parse({
+      projectId,
+      showTeamsInNavigator: "true",
+    })).toThrow();
+  });
+
+  it("validates the durable shared Team member conversation request", () => {
+    expect(ensureTeamMemberConversationInputSchema.parse({
+      agentId: "frontend-engineer",
+      teamId: "default-team",
+    })).toEqual({
+      agentId: "frontend-engineer",
+      teamId: "default-team",
+    });
+    expect(() => ensureTeamMemberConversationInputSchema.parse({
+      agentId: "",
+      teamId: "default-team",
+    })).toThrow();
+  });
+
+  it("carries persisted full reasoning on assistant timeline messages", () => {
+    expect(conversationMessageItemSchema.parse({
+      attachments: [],
+      content: "最终回答",
+      conversationId: "00000000-0000-4000-8000-000000000001",
+      createdAt: "2026-08-30T00:00:00.000Z",
+      id: "00000000-0000-4000-8000-000000000003",
+      kind: "message",
+      modelId: "deepseek-v4-flash",
+      reasoningContent: "先分析问题，再验证答案。",
+      role: "assistant",
+      runId: "00000000-0000-4000-8000-000000000002",
+      status: "completed",
+    })).toMatchObject({
+      reasoningContent: "先分析问题，再验证答案。",
+      role: "assistant",
     });
   });
 
@@ -443,6 +1041,30 @@ describe("protocol bootstrap contract", () => {
       content: "",
       conversationId,
     })).toThrow("text, an attachment, or a project file reference");
+  });
+
+  it("validates bounded conversation attachment image previews", () => {
+    const input = {
+      attachmentId: "00000000-0000-4000-8000-000000000002",
+      conversationId: "00000000-0000-4000-8000-000000000001",
+    };
+    expect(readConversationAttachmentPreviewInputSchema.parse(input)).toEqual(input);
+    expect(conversationAttachmentPreviewSchema.parse({
+      data: "AQID",
+      mimeType: "image/png",
+    })).toEqual({ data: "AQID", mimeType: "image/png" });
+    expect(() => readConversationAttachmentPreviewInputSchema.parse({
+      ...input,
+      attachmentId: "not-an-id",
+    })).toThrow();
+    expect(() => conversationAttachmentPreviewSchema.parse({
+      data: "not base64",
+      mimeType: "image/png",
+    })).toThrow();
+    expect(() => conversationAttachmentPreviewSchema.parse({
+      data: "AQI",
+      mimeType: "image/png",
+    })).toThrow("complete quartets");
   });
 
   it("accepts unique project file references and rejects invalid paths", () => {
@@ -480,15 +1102,51 @@ describe("protocol bootstrap contract", () => {
         compressionThresholdTokens: 64_000,
         estimatedConversationTokens: 120,
         estimatedInputTokens: 260,
+        estimatedSkillCatalogTokens: 10,
         estimatedSystemTokens: 40,
+        estimatedTaskListTokens: 0,
         estimatedToolDefinitionTokens: 60,
         estimatedToolTokens: 40,
         historyCharacters: 480,
         includedMessageCount: 3,
         omittedMessageCount: 0,
         outputReserveTokens: 8192,
-      }).estimatedInputTokens,
-    ).toBe(260);
+        providerCache: {
+          cumulative: {
+            cacheCreationInputTokens: 100,
+            cachedInputTokens: 1_200,
+            hitRate: 0.6,
+            inputTokens: 2_000,
+            reportedRequestCount: 2,
+            requestCount: 3,
+          },
+          latest: {
+            cacheCreationInputTokens: 0,
+            cachedInputTokens: 700,
+            hitRate: 0.7,
+            inputTokens: 1_000,
+            outputTokens: 240,
+            trendDelta: 0.1,
+          },
+        },
+        skillReserveTokens: 20,
+      }).providerCache,
+    ).toMatchObject({
+      cumulative: { hitRate: 0.6, reportedRequestCount: 2 },
+      latest: { hitRate: 0.7, outputTokens: 240 },
+    });
+  });
+
+  it("validates the optional previous cache hit rate without treating zero as missing", () => {
+    const schema = conversationContextUsageSchema.shape.providerCache.unwrap().shape.lastReportedHitRate;
+    for (const value of [undefined, 0, 0.54, 1]) expect(schema.safeParse(value).success).toBe(true);
+    for (const value of [null, -1, 1.01, NaN, "0.8"]) expect(schema.safeParse(value).success).toBe(false);
+  });
+
+  it("validates optional output throughput and preserves unavailable and zero values", () => {
+    const schema = conversationContextUsageSchema.shape.providerCache.unwrap().shape.outputTokensPerSecond;
+    for (const value of [undefined, null, 0, 12.5]) expect(schema.safeParse(value).success).toBe(true);
+    for (const value of [-1, NaN, Infinity, "12.5"]) expect(schema.safeParse(value).success).toBe(false);
   });
 
   it("validates global context compression thresholds", () => {
@@ -684,7 +1342,7 @@ describe("protocol bootstrap contract", () => {
       "openai-chat-completions",
       { kind: "effort", value: "max" },
       "legacy-model",
-    )).toBe(false);
+    )).toBe(true);
     expect(isReasoningOptionSupportedByApiFormat(
       "openai-responses",
       { kind: "effort", value: "minimal" },
@@ -694,11 +1352,11 @@ describe("protocol bootstrap contract", () => {
       "openai-responses",
       { kind: "effort", value: "minimal" },
       "gpt-5.6",
-    )).toBe(false);
+    )).toBe(true);
     expect(isReasoningOptionSupportedByApiFormat(
       "anthropic-messages",
       { kind: "custom_effort", value: "provider-defined" },
-    )).toBe(false);
+    )).toBe(true);
     expect(isReasoningOptionSupportedByApiFormat(
       "google-gemini",
       { kind: "custom_effort", value: "provider-defined" },
@@ -712,12 +1370,12 @@ describe("protocol bootstrap contract", () => {
       "google-gemini",
       { kind: "token_budget", value: 4_096 },
       "gemini-3.1-pro-preview",
-    )).toBe(false);
+    )).toBe(true);
     expect(isReasoningOptionSupportedByApiFormat(
       "google-gemini",
       { kind: "effort", value: "high" },
       "gemini-2.5-pro",
-    )).toBe(false);
+    )).toBe(true);
 
     expect(() =>
       saveModelConfigurationInputSchema.parse({
@@ -747,7 +1405,7 @@ describe("protocol bootstrap contract", () => {
         }],
         providerName: "Anthropic"
       })
-    ).toThrow();
+    ).not.toThrow();
   });
 
   it("validates a global default model selection separately", () => {
@@ -772,5 +1430,15 @@ describe("protocol bootstrap contract", () => {
         projectId: "00000000-0000-4000-8000-000000000001"
       })
     ).toThrow();
+  });
+});
+
+
+describe("GPT reasoning summary identity", () => {
+  it.each(["gpt-5.6-terra", "gpt-6-sol", "gpt-6.1-sol", "openai/gpt-6-astra", " GPT-6.1-SOL "])("recognizes %s", modelId => {
+    expect(isGptReasoningSummaryModel(modelId)).toBe(true);
+  });
+  it.each(["gpt-oss-120b", "deepseek-reasoner", "qwen3", "my-gpt-6-proxy"])("does not infer summaries for %s", modelId => {
+    expect(isGptReasoningSummaryModel(modelId)).toBe(false);
   });
 });

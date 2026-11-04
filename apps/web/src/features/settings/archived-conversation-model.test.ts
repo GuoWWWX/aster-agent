@@ -28,6 +28,7 @@ function conversation(
     pinOrder: null,
     projectId: null,
     teamId: null,
+    teamWorkItemId: null,
     threadKind: "agent",
     title: id,
     updatedAt: archivedAt ?? "2026-08-01T00:00:00.000Z",

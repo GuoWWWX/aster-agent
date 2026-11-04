@@ -1,6 +1,7 @@
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { safeStorage } from "electron";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ModelApiFormat } from "@agent/protocol";
 
@@ -14,6 +15,7 @@ vi.mock("electron", () => ({
 
 import { ModelCredentialStore } from "./model-credential-store.js";
 import { ModelResponseError } from "./model-request-error.js";
+import { SettingsJsoncFile } from "../settings/settings-jsonc-file.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -66,7 +68,9 @@ function requestHeader(init: RequestInit | undefined, name: string): string | nu
 }
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
   await Promise.all(
     temporaryDirectories.splice(0).map((directory) =>
       rm(directory, { force: true, recursive: true })
@@ -75,6 +79,175 @@ afterEach(async () => {
 });
 
 describe("ModelCredentialStore", () => {
+  it.each(["jsonc", "legacy"])("deletes providers and keeps an empty %s configuration after restart", async (format) => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "aster-model-delete-"));
+    temporaryDirectories.push(directory);
+    const configuration = format === "jsonc"
+      ? new SettingsJsoncFile(path.join(directory, "settings.jsonc"))
+      : path.join(directory, "models.json");
+    const store = new ModelCredentialStore(configuration);
+    const input = {
+      apiFormat: "openai-chat-completions" as const,
+      apiKey: "test-key",
+      baseUrl: "https://example.test/v1",
+      models: [{ contextWindow: 0, displayName: "Test", modelId: "test", reasoningOptions: [] }],
+      providerName: "First",
+    };
+    const first = store.saveConfiguration(input);
+    const second = store.saveConfiguration({ ...input, providerName: "Second", models: [{ ...input.models[0]!, modelId: "next-model" }, ...input.models] });
+    const secondId = second.models.find((model) => model.providerName === "Second")?.providerId;
+    expect(secondId).toBeDefined();
+    store.setRecentSelection({ providerId: first.providerId!, modelId: "test", reasoning: null });
+    const remaining = store.deleteProvider(first.providerId!);
+    expect(remaining.providerId).toBe(secondId);
+    expect(remaining.models).toHaveLength(2);
+    expect(remaining.modelId).toBe("next-model");
+    expect(remaining.recentSelection).toBeNull();
+    expect(store.deleteProvider(secondId!)).toMatchObject({ configured: false, models: [], providerId: null });
+    const restored = new ModelCredentialStore(configuration);
+    vi.stubEnv("AGENT_MODEL_BASE_URL", input.baseUrl);
+    vi.stubEnv("AGENT_MODEL_API_KEY", input.apiKey);
+    vi.stubEnv("AGENT_MODEL_ID", "test");
+    restored.importFromEnvironment();
+    expect(restored.getStatus()).toMatchObject({ configured: false, models: [] });
+  });
+  it("preserves explicitly empty JSONC providers instead of restoring environment credentials", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "aster-model-empty-settings-"));
+    temporaryDirectories.push(directory);
+    const settings = new SettingsJsoncFile(path.join(directory, "settings.jsonc"));
+    settings.writeValues([{ key: "providers", value: [] }]);
+    const original = await readFile(settings.path, "utf8");
+    vi.stubEnv("AGENT_MODEL_BASE_URL", "https://example.test/v1");
+    vi.stubEnv("AGENT_MODEL_API_KEY", "environment-key");
+    vi.stubEnv("AGENT_MODEL_ID", "test");
+    const store = new ModelCredentialStore(settings);
+
+    store.importFromEnvironment();
+
+    expect(store.getStatus().configured).toBe(false);
+    expect(await readFile(settings.path, "utf8")).toBe(original);
+  });
+
+  it("stores editable API keys in settings.jsonc without an encrypted shadow field", async () => {
+    vi.spyOn(safeStorage, "isEncryptionAvailable").mockReturnValue(false);
+    const decrypt = vi.spyOn(safeStorage, "decryptString").mockImplementation(() => { throw new Error("must not decrypt JSONC"); });
+    const directory = await mkdtemp(path.join(os.tmpdir(), "aster-model-settings-"));
+    temporaryDirectories.push(directory);
+    const configurationPath = path.join(directory, "settings.jsonc");
+    const settings = new SettingsJsoncFile(configurationPath);
+    const store = new ModelCredentialStore(settings);
+
+    const status = store.saveConfiguration({
+      apiKey: "plain-test-key",
+      apiFormat: "openai-responses",
+      baseUrl: "https://example.test/v1",
+      models: [{
+        contextWindow: 128_000,
+        displayName: "测试模型",
+        modelId: "test-model",
+        reasoningOptions: [],
+      }],
+      providerName: "测试供应商",
+    });
+    const providerId = status.providerId;
+    if (providerId === null) throw new Error("Expected a configured provider.");
+
+    expect(store.getConfiguration(providerId, "test-model").apiKey).toBe("plain-test-key");
+    expect(store.getConfiguration(providerId, "test-model").authentication).toEqual({ type: "api-key" });
+    const content = await readFile(configurationPath, "utf8");
+    expect(content).toContain('"apiKey": "plain-test-key"');
+    expect(content).not.toContain("encryptedApiKey");
+    expect(decrypt).not.toHaveBeenCalled();
+  });
+
+  it("preserves an unreadable legacy key and migrates editable metadata without blocking startup", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "aster-model-migration-failed-"));
+    temporaryDirectories.push(directory);
+    const legacyPath = path.join(directory, "model-credentials.json");
+    const settingsPath = path.join(directory, "settings.jsonc");
+    const legacy = new ModelCredentialStore(legacyPath);
+    legacy.saveConfiguration({
+      apiKey: "unrecoverable-test-key", apiFormat: "openai-responses", baseUrl: "https://example.test/v1",
+      models: [{ modelId: "test", displayName: "test", contextWindow: 0, reasoningOptions: [] }], providerName: "旧供应商",
+    });
+    const original = await readFile(legacyPath, "utf8");
+    const decrypt = vi.spyOn(safeStorage, "decryptString").mockImplementation(() => { throw new Error("ciphertext error"); });
+    const store = new ModelCredentialStore(new SettingsJsoncFile(settingsPath), legacyPath);
+    expect(() => store.importFromEnvironment()).not.toThrow();
+    expect(store.getConfiguration().apiKey).toBe("");
+    expect(await readFile(legacyPath, "utf8")).toBe(original);
+    const content = await readFile(settingsPath, "utf8");
+    expect(content).toContain('"apiKey": ""');
+    expect(content).not.toContain("encryptedApiKey");
+    const restarted = new ModelCredentialStore(new SettingsJsoncFile(settingsPath), legacyPath);
+    decrypt.mockClear();
+    expect(() => restarted.importFromEnvironment()).not.toThrow();
+    expect(restarted.getConfiguration().apiKey).toBe("");
+    expect(decrypt).not.toHaveBeenCalled();
+  });
+
+  it("migrates the former encrypted model file into settings.jsonc", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "aster-model-migration-"));
+    temporaryDirectories.push(directory);
+    const legacyPath = path.join(directory, "model-credentials.json");
+    const settingsPath = path.join(directory, "settings.jsonc");
+    const providerId = "00000000-0000-4000-8000-000000000077";
+    await writeFile(legacyPath, JSON.stringify({
+      defaultModelId: "legacy-model",
+      defaultProviderId: providerId,
+      providers: [{
+        apiFormat: "openai-chat-completions",
+        baseUrl: "https://legacy.example/v1",
+        encryptedApiKey: Buffer.from("legacy-key", "utf8").toString("base64"),
+        id: providerId,
+        models: [{
+          contextWindow: 128_000,
+          modelId: "legacy-model",
+          reasoningOptions: [],
+        }],
+        name: "旧供应商",
+      }],
+      recentSelection: null,
+      version: 6,
+    }), "utf8");
+    const store = new ModelCredentialStore(new SettingsJsoncFile(settingsPath), legacyPath);
+
+    store.importFromEnvironment();
+
+    expect(store.getConfiguration(providerId, "legacy-model").apiKey).toBe("legacy-key");
+    await expect(readFile(settingsPath, "utf8")).resolves.toContain('"apiKey": "legacy-key"');
+    await expect(readFile(legacyPath, "utf8")).resolves.toContain("encryptedApiKey");
+  });
+
+  it("reads context metadata without decrypting the provider credential", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "agent-model-credentials-"));
+    temporaryDirectories.push(directory);
+    const store = new ModelCredentialStore(path.join(directory, "model-credentials.json"));
+    const status = store.saveConfiguration({
+      apiKey: "test-key",
+      apiFormat: "openai-responses",
+      baseUrl: "https://example.test/v1",
+      models: [{
+        contextWindow: 128_000,
+        displayName: "测试模型",
+        modelId: "test-model",
+        reasoningOptions: [],
+      }],
+      providerName: "测试供应商",
+    });
+    const providerId = status.providerId;
+    if (providerId === null) throw new Error("Expected a saved provider.");
+    const decrypt = vi.spyOn(safeStorage, "decryptString").mockImplementation(() => {
+      throw new Error("credential is unavailable");
+    });
+
+    expect(store.getContextConfiguration(providerId, "test-model")).toMatchObject({
+      contextWindow: 128_000,
+      modelId: "test-model",
+    });
+    expect(decrypt).not.toHaveBeenCalled();
+  });
+
   it.each(CONNECTION_TEST_CASES)("tests a configured $apiFormat model through its adapter", async ({
     apiFormat,
     baseUrl,
@@ -124,6 +297,25 @@ describe("ModelCredentialStore", () => {
     expect(requestCall?.[1]?.body).toContain(requestBodyFragment);
   });
 
+  it("tests the chosen configured model using its lowest enabled reasoning", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "agent-model-credentials-"));
+    temporaryDirectories.push(directory);
+    const store = new ModelCredentialStore(path.join(directory, "model-credentials.json"));
+    const status = store.saveConfiguration({ apiKey: "test-key", apiFormat: "openai-responses", baseUrl: "https://selected.invalid/v1", providerName: "selected",
+      models: [{ modelId: "chosen-model", displayName: "chosen", contextWindow: 128000,
+        reasoningOptions: [{ kind: "effort", value: "none", enabled: false }, { kind: "effort", value: "medium" }, { kind: "effort", value: "low" }] }] });
+    const request = vi.fn<typeof fetch>().mockResolvedValue(new Response(CONNECTION_TEST_CASES.find(item => item.apiFormat === "openai-responses")!.responseBody,
+      { headers: { "Content-Type": "text/event-stream" }, status: 200 }));
+    vi.stubGlobal("fetch", request);
+    await store.testModelConnection(status.providerId!, "chosen-model");
+    expect(request.mock.calls[0]?.[0]).toBe("https://selected.invalid/v1/responses");
+    const body = request.mock.calls[0]?.[1]?.body;
+    expect(body).toContain('"model":"chosen-model"');
+    expect(body).toContain('"effort":"low"');
+    expect(body).toContain('"max_output_tokens":1024');
+    expect(request).toHaveBeenCalledOnce();
+  });
+
   it("marks an empty model reply as a model-response failure", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "agent-model-credentials-"));
     temporaryDirectories.push(directory);
@@ -151,6 +343,38 @@ describe("ModelCredentialStore", () => {
       .rejects.toBeInstanceOf(ModelResponseError);
     expect(store.getStatus().models).toEqual([
       expect.objectContaining({ connectionStatus: "error", modelId: "test-model" }),
+    ]);
+  });
+
+  it("accepts a reasoning-only reply as a healthy model connection", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "agent-model-credentials-"));
+    temporaryDirectories.push(directory);
+    const store = new ModelCredentialStore(path.join(directory, "model-credentials.json"));
+    const status = store.saveConfiguration({
+      apiKey: "test-key",
+      apiFormat: "openai-chat-completions",
+      baseUrl: "https://example.test/v1",
+      models: [{
+        contextWindow: 128_000,
+        displayName: "推理模型",
+        modelId: "reasoning-model",
+        reasoningOptions: [],
+      }],
+      providerName: "测试供应商",
+    });
+    const providerId = status.providerId;
+    if (providerId === null) throw new Error("Expected a saved provider.");
+    vi.stubGlobal("fetch", vi.fn<typeof fetch>().mockResolvedValue(new Response(
+      'data: {"choices":[{"delta":{"role":"assistant","reasoning_content":"thinking"},"finish_reason":null}]}\n\ndata: {"choices":[{"delta":{},"finish_reason":"length"}]}\n\ndata: [DONE]\n\n',
+      { headers: { "Content-Type": "text/event-stream" }, status: 200 },
+    )));
+
+    await expect(store.testModelConnection(providerId, "reasoning-model")).resolves.toEqual({
+      content: "模型已返回有效推理响应。",
+      modelId: "reasoning-model",
+    });
+    expect(store.getStatus().models).toEqual([
+      expect.objectContaining({ connectionStatus: "healthy", modelId: "reasoning-model" }),
     ]);
   });
 
@@ -185,6 +409,7 @@ describe("ModelCredentialStore", () => {
       store.getConfiguration("00000000-0000-4000-8000-000000000001", "legacy-model")
     ).toEqual({
       apiKey: "legacy-key",
+      authentication: { type: "api-key" },
       apiFormat: "openai-chat-completions",
       baseUrl: "https://legacy.example/v1",
       contextWindow: 32_000,

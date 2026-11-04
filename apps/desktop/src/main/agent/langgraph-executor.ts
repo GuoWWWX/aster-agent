@@ -2,6 +2,7 @@ import {
   AIMessage,
   BaseMessage,
   HumanMessage,
+  RemoveMessage,
   SystemMessage,
   ToolMessage,
   coerceMessageLikeToMessage,
@@ -9,8 +10,15 @@ import {
 } from "@langchain/core/messages";
 import { BaseChatModel } from "@langchain/core/language_models/chat_models";
 import type { ChatGeneration, ChatResult } from "@langchain/core/outputs";
+import { AsyncLocalStorageProviderSingleton } from "@langchain/core/singletons";
 import { DynamicStructuredTool } from "@langchain/core/tools";
-import { Command, isInterrupted, MemorySaver } from "@langchain/langgraph";
+import {
+  Command,
+  isGraphInterrupt,
+  isInterrupted,
+  MemorySaver,
+  REMOVE_ALL_MESSAGES,
+} from "@langchain/langgraph";
 import type { BaseCheckpointSaver } from "@langchain/langgraph-checkpoint";
 import {
   MIDDLEWARE_BRAND,
@@ -28,7 +36,9 @@ import type {
   ModelToolDefinition,
   ModelTurnResult,
 } from "../model/model-contracts.js";
+import { normalizeModelFacingToolOutputs } from "./context-manager.js";
 import type { SkillSnapshotRef } from "./skill-runtime.js";
+import { compactProviderReplayState } from "../model/provider-replay-state.js";
 
 export type AgentGraphState = {
   activeSkills: SkillSnapshotRef[];
@@ -45,6 +55,7 @@ export type AgentGraphModelPreparation = {
   contextMessages?: ModelMessage[];
   messages: ModelMessage[];
   hasFollowUpInput: boolean;
+  replaceMessages?: ModelMessage[];
 };
 
 export type AgentGraphInitialPreparation = {
@@ -65,8 +76,17 @@ export type AgentGraphModelRetry = {
     attempt: number;
     delayMs: number;
     error: unknown;
+    requestId: string;
   }): Promise<void> | void;
-  onFailure?(error: unknown): Promise<void> | void;
+  onFailure?(input: {
+    attempt: number;
+    error: unknown;
+    requestId: string;
+  }): Promise<void> | void;
+  onSuccess?(input: {
+    attempt: number;
+    requestId: string;
+  }): Promise<void> | void;
   shouldFailEmptyResponse?(): boolean;
   createEmptyResponseError?(): Error;
 };
@@ -75,6 +95,7 @@ export type AgentGraphToolExecution = {
   activeSkills?: SkillSnapshotRef[];
   messages: ModelMessage[];
   successful: boolean;
+  finishRun?: boolean;
 };
 
 export type AgentGraphCallbacks = {
@@ -122,6 +143,7 @@ const runtimeStateSchema = z.object({
   contextPrepared: z.boolean().default(false),
   hasFollowUpInput: z.boolean().default(false),
   hasSuccessfulToolExecution: z.boolean().default(false),
+  finishAfterTools: z.boolean().default(false),
   turns: z.number().int().nonnegative().default(0),
 });
 
@@ -131,12 +153,23 @@ type RuntimeState = z.infer<typeof runtimeStateSchema> & {
 
 type RuntimeToolBatch = {
   activeSkills: SkillSnapshotRef[];
+  followUpMessages: ModelMessage[];
   messages: Map<string, ModelMessage>;
   successful: boolean;
+  finishRun: boolean;
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function normalizeInterrupts(entries: readonly unknown[]): LangGraphInterrupt[] {
+  return entries.map((entry) => {
+    if (!isRecord(entry) || typeof entry.id !== "string") {
+      throw new Error("LangGraph returned an interrupt without an identifier.");
+    }
+    return { id: entry.id, value: entry.value };
+  });
 }
 
 function isModelToolCall(value: unknown): value is ModelToolCall {
@@ -171,7 +204,7 @@ function isModelMessageAttachment(value: unknown): value is ModelMessageAttachme
     || (value.projectPath !== null && typeof value.projectPath !== "string")
     || (value.readState !== "full" && value.readState !== "metadata_only" && value.readState !== "preview")
     || typeof value.truncated !== "boolean"
-    || (value.source !== "project" && value.source !== "upload")
+    || (value.source !== "browser" && value.source !== "project" && value.source !== "upload" && value.source !== "computer")
   ) return false;
   if (value.kind === "text") return typeof value.content === "string";
   return value.kind === "image" && (value.data === null || typeof value.data === "string");
@@ -186,6 +219,8 @@ function isModelMessage(value: unknown): value is ModelMessage {
     && (value.toolCallId === null || typeof value.toolCallId === "string")
     && Array.isArray(value.toolCalls)
     && value.toolCalls.every(isModelToolCall)
+    && (value.runtimeContext === undefined || (typeof value.runtimeContext === "string"
+      && ["queue", "skills", "checklist", "directory"].includes(value.runtimeContext)))
     && (value.providerState === undefined || isModelProviderState(value.providerState));
 }
 
@@ -223,6 +258,10 @@ function toolCallsOf(result: ModelTurnResult | null): ModelToolCall[] {
 }
 
 function toLangChainMessage(message: ModelMessage): BaseMessage {
+  if (message.providerState !== undefined) {
+    const providerState = compactProviderReplayState(message.providerState);
+    if (providerState !== message.providerState) message = { ...message, providerState };
+  }
   const metadata = { [MODEL_MESSAGE_METADATA_KEY]: message };
   if (message.role === "system") return new SystemMessage({ content: message.content, additional_kwargs: metadata });
   if (message.role === "user") return new HumanMessage({ content: message.content, additional_kwargs: metadata });
@@ -316,12 +355,22 @@ function addContextMessages(
   contextMessages: readonly ModelMessage[],
 ): BaseMessage[] {
   if (contextMessages.length === 0) return [...messages];
-  const context = contextMessages.map(toLangChainMessage);
+  const leadingContext = contextMessages
+    .filter((message) => message.role === "system")
+    .map(toLangChainMessage);
+  const trailingContext = contextMessages
+    .filter((message) => message.role !== "system")
+    .map(toLangChainMessage);
   const firstSystemIndex = messages.findIndex((message) => message.getType() === "system");
-  if (firstSystemIndex < 0) return [...context, ...messages];
+  if (firstSystemIndex < 0) return [...leadingContext, ...messages, ...trailingContext];
   const system = messages[firstSystemIndex];
-  if (system === undefined) return [...context, ...messages];
-  return [system, ...context, ...messages.filter((_message, index) => index !== firstSystemIndex)];
+  if (system === undefined) return [...leadingContext, ...messages, ...trailingContext];
+  return [
+    system,
+    ...leadingContext,
+    ...messages.filter((_message, index) => index !== firstSystemIndex),
+    ...trailingContext,
+  ];
 }
 
 function stateForCallback(state: RuntimeState, lastResult: ModelTurnResult | null): AgentGraphState {
@@ -399,8 +448,10 @@ class RuntimeToolCoordinator {
         }
         return {
           activeSkills: result.activeSkills ?? [],
+          followUpMessages: result.messages.filter((message) => message.role !== "tool"),
           messages,
           successful: result.successful,
+          finishRun: result.finishRun === true,
         };
       })
       .finally(() => {
@@ -528,10 +579,22 @@ export class LangGraphExecutor {
     const turn = { value: 0 };
     const modelCallHooks: { current: AgentGraphModelCallHooks | undefined } = { current: undefined };
     let lastResult: ModelTurnResult | null = null;
+    const getLastResult = (): ModelTurnResult | null => lastResult;
     let contextMessages: ModelMessage[] = [];
     let continueAfterModel = false;
-    const coordinator = new RuntimeToolCoordinator(input.callbacks, () => lastResult);
+    let finishedAfterTools = false;
+    const coordinator = new RuntimeToolCoordinator(input.callbacks, getLastResult);
     const model = new CallbackChatModel(input.callbacks, turn, modelCallHooks, input.signal);
+    const completionGate = createMiddleware({
+      name: "agent-runtime-tool-completion",
+      stateSchema: runtimeStateSchema.pick({ finishAfterTools: true }),
+      beforeModel: { canJumpTo: ["end"], hook: async state => {
+        input.signal.throwIfAborted();
+        if (!state.finishAfterTools || await input.callbacks.hasFollowUpInput?.()) return {};
+        finishedAfterTools = true;
+        return { jumpTo: "end" as const, finishAfterTools: false };
+      } },
+    });
     const middleware = createMiddleware({
       name: "agent-runtime-bridge",
       stateSchema: runtimeStateSchema,
@@ -558,9 +621,16 @@ export class LangGraphExecutor {
         continueAfterModel = prepared.hasFollowUpInput;
         contextMessages = prepared.contextMessages ?? [];
         return {
+          finishAfterTools: false,
           activeSkills: state.activeSkills,
           hasFollowUpInput: prepared.hasFollowUpInput,
-          messages: prepared.messages.map(toLangChainMessage),
+          messages: prepared.replaceMessages === undefined
+            ? prepared.messages.map(toLangChainMessage)
+            : [
+                new RemoveMessage({ id: REMOVE_ALL_MESSAGES }),
+                ...prepared.replaceMessages.map(toLangChainMessage),
+                ...prepared.messages.map(toLangChainMessage),
+              ],
         };
       },
       afterModel: {
@@ -576,7 +646,10 @@ export class LangGraphExecutor {
         },
       },
       wrapModelCall: async (request, handler) => {
-        const messages = addContextMessages(request.messages, contextMessages);
+        const messages = normalizeModelFacingToolOutputs(
+          modelMessagesFromState(addContextMessages(request.messages, contextMessages)),
+        ).map(toLangChainMessage);
+        const requestId = crypto.randomUUID();
         let retryAttempt = 0;
         while (true) {
           input.signal.throwIfAborted();
@@ -609,12 +682,20 @@ export class LangGraphExecutor {
                   if (!modelCallState.receivedTextDelta && retryAttempt < retry.maxRetries) {
                     retryAttempt += 1;
                     const delayMs = retry.getDelay(retryAttempt);
-                    await retry.onRetry({ attempt: retryAttempt, delayMs, error: null });
+                    await retry.onRetry({
+                      attempt: retryAttempt,
+                      delayMs,
+                      error: null,
+                      requestId,
+                    });
                     await retry.wait(delayMs, input.signal);
                     continue;
                   }
                 }
               }
+            }
+            if (retryAttempt > 0) {
+              await input.modelRetry?.onSuccess?.({ attempt: retryAttempt, requestId });
             }
             return response;
           } catch (error) {
@@ -625,12 +706,12 @@ export class LangGraphExecutor {
               || !retry.shouldRetry(error)
               || retryAttempt >= retry.maxRetries
             ) {
-              await retry?.onFailure?.(error);
+              await retry?.onFailure?.({ attempt: retryAttempt, error, requestId });
               throw error;
             }
             retryAttempt += 1;
             const delayMs = retry.getDelay(retryAttempt);
-            await retry.onRetry({ attempt: retryAttempt, delayMs, error });
+            await retry.onRetry({ attempt: retryAttempt, delayMs, error, requestId });
             await retry.wait(delayMs, input.signal);
           } finally {
             modelCallHooks.current = undefined;
@@ -648,17 +729,22 @@ export class LangGraphExecutor {
         const batch = await coordinator.execute({ calls, state: request.state });
         const result = batch.messages.get(fallback.id);
         if (result === undefined) throw new Error(`Tool execution did not return ${fallback.id}.`);
-        if (calls[0]?.id !== fallback.id) {
+        const isLastCall = calls.at(-1)?.id === fallback.id;
+        if (!isLastCall) {
           const toolMessage = toLangChainMessage(result);
           if (!ToolMessage.isInstance(toolMessage)) throw new Error("Runtime returned a non-tool message.");
           return toolMessage;
         }
         return new Command({
           update: {
+            finishAfterTools: batch.finishRun,
             activeSkills: batch.activeSkills,
             hasSuccessfulToolExecution:
               request.state.hasSuccessfulToolExecution || batch.successful,
-            messages: [toLangChainMessage(result)],
+            messages: [
+              toLangChainMessage(result),
+              ...batch.followUpMessages.map(toLangChainMessage),
+            ],
           },
         });
       },
@@ -667,6 +753,7 @@ export class LangGraphExecutor {
     const agent = createAgent({
       checkpointer,
       middleware: [
+        completionGate,
         // The graph thread is one persisted Run, so the framework's thread
         // counter is the durable per-Run model-call limit we need here.
         modelCallLimit,
@@ -696,51 +783,58 @@ export class LangGraphExecutor {
       lastResult = null;
       contextMessages = [];
       let result: unknown;
+      let interrupts: readonly LangGraphInterrupt[] | null = null;
       try {
-        result = await agent.invoke(graphInput, config);
+        result = await AsyncLocalStorageProviderSingleton.runWithConfig(
+          config,
+          () => agent.invoke(graphInput, config),
+        );
       } catch (error) {
         if (isFrameworkModelCallLimitError(error) || isFrameworkGraphRecursionError(error)) {
           throw new AgentModelCallLimitError(input.maxSteps, error);
         }
-        throw error;
+        if (!isGraphInterrupt(error)) throw error;
+        interrupts = normalizeInterrupts(error.interrupts);
       }
-      if (!isInterrupted(result)) {
-        const state = asAgentState(result);
-        const modelResult: ModelTurnResult | null = lastResult;
-        const shouldContinue = continueAfterModel
-          && toolCallsOf(modelResult).length === 0;
-        if (shouldContinue) {
-          graphInput = { contextPrepared: true, messages: [] };
-          continue;
+      if (interrupts === null) {
+        if (!isInterrupted(result)) {
+          const state = asAgentState(result);
+          const latestResult = getLastResult();
+          const modelResult: ModelTurnResult | null = finishedAfterTools ? { ...latestResult,
+            content: latestResult?.content ?? modelMessagesFromState(state.messages).findLast(message => message.role === "assistant")?.content ?? "",
+            finishReason: "stop", toolCalls: [] } : latestResult;
+          const shouldContinue = continueAfterModel
+            && toolCallsOf(modelResult).length === 0;
+          if (shouldContinue) {
+            graphInput = { contextPrepared: true, messages: [] };
+            continue;
+          }
+          return {
+            activeSkills: state.activeSkills,
+            contextPrepared: state.contextPrepared,
+            hasFollowUpInput: state.hasFollowUpInput,
+            hasSuccessfulToolExecution: state.hasSuccessfulToolExecution,
+            lastResult: modelResult,
+            messages: modelMessagesFromState(state.messages),
+            pendingToolCalls: toolCallsOf(modelResult),
+            turns: state.turns,
+          };
         }
-        return {
-          activeSkills: state.activeSkills,
-          contextPrepared: state.contextPrepared,
-          hasFollowUpInput: state.hasFollowUpInput,
-          hasSuccessfulToolExecution: state.hasSuccessfulToolExecution,
-          lastResult: modelResult,
-          messages: modelMessagesFromState(state.messages),
-          pendingToolCalls: toolCallsOf(modelResult),
-          turns: state.turns,
-        };
+        interrupts = normalizeInterrupts(result.__interrupt__);
       }
       if (input.onInterrupt === undefined) {
         throw new Error("LangGraph interrupted without an approval callback.");
       }
-      const interrupts = result.__interrupt__.map((entry) => {
-        if (typeof entry.id !== "string") {
-          throw new Error("LangGraph returned an interrupt without an identifier.");
-        }
-        return { id: entry.id, value: entry.value };
-      });
       const resume = await input.onInterrupt(interrupts);
       input.signal.throwIfAborted();
-      const [interrupt] = interrupts;
-      if (interrupt === undefined) {
-        throw new Error("LangGraph returned an empty interrupt list.");
+      if (interrupts.length !== 1) {
+        throw new Error("LangGraph returned an unsupported number of interrupts.");
       }
       graphInput = new Command({
-        resume: { [interrupt.id]: resume },
+        // This executor deliberately handles one approval at a time. A scalar
+        // resume follows LangGraph's single-interrupt path and replays the
+        // interrupted ToolNode instead of addressing a task-level resume map.
+        resume,
       });
     }
   }

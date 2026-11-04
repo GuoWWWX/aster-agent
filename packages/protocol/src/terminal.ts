@@ -16,6 +16,15 @@ export const terminalOutputEncodingSchema = z.enum([
   "utf-16le",
 ]);
 
+export const terminalShellPathsSchema = z
+  .object({
+    bash: z.string().trim().max(1024),
+    cmd: z.string().trim().max(1024),
+    powershell: z.string().trim().max(1024),
+    pwsh: z.string().trim().max(1024),
+  })
+  .strict();
+
 export const terminalConfigurationSchema = z
   .object({
     fontFamily: z.string().trim().min(1).max(300),
@@ -23,6 +32,12 @@ export const terminalConfigurationSchema = z
     lineHeight: z.number().min(1).max(2.2),
     outputEncoding: terminalOutputEncodingSchema,
     shell: terminalShellSchema,
+    shellPaths: terminalShellPathsSchema.default({
+      bash: "",
+      cmd: "",
+      powershell: "",
+      pwsh: "",
+    }),
     version: z.literal(1),
   })
   .strict();
@@ -32,10 +47,16 @@ export type TerminalOutputEncoding = z.infer<typeof terminalOutputEncodingSchema
 export type TerminalConfiguration = z.infer<typeof terminalConfigurationSchema>;
 
 export const DEFAULT_TERMINAL_CONFIGURATION: TerminalConfiguration = {
-  fontFamily: "Cascadia Mono, Consolas, 'Microsoft YaHei UI', monospace",
+  fontFamily: "'CodeNewRoman Nerd Font', 'CodeNewRoman Nerd Font Mono', 'Cascadia Mono', 'Segoe UI Emoji', 'Microsoft YaHei UI', Consolas, monospace",
   fontSize: 12,
   lineHeight: 1.55,
   outputEncoding: "auto",
   shell: "system",
+  shellPaths: {
+    bash: "",
+    cmd: "",
+    powershell: "",
+    pwsh: "",
+  },
   version: 1,
 };

@@ -1,7 +1,11 @@
 packages:
-  - "apps/*"
-  - "packages/*"
+  - apps/*
+  - packages/*
 
 onlyBuiltDependencies:
   - electron
   - esbuild
+
+patchedDependencies:
+  '@radix-ui/react-focus-scope@1.1.16': patches/@radix-ui__react-focus-scope@1.1.16.patch
+  '@radix-ui/react-select@2.3.7': patches/@radix-ui__react-select@2.3.7.patch

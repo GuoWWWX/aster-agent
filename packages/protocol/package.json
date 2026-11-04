@@ -7,6 +7,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./browser": {
+      "types": "./dist/browser.d.ts",
+      "import": "./dist/browser.js"
     }
   },
   "files": [
@@ -19,6 +23,7 @@
     "build": "tsc -p tsconfig.build.json"
   },
   "dependencies": {
+    "re2js": "2.8.6",
     "yaml": "^2.9.0",
     "zod": "^4.4.3"
   },

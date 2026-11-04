@@ -2,6 +2,7 @@ import { access, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { DEFAULT_AGENT_DIRECTORY_CONFIGURATION } from "@agent/protocol";
 
 import { ProjectRegistry } from "../projects/project-registry.js";
 import { AgentDatabase } from "./agent-database.js";
@@ -10,6 +11,7 @@ import {
   ConversationDeletionService,
   type ConversationDeletionFileStore,
 } from "./conversation-deletion-service.js";
+import { ThreadLog } from "./thread-log.js";
 
 const databases: AgentDatabase[] = [];
 const temporaryDirectories: string[] = [];
@@ -25,7 +27,7 @@ async function createFixture() {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-deletion-"));
   temporaryDirectories.push(directory);
   const databasePath = path.join(directory, "agent.sqlite");
-  const managedRoot = path.join(directory, "managed");
+  const managedRoot = path.join(directory, "conversations");
   const projectRoot = path.join(directory, "project");
   await mkdir(projectRoot, { recursive: true });
   const database = new AgentDatabase(databasePath);
@@ -33,7 +35,17 @@ async function createFixture() {
   const projects = new ProjectRegistry(database);
   const project = await projects.registerDirectory(projectRoot);
   const attachments = new ConversationAttachmentStore(database, projects, managedRoot);
-  return { attachments, database, databasePath, managedRoot, project, projectRoot, projects };
+  const threadLog = new ThreadLog(path.join(directory, "conversations"));
+  return {
+    attachments,
+    database,
+    databasePath,
+    managedRoot,
+    project,
+    projectRoot,
+    projects,
+    threadLog,
+  };
 }
 
 async function importTextAttachment(
@@ -49,6 +61,43 @@ async function importTextAttachment(
 }
 
 describe("ConversationDeletionService", () => {
+  it("rejects deleting a bound team member before touching its history or membership", async () => {
+    const fixture = await createFixture();
+    fixture.database.syncTeamDirectory(DEFAULT_AGENT_DIRECTORY_CONFIGURATION);
+    const lead = fixture.database.createConversation(fixture.project.id, { teamId: "default-team", threadKind: "team_lead" });
+    const member = fixture.database.createConversation(fixture.project.id, {
+      agent: { id: "qa-engineer", name: "测试工程师", role: "验收", instructions: "执行验收", isDefault: false },
+      parentConversationId: lead.id, teamId: "default-team", threadKind: "agent",
+    });
+    fixture.database.bindTeamMemberConversation({ agentId: "qa-engineer", conversationId: member.id, teamExecutionConversationId: lead.id });
+    fixture.threadLog.append(member.id, { type: "conversation_created", payload: { conversation: member } });
+    const service = new ConversationDeletionService(fixture.database, fixture.attachments, fixture.projects, null, fixture.threadLog);
+
+    await expect(service.requestDeletion(member.id)).rejects.toThrow("Team member conversations are retained");
+    expect(() => service.requestUndoableDeletion(member.id)).toThrow("Team member conversations are retained");
+    expect(fixture.database.listIncompleteConversationDeletionTasks()).toEqual([]);
+    expect(fixture.database.listTeamMemberConversations(lead.id).map(item => item.id)).toEqual([member.id]);
+    expect(fixture.threadLog.read(member.id)?.events).toHaveLength(1);
+  });
+
+  it("retains deleted conversations and attachments for undo only in the owning process", async () => {
+    const fixture = await createFixture();
+    const conversation = fixture.database.createConversation(fixture.project.id);
+    const storedPath = await importTextAttachment(fixture, conversation.id);
+    const service = new ConversationDeletionService(fixture.database, fixture.attachments, fixture.projects, null, fixture.threadLog);
+    service.requestUndoableDeletion(conversation.id);
+    expect(fixture.database.listConversations().some((item) => item.id === conversation.id)).toBe(false);
+    await service.resumeIncompleteTasks();
+    await expect(access(storedPath)).resolves.toBeUndefined();
+    service.restoreDeletedConversation(conversation.id);
+    expect(fixture.database.getConversation(conversation.id).id).toBe(conversation.id);
+    await expect(access(storedPath)).resolves.toBeUndefined();
+    service.requestUndoableDeletion(conversation.id);
+    const restarted = new ConversationDeletionService(fixture.database, fixture.attachments, fixture.projects, null, fixture.threadLog);
+    expect(() => restarted.restoreDeletedConversation(conversation.id)).toThrow();
+    await restarted.resumeIncompleteTasks();
+    await expect(access(storedPath)).rejects.toThrow();
+  });
   it("hides a conversation before removing its files and database tree", async () => {
     const fixture = await createFixture();
     const conversation = fixture.database.createConversation(fixture.project.id);
@@ -94,6 +143,34 @@ describe("ConversationDeletionService", () => {
     expect(deletedThreads).toEqual([[run.runId]]);
   });
 
+  it("removes temporary side-conversation ThreadLogs when the tab is closed", async () => {
+    const fixture = await createFixture();
+    const parent = fixture.database.createConversation(fixture.project.id);
+    const sideConversation = fixture.database.forkConversation(parent.id, "side");
+    fixture.threadLog.append(parent.id, {
+      payload: { conversation: parent },
+      type: "conversation_created",
+    });
+    fixture.threadLog.append(sideConversation.id, {
+      payload: { conversation: sideConversation },
+      type: "conversation_created",
+    });
+    expect(fixture.threadLog.readContext(sideConversation.id)).not.toBeNull();
+    const service = new ConversationDeletionService(
+      fixture.database,
+      fixture.attachments,
+      fixture.projects,
+      null,
+      fixture.threadLog,
+    );
+
+    await expect(service.requestDeletion(sideConversation.id)).resolves.toBe("completed");
+
+    expect(fixture.threadLog.hasConversation(parent.id)).toBe(true);
+    expect(fixture.threadLog.hasConversation(sideConversation.id)).toBe(false);
+    expect(fixture.threadLog.readContext(sideConversation.id)).toBeNull();
+  });
+
   it("keeps checkpoint cleanup retryable when the saver is temporarily unavailable", async () => {
     const fixture = await createFixture();
     const conversation = fixture.database.createConversation(fixture.project.id);
@@ -133,17 +210,36 @@ describe("ConversationDeletionService", () => {
       "test-model",
       [attachmentId],
     );
+    const assistantMessageId = "00000000-0000-4000-8000-000000000099";
+    fixture.database.appendAssistantTurn({
+      content: "附件已处理",
+      conversationId: conversation.id,
+      messageId: assistantMessageId,
+      modelId: "test-model",
+      runId: run.runId,
+      toolCalls: [],
+    });
     fixture.database.finishRun(run.runId, "completed", null);
-    const fork = fixture.database.forkConversation(conversation.id);
+    const fork = fixture.database.forkConversation(
+      conversation.id,
+      "sibling",
+      assistantMessageId,
+    );
+    fixture.threadLog.append(conversation.id, {
+      payload: { conversation },
+      type: "conversation_created",
+    });
     const service = new ConversationDeletionService(
       fixture.database,
       fixture.attachments,
       fixture.projects,
+      null,
+      fixture.threadLog,
     );
 
-    await service.requestDeletion(fork.id);
-    await expect(access(storedPath)).resolves.toBeUndefined();
     await service.requestDeletion(conversation.id);
+    await expect(access(storedPath)).resolves.toBeUndefined();
+    await service.requestDeletion(fork.id);
     await expect(access(storedPath)).rejects.toThrow();
   });
 

@@ -1,29 +1,26 @@
-.context-usage-indicator__trigger {
-  display: grid;
-  width: 28px;
-  height: 28px;
-  flex: 0 0 auto;
-  place-items: center;
-  border: 0;
-  border-radius: var(--app-radius);
-  outline: none;
-  background: transparent;
-  color: #16a34a;
-  padding: 0;
-}
-
-.context-usage-indicator__trigger:hover {
-  background: var(--app-hover);
-}
-
-.context-usage-indicator__trigger:focus-visible {
-  outline: 2px solid var(--app-focus-ring);
-  outline-offset: -1px;
-}
-
 .context-usage-indicator__trigger[data-pressure="warning"],
 .context-usage-indicator__content [data-pressure="warning"] {
   color: #d97706;
+}
+
+.provider-cache-status__label--short {
+  display: none;
+}
+
+@container (max-width: 560px) {
+  .provider-cache-status__label--full {
+    display: none;
+  }
+
+  .provider-cache-status__label--short {
+    display: inline;
+  }
+}
+
+@container (max-width: 360px) {
+  .provider-cache-status__label--short {
+    display: none;
+  }
 }
 
 .context-usage-indicator__trigger[data-pressure="critical"],
@@ -33,28 +30,28 @@
 
 .context-usage-indicator__trigger[data-pressure="unknown"],
 .context-usage-indicator__content [data-pressure="unknown"] {
-  color: #94a3b8;
+  color: var(--app-subtle-foreground);
 }
 
 .context-usage-indicator__ring {
   position: relative;
   display: block;
-  width: 18px;
-  height: 18px;
+  width: 16px;
+  height: 16px;
   border-radius: 50%;
   background: conic-gradient(currentcolor var(--context-usage-progress), #dbe3ee 0);
 }
 
 .context-usage-indicator__ring::after {
   position: absolute;
-  inset: 4px;
+  inset: 3px;
   border-radius: inherit;
   background: var(--app-panel);
   content: "";
 }
 
 .context-usage-indicator__content {
-  width: min(306px, calc(100vw - 24px));
+  width: min(390px, calc(100vw - 24px));
   border: 1px solid var(--app-border);
   border-radius: var(--app-radius);
   background: var(--app-panel);
@@ -126,14 +123,80 @@
   margin: 0;
 }
 
+.context-usage-indicator__budget {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 4px 12px;
+  margin: 0 0 8px;
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius-small);
+  background: var(--app-panel-subtle);
+  padding: 7px 8px;
+}
+
+.context-usage-indicator__budget > div {
+  min-width: 0;
+}
+
+.context-usage-indicator__budget > div > p,
+.context-usage-indicator__budget > div > strong,
+.context-usage-indicator__estimate-note {
+  margin: 0;
+}
+
+.context-usage-indicator__budget > div > p,
+.context-usage-indicator__estimate-note {
+  color: var(--app-muted-foreground);
+  font-size: var(--app-font-size-auxiliary);
+  line-height: 1.4;
+}
+
+.context-usage-indicator__budget > div > strong {
+  display: block;
+  color: var(--app-foreground);
+  font-size: var(--app-font-size-subtitle);
+  font-variant-numeric: tabular-nums;
+  line-height: 18px;
+}
+
+.context-usage-indicator__estimate-note {
+  margin: 0 0 9px;
+}
+
+.context-usage-indicator__section {
+  border-top: 1px solid var(--app-border);
+  padding-top: 7px;
+}
+
 .context-usage-indicator__details > div {
   display: flex;
   min-height: 18px;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
   color: var(--app-muted-foreground);
   font-size: var(--app-font-size-control);
+  line-height: 16px;
+}
+
+.context-usage-indicator__details > div[data-level="0"] {
+  color: var(--app-foreground);
+  font-weight: 600;
+}
+
+.context-usage-indicator__details > div[data-level="0"]:not(:first-child) {
+  margin-top: 4px;
+  border-top: 1px solid var(--app-border);
+  padding-top: 7px;
+}
+
+.context-usage-indicator__details > div[data-level="1"] dt {
+  padding-left: 14px;
+}
+
+.context-usage-indicator__details > div[data-level="1"] dd {
+  color: var(--app-muted-foreground);
+  font-weight: 500;
 }
 
 .context-usage-indicator__details dt,
@@ -146,6 +209,10 @@
   color: var(--app-foreground);
   font-variant-numeric: tabular-nums;
   font-weight: 600;
+}
+
+.context-usage-indicator__details dt {
+  min-width: 0;
 }
 
 .context-usage-indicator__loading {
@@ -176,11 +243,11 @@
 }
 
 [data-theme="dark"] .context-usage-indicator__ring::after {
-  background: #282828;
+  background: var(--app-panel-subtle);
 }
 
 [data-theme="dark"] .context-usage-indicator__content {
-  background: #282828;
+  background: var(--app-panel);
 }
 
 [data-theme="dark"] .context-usage-indicator__meter {

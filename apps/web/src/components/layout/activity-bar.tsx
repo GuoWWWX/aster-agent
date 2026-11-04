@@ -1,16 +1,21 @@
 import {
-  ListTodo,
+  ArrowDownToLine,
+  CalendarClock,
   MessageSquareText,
   Moon,
+  Search,
   Settings,
   Sun,
-  UsersRound,
+  PanelsTopLeft,
   type LucideIcon,
 } from "lucide-react";
 import type { ReactElement } from "react";
 
 import { useWorkbenchUiStore, type ActivityView } from "../../stores/workbench-ui-store.js";
 import { IconButton } from "../ui/icon-button.js";
+import type { AgentClient } from "../../runtime/index.js";
+import { useAppUpdate } from "../../features/updates/use-app-update.js";
+import { TooltipSideContext } from "../ui/tooltip.js";
 
 type ActivityItem = {
   icon: LucideIcon;
@@ -20,11 +25,15 @@ type ActivityItem = {
 
 const ACTIVITY_ITEMS: readonly ActivityItem[] = [
   { id: "conversations", label: "对话", icon: MessageSquareText },
-  { id: "team", label: "团队", icon: UsersRound },
-  { id: "tasks", label: "任务", icon: ListTodo },
+  { id: "team", label: "任务看板", icon: PanelsTopLeft },
+  { id: "schedules", label: "定时任务", icon: CalendarClock },
 ];
 
-export function ActivityBar(): ReactElement {
+export function ActivityBar({ agentClient, onOpenGlobalSearch, onConversationHoverChange }: {
+  agentClient?: AgentClient;
+  onOpenGlobalSearch?: () => void;
+  onConversationHoverChange?: (isHovered: boolean) => void;
+}): ReactElement {
   const activeActivity = useWorkbenchUiStore((state) => state.activeActivity);
   const setActiveActivity = useWorkbenchUiStore(
     (state) => state.setActiveActivity,
@@ -34,35 +43,66 @@ export function ActivityBar(): ReactElement {
     (state) => state.toggleThemeMode,
   );
   const setSettings = useWorkbenchUiStore((state) => state.setSettings);
+  const setSettingsSection = useWorkbenchUiStore((state) => state.setSettingsSection);
+  const { state: update } = useAppUpdate(agentClient);
   const ThemeIcon = themeMode === "dark" ? Sun : Moon;
   const themeLabel = themeMode === "dark" ? "切换为浅色主题" : "切换为深色主题";
 
   return (
-    <aside className="activity-bar" aria-label="主导航" data-slot="activity-bar">
+    <TooltipSideContext.Provider value="right">
+    <aside
+      className="activity-bar"
+      aria-label="主导航"
+      data-app-drag-region="true"
+      data-slot="activity-bar"
+    >
       <nav className="activity-bar__navigation" aria-label="工作区视图">
         {ACTIVITY_ITEMS.map((item) => {
           const ItemIcon = item.icon;
-          const isActive = activeActivity === item.id;
+          const isActive = activeActivity === item.id || (item.id === "team" && activeActivity === "tasks");
 
           return (
             <IconButton
               key={item.id}
               aria-pressed={isActive}
+              className={isActive ? "bg-[var(--app-chrome-selection)] ring-[var(--app-chrome-selection-border)]" : "hover:bg-[var(--app-navigation-hover)]"}
               label={item.label}
               size="activity"
-              variant={isActive ? "active" : "quiet"}
+              variant={isActive ? "selected" : "quiet"}
               onClick={() => setActiveActivity(item.id)}
+              onMouseEnter={item.id === "conversations" ? () => onConversationHoverChange?.(true) : undefined}
+              onMouseLeave={item.id === "conversations" ? () => onConversationHoverChange?.(false) : undefined}
             >
               <ItemIcon aria-hidden="true" size={18} strokeWidth={1.8} />
             </IconButton>
           );
         })}
+        <IconButton className="hover:bg-[var(--app-navigation-hover)]" label="搜索所有对话" size="activity" variant="quiet" onClick={onOpenGlobalSearch}>
+          <Search aria-hidden="true" size={18} strokeWidth={1.8} />
+        </IconButton>
       </nav>
 
-      <div className="activity-bar__spacer" />
+      <div
+        aria-hidden="true"
+        className="activity-bar__spacer"
+        data-app-drag-region="true"
+      />
 
       <div className="activity-bar__footer">
+        {update?.availableVersion !== null && update?.availableVersion !== undefined ? (
+          <IconButton
+            className="relative hover:bg-[var(--app-navigation-hover)]"
+            label={`更新至 ${update.availableVersion}`}
+            size="compact"
+            variant="quiet"
+            onClick={() => { setSettingsSection("about"); setSettings(); }}
+          >
+            <ArrowDownToLine aria-hidden="true" size={16} strokeWidth={1.8} />
+            <span aria-hidden="true" className="absolute right-1 top-1 size-1.5 rounded-full bg-[var(--app-accent)]" />
+          </IconButton>
+        ) : null}
         <IconButton
+          className="hover:bg-[var(--app-navigation-hover)]"
           label={themeLabel}
           size="compact"
           variant="quiet"
@@ -72,14 +112,16 @@ export function ActivityBar(): ReactElement {
         </IconButton>
         <IconButton
           aria-pressed={activeActivity === "settings"}
+          className={activeActivity === "settings" ? "bg-[var(--app-chrome-selection)] ring-[var(--app-chrome-selection-border)]" : "hover:bg-[var(--app-navigation-hover)]"}
           label="设置"
           size="activity"
-          variant={activeActivity === "settings" ? "active" : "quiet"}
+          variant={activeActivity === "settings" ? "selected" : "quiet"}
           onClick={setSettings}
         >
           <Settings aria-hidden="true" size={18} strokeWidth={1.8} />
         </IconButton>
       </div>
     </aside>
+    </TooltipSideContext.Provider>
   );
 }

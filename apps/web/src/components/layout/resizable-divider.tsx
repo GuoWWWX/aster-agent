@@ -5,8 +5,10 @@ import {
   type PointerEvent as ReactPointerEvent,
   type ReactElement,
 } from "react";
+import { flushSync } from "react-dom";
 
 import { cn } from "../../lib/cn.js";
+import { emitLivePanelResize } from "./live-panel-resize.js";
 import "./resizable-divider.css";
 
 export const RESIZABLE_PANEL_COLLAPSE_THRESHOLD = 24;
@@ -47,7 +49,11 @@ type ResizableDividerProps = {
   className?: string;
   collapsed?: boolean;
   collapseThreshold?: number;
+  collapsible?: boolean;
+  defaultSize?: number;
+  keyboardStep?: number;
   direction: ResizeDirection;
+  liveResizeId?: string;
   max: number;
   min: number;
   onCollapsedChange: (isCollapsed: boolean) => void;
@@ -62,7 +68,11 @@ export function ResizableDivider({
   className,
   collapsed = false,
   collapseThreshold = RESIZABLE_PANEL_COLLAPSE_THRESHOLD,
+  collapsible = true,
+  defaultSize,
+  keyboardStep = 16,
   direction,
+  liveResizeId,
   max,
   min,
   onCollapsedChange,
@@ -84,6 +94,7 @@ export function ResizableDivider({
     event.preventDefault();
     const divider = event.currentTarget;
     let baseWidth = collapsed ? min : size;
+    let latestWidth = baseWidth;
     let origin = event.clientX;
     let collapsedDuringDrag = collapsed;
 
@@ -92,6 +103,9 @@ export function ResizableDivider({
     divider.dataset.resizing = "true";
     onDraggingChange?.(true);
     document.body.dataset.resizingPanel = "true";
+    if (liveResizeId !== undefined) {
+      emitLivePanelResize({ id: liveResizeId, phase: "start", size: baseWidth });
+    }
 
     const stop = (): void => {
       isDraggingRef.current = false;
@@ -100,8 +114,12 @@ export function ResizableDivider({
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", stop);
       window.removeEventListener("pointercancel", stop);
+      if (divider.hasPointerCapture(event.pointerId)) divider.releasePointerCapture(event.pointerId);
       cleanupRef.current = null;
       onDraggingChange?.(false);
+      if (liveResizeId !== undefined) {
+        emitLivePanelResize({ id: liveResizeId, phase: "end", size: latestWidth });
+      }
     };
 
     const move = (moveEvent: PointerEvent): void => {
@@ -113,25 +131,37 @@ export function ResizableDivider({
         direction,
       );
 
-      const transition = getResizeCollapseTransition(
+      const transition = collapsible ? getResizeCollapseTransition(
         nextWidth,
         min,
         collapseThreshold,
         collapsedDuringDrag,
-      );
+      ) : null;
       if (transition === "collapse") {
-        onResize(min);
+        latestWidth = min;
         collapsedDuringDrag = true;
-        onCollapsedChange(true);
+        flushSync(() => {
+          onResize(min);
+          onCollapsedChange(true);
+        });
+        if (liveResizeId !== undefined) {
+          emitLivePanelResize({ id: liveResizeId, phase: "move", size: latestWidth });
+        }
         return;
       }
 
       if (transition === "expand") {
-        onResize(min);
+        latestWidth = min;
         collapsedDuringDrag = false;
         origin = moveEvent.clientX;
         baseWidth = min;
-        onCollapsedChange(false);
+        flushSync(() => {
+          onResize(min);
+          onCollapsedChange(false);
+        });
+        if (liveResizeId !== undefined) {
+          emitLivePanelResize({ id: liveResizeId, phase: "move", size: latestWidth });
+        }
         return;
       }
 
@@ -139,7 +169,11 @@ export function ResizableDivider({
         return;
       }
 
-      onResize(clampResizablePanelWidth(nextWidth, min, max));
+      latestWidth = clampResizablePanelWidth(nextWidth, min, max);
+      flushSync(() => onResize(latestWidth));
+      if (liveResizeId !== undefined) {
+        emitLivePanelResize({ id: liveResizeId, phase: "move", size: latestWidth });
+      }
     };
 
     cleanupRef.current = stop;
@@ -149,12 +183,12 @@ export function ResizableDivider({
   }
 
   function handleKeyDown(event: KeyboardEvent<HTMLDivElement>): void {
-    const step = 16;
+    const step = keyboardStep;
     const grow = direction === "from-start" ? step : -step;
 
     if (event.key === "Home") {
       event.preventDefault();
-      onResize(min);
+      onResize(defaultSize ?? min);
       return;
     }
 
@@ -175,6 +209,9 @@ export function ResizableDivider({
     <div
       aria-label={ariaLabel}
       aria-orientation="vertical"
+      aria-valuemin={min}
+      aria-valuemax={max}
+      aria-valuenow={size}
       className={cn("resizable-divider", className)}
       data-collapsed={String(collapsed)}
       data-direction={direction}
@@ -182,6 +219,7 @@ export function ResizableDivider({
       tabIndex={0}
       onKeyDown={handleKeyDown}
       onPointerDown={handlePointerDown}
+      onDoubleClick={defaultSize === undefined ? undefined : () => onResize(defaultSize)}
     >
       <span aria-hidden="true" className="resizable-divider__grip" />
     </div>

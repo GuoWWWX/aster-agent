@@ -39,6 +39,7 @@ export const skillDocumentSchema = skillDocumentSaveInputSchema.extend({
 export const createSkillDocumentInputSchema = z
   .object({
     directoryPath: skillDirectoryPathSchema.nullable().optional(),
+    content: z.string().min(1).max(200_000).optional(),
   })
   .strict();
 

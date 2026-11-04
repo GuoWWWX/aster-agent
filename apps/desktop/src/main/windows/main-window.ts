@@ -1,9 +1,13 @@
 import {
+  app,
   BrowserWindow,
   type BrowserWindowConstructorOptions,
   type WebPreferences
 } from "electron";
 import path from "node:path";
+
+import { APPLICATION_DISPLAY_NAME } from "@agent/protocol";
+import { installTextContextMenu } from "./text-context-menu.js";
 
 const WINDOW_BACKGROUND_COLOR = "#18181b";
 const WINDOW_MIN_HEIGHT = 720;
@@ -23,8 +27,13 @@ function getPreloadPath(): string {
   return path.resolve(__dirname, "../preload/index.cjs");
 }
 
+export function getAppUserModelId(): string {
+  return app.isPackaged ? "com.agent.workbench" : "com.agent.workbench.development";
+}
+
 export function createMainWindow(): BrowserWindow {
   const webPreferences: SecuredWebPreferences = {
+    backgroundThrottling: false,
     contextIsolation: true,
     enableRemoteModule: false,
     nodeIntegration: false,
@@ -34,14 +43,17 @@ export function createMainWindow(): BrowserWindow {
     webSecurity: true
   };
 
+  const iconPath = path.resolve(app.getAppPath(), app.isPackaged ? "renderer" : "../web/public",
+    process.platform === "win32" ? "aster-logo.ico" : "aster-logo.png");
   const options: BrowserWindowConstructorOptions = {
     backgroundColor: WINDOW_BACKGROUND_COLOR,
     frame: false,
     height: WINDOW_START_HEIGHT,
+    icon: iconPath,
     minHeight: WINDOW_MIN_HEIGHT,
     minWidth: WINDOW_MIN_WIDTH,
     show: false,
-    title: "Aster",
+    title: APPLICATION_DISPLAY_NAME,
     width: WINDOW_START_WIDTH,
     webPreferences
   };
@@ -51,6 +63,10 @@ export function createMainWindow(): BrowserWindow {
   }
 
   const window = new BrowserWindow(options);
+  if (process.platform === "win32") {
+    window.setAppDetails({ appId: getAppUserModelId(), appIconPath: app.isPackaged ? process.execPath : iconPath });
+  }
+  installTextContextMenu(window);
 
   return window;
 }

@@ -24,11 +24,12 @@ it("解析闭合星号后紧邻正文的宽松加粗", () => {
   ]);
 });
 
-it("HTML 与危险链接不会成为可执行节点", () => {
+it("允许安全图片但过滤事件属性与危险链接", () => {
   const nodes = parseTableInlineMarkdown("<img src=x onerror=alert(1)> [危险](javascript:alert(1))");
-  assert.equal(JSON.stringify(nodes).includes("img"), true);
+  assert.deepEqual(nodes[0], { type: "image", src: "x", alt: "" });
+  assert.equal(JSON.stringify(nodes).includes("onerror"), false);
   assert.equal(JSON.stringify(nodes).includes('"tag":"a"'), false);
-  assert.equal(nodes.some((node) => node.type === "image"), false);
+  assert.equal(parseTableInlineMarkdown('<img src="javascript:alert(1)">').some((node) => node.type === "image"), false);
 });
 
 it("支持粗斜体嵌套、自动链接和安全图片", () => {

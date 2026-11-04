@@ -1,3 +1,4 @@
+import { LoadingState, Spinner } from "../../components/ui/loading.js";
 import {
   ArrowDownAZ,
   ArrowDownUp,
@@ -11,7 +12,6 @@ import {
   Folder,
   FolderOpen,
   FolderPlus,
-  LoaderCircle,
   LocateFixed,
   Search,
   Trash2,
@@ -27,6 +27,7 @@ import {
   type ReactElement,
 } from "react";
 import { createPortal } from "react-dom";
+import { useNativeOverlayContainer } from "../../components/ui/native-overlay-provider.js";
 
 import type { ConfigurationWorkspaceEntry } from "@agent/protocol";
 
@@ -108,6 +109,7 @@ export function ConfigurationWorkspaceTreePanel({
   onDeleteEntry,
   onOpenFile,
 }: ConfigurationWorkspaceTreePanelProps): ReactElement {
+  const nativeOverlayContainer = useNativeOverlayContainer();
   const bodyRef = useRef<HTMLDivElement | null>(null);
   const [createKind, setCreateKind] = useState<"directory" | "file" | null>(null);
   const [draftName, setDraftName] = useState("");
@@ -126,6 +128,7 @@ export function ConfigurationWorkspaceTreePanel({
   const [operationError, setOperationError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [rootPath, setRootPath] = useState("");
+  const [readOnly, setReadOnly] = useState(false);
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [sortOpen, setSortOpen] = useState(false);
   const [sortOption, setSortOption] = useState<ConfigurationTreeSortOption>("name-ascending");
@@ -153,6 +156,7 @@ export function ConfigurationWorkspaceTreePanel({
       });
       setEntriesByDirectory((current) => ({ ...current, [directoryPath]: listing.entries }));
       setRootPath(listing.rootPath);
+      setReadOnly(listing.readOnly === true);
       setOperationError(null);
     } catch (reason) {
       setOperationError(getUserErrorMessage(reason, "无法读取配置文件树。"));
@@ -306,7 +310,7 @@ export function ConfigurationWorkspaceTreePanel({
   }
 
   async function deleteSelected(): Promise<void> {
-    if (selectedEntry === null || selectedEntry.isProtected) return;
+    if (readOnly || selectedEntry === null || selectedEntry.isProtected) return;
     if (!window.confirm(`确定删除 ${selectedEntry.name} 吗？`)) return;
     try {
       await agentClient.deleteConfigurationWorkspaceEntry({
@@ -345,7 +349,6 @@ export function ConfigurationWorkspaceTreePanel({
       <header className="project-tree-panel__header">
         <div className="project-tree-panel__heading-row">
           <div>
-            <p className="panel-eyebrow">工作区文件</p>
             <h2 id="configuration-workspace-tree-heading" title={target.title}>{target.title}</h2>
           </div>
         </div>
@@ -355,6 +358,7 @@ export function ConfigurationWorkspaceTreePanel({
             <div className="project-tree-panel__toolbar-group">
               <IconButton
                 className="project-tree-panel__tool-button"
+                disabled={readOnly}
                 label="新建文件"
                 size="compact"
                 variant="quiet"
@@ -364,6 +368,7 @@ export function ConfigurationWorkspaceTreePanel({
               </IconButton>
               <IconButton
                 className="project-tree-panel__tool-button"
+                disabled={readOnly}
                 label="新建文件夹"
                 size="compact"
                 variant="quiet"
@@ -428,8 +433,8 @@ export function ConfigurationWorkspaceTreePanel({
               </IconButton>
               <IconButton
                 className="project-tree-panel__tool-button"
-                disabled={selectedEntry === null || selectedEntry.isProtected}
-                label={selectedEntry?.isProtected ? "入口文件不可删除" : "删除所选项目"}
+                disabled={readOnly || selectedEntry === null || selectedEntry.isProtected}
+                label={readOnly ? "系统技能只读" : selectedEntry?.isProtected ? "入口文件不可删除" : "删除所选项目"}
                 size="compact"
                 variant="quiet"
                 onClick={() => void deleteSelected()}
@@ -532,6 +537,7 @@ export function ConfigurationWorkspaceTreePanel({
       {createKind !== null ? createPortal(
         <div
           className="project-tree-panel__dialog-backdrop"
+          data-native-view-overlay=""
           onMouseDown={(event) => {
             if (event.target === event.currentTarget && !isCreating) setCreateKind(null);
           }}
@@ -571,7 +577,7 @@ export function ConfigurationWorkspaceTreePanel({
             </div>
           </form>
         </div>,
-        document.body,
+        nativeOverlayContainer ?? document.body,
       ) : null}
     </section>
   );
@@ -633,7 +639,7 @@ function ConfigurationWorkspaceTreeNode({
             onClick={() => onToggleDirectory(entry.path)}
           >
             {loadingDirectories.has(entry.path) ? (
-              <LoaderCircle aria-hidden="true" className="project-tree-panel__spin" size={14} />
+              <Spinner aria-hidden="true" size={14} />
             ) : isExpanded ? (
               <ChevronDown aria-hidden="true" size={14} />
             ) : (
@@ -668,9 +674,11 @@ function ConfigurationWorkspaceTreeNode({
 
       {isDirectory && isExpanded ? (
         <ul className="project-tree" role="group">
-          {visibleChildren.length === 0 && !loadingDirectories.has(entry.path) ? (
+          {visibleChildren.length === 0
+            && !loadingDirectories.has(entry.path)
+            && query.length > 0 ? (
             <li className="project-tree__message" role="none">
-              {query.length > 0 ? "没有匹配项" : "空目录"}
+              没有匹配项
             </li>
           ) : (
             visibleChildren.map((child) => (
@@ -704,9 +712,10 @@ function ConfigurationWorkspaceEmpty({
   label: string;
   loading?: boolean;
 }): ReactElement {
+  if (loading) return <LoadingState label={label} compact className="w-full" />;
   return (
     <div className="project-tree-panel__empty" data-loading={String(loading)}>
-      {loading ? <LoaderCircle aria-hidden="true" size={17} /> : <Folder aria-hidden="true" size={19} />}
+      <Folder aria-hidden="true" size={19} />
       <p>{label}</p>
     </div>
   );

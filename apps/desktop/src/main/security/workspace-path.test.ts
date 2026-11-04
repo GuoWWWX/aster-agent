@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -19,6 +19,13 @@ afterEach(async () => {
 });
 
 describe("workspace path primitives", () => {
+  it("validates a missing nested parent without creating directories", async () => {
+    const rootPath = await mkdtemp(path.join(os.tmpdir(), "agent-path-"));
+    temporaryDirectories.push(rootPath);
+    await expect(resolveWritablePathWithinRoot(rootPath, "new/deeper/note.txt"))
+      .resolves.toBe(path.join(rootPath, "new", "deeper", "note.txt"));
+    await expect(lstat(path.join(rootPath, "new"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
   it("keeps legitimate names beginning with .. inside the root", () => {
     const rootPath = path.join(os.tmpdir(), "agent-path-root");
     expect(isPathInsideRoot(rootPath, path.join(rootPath, "..name", "file.txt"))).toBe(true);
@@ -52,6 +59,8 @@ describe("workspace path primitives", () => {
     await expect(resolveExistingPathWithinRoot(rootPath, path.join("linked", "secret.txt")))
       .rejects.toThrow(/outside .*root/i);
     await expect(resolveWritablePathWithinRoot(rootPath, path.join("linked", "new.txt")))
+      .rejects.toThrow(/outside .*root/i);
+    await expect(resolveWritablePathWithinRoot(rootPath, "linked/missing/deeper/new.txt"))
       .rejects.toThrow(/outside .*root/i);
     const fileLinkPath = path.join(rootPath, "linked-file.txt");
     try {

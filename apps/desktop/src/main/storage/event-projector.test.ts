@@ -1,15 +1,17 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { conversationToolItemSchema } from "@agent/protocol";
+import { conversationModelRetryItemSchema, conversationToolItemSchema } from "@agent/protocol";
 
 import { AgentDatabase } from "./agent-database.js";
 import { ConversationAttachmentStore } from "./conversation-attachment-store.js";
 import { EventProjector } from "./event-projector.js";
 import { ThreadLog } from "./thread-log.js";
+import { ThreadLogLegacyImporter } from "./thread-log-legacy-importer.js";
 import { ProjectRegistry } from "../projects/project-registry.js";
+import { conversationMutablePropertiesSchema } from "./conversation-properties-event.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -22,6 +24,379 @@ afterEach(async () => {
 });
 
 describe("EventProjector", () => {
+  it.each([{ count: 6, active: false }, { count: 10, active: true }])("keeps warm team histories and active ownership during eviction ($count histories, active=$active)", async ({ count, active }) => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "event-projector-team-cache-"));
+    temporaryDirectories.push(directory);
+    const source = new AgentDatabase(":memory:");
+    const ids = Array.from({ length: count }, (_, index) => {
+      const conversation = source.createConversation(null);
+      const run = source.createRunWithUserMessage(conversation.id, `history ${index}`, "test-model");
+      if (!active || index > 0) source.finishRun(run.runId, "completed", null);
+      return { id: conversation.id, runId: run.runId };
+    });
+    const log = new ThreadLog(directory);
+    new ThreadLogLegacyImporter(source, log, new EventProjector(source, log)).importMissingConversationLogs();
+    const database = new AgentDatabase(":memory:");
+    try {
+      const projector = new EventProjector(database, log);
+      projector.projectAllConversationLogs();
+      projector.releaseInactiveConversationHistories();
+      for (const { id } of ids) projector.ensureConversationHistoryProjected(id);
+      if (active) database.finishRun(ids[0]!.runId, "completed", null);
+      const read = vi.spyOn(log, "read");
+      for (const { id } of active ? ids.slice(0, 1) : ids) {
+        projector.ensureConversationHistoryProjected(id);
+        expect(database.listTimeline(id)).toHaveLength(1);
+      }
+      expect(read).not.toHaveBeenCalled();
+    } finally { source.close(); database.close(); }
+  });
+
+  it.each(["event", "snapshot"] as const)("recovers tool screenshot bytes from %s references without creating drafts", async (mode) => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "event-projector-browser-image-"));
+    temporaryDirectories.push(directory);
+    const source = new AgentDatabase(":memory:");
+    const creation = source.prepareConversationCreation(null);
+    source.projectConversationCreated(creation);
+    const id = creation.conversation.id;
+    const run = source.createRunWithUserMessage(id, "截图", "demo");
+    const tool = conversationToolItemSchema.parse({
+      arguments: '{"action":"screenshot"}', batchId: null, conversationId: id,
+      createdAt: new Date().toISOString(), diff: null, executionMode: "serial",
+      id: crypto.randomUUID(), kind: "tool", name: "browser_control", result: null,
+      runId: run.runId, status: "running",
+    });
+    source.appendToolStarted(tool);
+    const root = path.join(directory, "managed");
+    const store = new ConversationAttachmentStore(source, new ProjectRegistry(source), root);
+    const image = await store.saveToolScreenshot(id, tool.id, { data: "c2NyZWVuc2hvdA==", mimeType: "image/jpeg", contextTokens: 1024 });
+    const completed = { ...tool, status: "completed" as const, result: JSON.stringify({ ok: true, value: { image, width: 800, height: 600 } }) };
+    source.completeTool({ providerCallId: "screenshot-call", result: completed.result, tool: completed });
+    source.finishRun(run.runId, "completed", null);
+    const log = new ThreadLog(path.join(directory, "conversations"));
+    log.append(id, { type: "conversation_created", payload: creation });
+    if (mode === "snapshot") {
+      log.append(id, { type: "legacy_snapshot_imported", payload: { ...source.exportThreadLogLegacySnapshot(id), attachmentRefs: [] } });
+    } else {
+      log.append(id, { type: "run_created", payload: { runId: run.runId, modelId: "demo" } });
+      log.append(id, { type: "user_message", payload: { message: run.userMessage, content: "截图", runId: run.runId } });
+      log.append(id, { type: "tool_call_requested", payload: { tool, toolCallId: "screenshot-call", runId: run.runId } });
+      log.append(id, { type: "tool_result", payload: { tool: completed, content: completed.result, toolCallId: "screenshot-call", runId: run.runId, attachmentRefs: [image] } });
+      log.append(id, { type: "run_finished", payload: { runId: run.runId, status: "completed", error: null } });
+    }
+    const recovered = new AgentDatabase(":memory:");
+    const recoveredStore = new ConversationAttachmentStore(recovered, new ProjectRegistry(recovered), root);
+    try {
+      new EventProjector(recovered, log, ref => recoveredStore.resolveThreadLogPaths(ref)).projectAllConversationLogs();
+      expect(recoveredStore.readImagePreview(id, image.id).data).toBe("c2NyZWVuc2hvdA==");
+      expect(recoveredStore.listDrafts(id)).toEqual([]);
+      expect(recovered.getConversationAttachment(id, image.id).messageId).toBe(tool.id);
+      expect(recovered.listTimeline(id)).toContainEqual(expect.objectContaining({ id: tool.id, result: completed.result }));
+    } finally { source.close(); recovered.close(); }
+  });
+  it("rehydrates a conversation with an orphaned Subagent task before a new message", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "event-projector-orphaned-subagent-"));
+    temporaryDirectories.push(directory);
+    const source = new AgentDatabase(":memory:");
+    const log = new ThreadLog(directory);
+    const creation = source.prepareConversationCreation(null);
+    source.projectConversationCreated(creation);
+    const parentId = creation.conversation.id;
+    log.append(parentId, { type: "conversation_created", payload: creation });
+    const parentRun = source.createRunWithUserMessage(parentId, "历史消息", "demo");
+    log.append(parentId, { type: "run_created", payload: { runId: parentRun.runId, modelId: "demo" } });
+    log.append(parentId, { type: "user_message", payload: {
+      message: parentRun.userMessage, content: "历史消息", runId: parentRun.runId,
+    } });
+    const child = source.forkConversation(parentId, "subagent");
+    const task = source.createSubagentTask({
+      childConversationId: child.id, parentConversationId: parentId,
+      sourceRunId: parentRun.runId, task: "历史子任务", title: "历史子任务",
+    });
+    // The child log can be absent after an older partial cleanup, while its
+    // parent still retains the durable task event.
+    log.append(parentId, { type: "subagent_task_created", payload: { task } });
+    source.finishRun(parentRun.runId, "completed", null);
+    log.append(parentId, { type: "run_finished", payload: { runId: parentRun.runId, status: "completed" } });
+
+    const recovered = new AgentDatabase(":memory:");
+    const projector = new EventProjector(recovered, log);
+    projector.projectAllConversationLogs({ releaseHistory: true });
+    expect(() => projector.projectConversation(parentId)).toThrow("ThreadLog Subagent task dependencies are unavailable.");
+    expect(() => projector.ensureConversationHistoryProjected(parentId)).not.toThrow();
+    expect(recovered.listContextMessages(parentId).map((message) => message.content)).toContain("历史消息");
+    projector.releaseInactiveConversationHistories();
+    expect(() => projector.ensureConversationHistoryProjected(parentId)).not.toThrow();
+    expect(recovered.listContextMessages(parentId).map((message) => message.content)).toEqual(["历史消息"]);
+    expect(() => recovered.createRunWithUserMessage(parentId, "新消息", "demo")).not.toThrow();
+    source.close();
+    recovered.close();
+  });
+
+  it.each(["completed", "failed", "cancelled", "running"] as const)(
+    "keeps a %s child Run authoritative when its parent history is rehydrated",
+    async (status) => {
+      const directory = await mkdtemp(path.join(os.tmpdir(), "event-projector-subagent-status-"));
+      temporaryDirectories.push(directory);
+      const source = new AgentDatabase(":memory:");
+      const log = new ThreadLog(directory);
+      const parentCreation = source.prepareConversationCreation(null);
+      source.projectConversationCreated(parentCreation);
+      const parentId = parentCreation.conversation.id;
+      log.append(parentId, { type: "conversation_created", payload: parentCreation });
+      const parentRun = source.createRunWithUserMessage(parentId, "委派检查", "demo");
+      log.append(parentId, { type: "run_created", payload: { runId: parentRun.runId, modelId: "demo" } });
+      const child = source.forkConversation(parentId, "subagent");
+      log.append(child.id, { type: "conversation_created", payload: { agent: null, conversation: child } });
+      const childRun = source.createRunWithUserMessage(child.id, "检查", "demo");
+      log.append(child.id, { type: "run_created", payload: { runId: childRun.runId, modelId: "demo" } });
+      const task = source.createSubagentTask({
+        childConversationId: child.id, parentConversationId: parentId,
+        sourceRunId: parentRun.runId, task: "检查", title: "检查",
+      });
+      log.append(parentId, { type: "subagent_task_created", payload: {
+        task: source.assignSubagentTaskRun(task.id, childRun.runId),
+      } });
+      source.finishRun(parentRun.runId, "completed", null);
+      log.append(parentId, { type: "run_finished", payload: { runId: parentRun.runId, status: "completed" } });
+      if (status !== "running") {
+        source.finishRun(childRun.runId, status, null);
+        source.completeSubagentTaskByRun({ targetRunId: childRun.runId, status, error: null, result: null });
+        log.append(child.id, { type: "run_finished", payload: { runId: childRun.runId, status } });
+        // Older compact checkpoints can omit a historical task whose parent
+        // receipt never reached the log. The child still has a durable terminal Run.
+        log.append(parentId, { type: "state_checkpoint", payload: {
+          ...source.exportThreadLogStartupState(parentId), subagentTasks: [],
+        } });
+      }
+      const recovered = new AgentDatabase(":memory:");
+      const projector = new EventProjector(recovered, log);
+      projector.projectAllConversationLogs({ releaseHistory: status !== "running" });
+      expect(recovered.getConversation(parentId).activeSubagentCount).toBe(status === "running" ? 1 : 0);
+      projector.ensureConversationHistoryProjected(parentId);
+      expect(recovered.getConversation(parentId).activeSubagentCount).toBe(status === "running" ? 1 : 0);
+      expect(recovered.getSubagentTask(task.id).status).toBe(status);
+      if (status !== "running") {
+        const restarted = new EventProjector(recovered, log);
+        restarted.projectAllConversationLogs({ releaseHistory: true });
+        restarted.ensureConversationHistoryProjected(parentId);
+        expect(recovered.getConversation(parentId).activeSubagentCount).toBe(0);
+        expect(recovered.getSubagentTask(task.id).status).toBe(status);
+      }
+      source.close();
+      recovered.close();
+    },
+  );
+
+  it("replays full history when a compression boundary follows a compact startup checkpoint", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "event-projector-compression-tail-"));
+    temporaryDirectories.push(directory);
+    const source = new AgentDatabase(":memory:");
+    const creation = source.prepareConversationCreation(null);
+    const id = creation.conversation.id;
+    const log = new ThreadLog(directory);
+    const runId = crypto.randomUUID();
+    log.append(id, { type: "conversation_created", payload: creation });
+    log.append(id, { type: "run_created", payload: { runId, modelId: "demo" } });
+    for (let i = 0; i < 3; i++) log.append(id, {
+      type: "user_message", payload: { runId, messageId: crypto.randomUUID(), content: `历史 ${i}` },
+    });
+    log.append(id, { type: "run_finished", payload: { runId, status: "completed" } });
+    const projector = new EventProjector(source, log);
+    projector.projectAllConversationLogs({ releaseHistory: true });
+    projector.checkpointInactiveConversations();
+    log.append(id, { type: "context_checkpoint", payload: {
+      coveredThroughContextSequence: 2, summary: "前两条历史摘要",
+    } });
+    const recovered = new AgentDatabase(":memory:");
+    const restarted = new EventProjector(recovered, log);
+    expect(() => restarted.projectAllConversationLogs({ releaseHistory: true })).not.toThrow();
+    restarted.ensureConversationHistoryProjected(id);
+    expect(recovered.listContextMessages(id)).toHaveLength(3);
+    expect(recovered.getConversation(id).lastRunStatus).toBe("completed");
+    source.close();
+    recovered.close();
+  });
+
+  it("recovers attachments embedded in old snapshot messages instead of an incomplete startup checkpoint", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "event-projector-old-attachments-"));
+    temporaryDirectories.push(directory);
+    const source = new AgentDatabase(":memory:");
+    const creation = source.prepareConversationCreation(null);
+    source.projectConversationCreated(creation);
+    const root = path.join(directory, "attachments");
+    const attachments = new ConversationAttachmentStore(source, new ProjectRegistry(source), root);
+    const attachment = await attachments.importBytes(creation.conversation.id, {
+      bytes: Buffer.from("legacy attachment"), mimeType: "text/plain", name: "old.txt",
+    });
+    const run = source.prepareRunWithUserMessage(creation.conversation.id, "读取附件", "test-model", [attachment.id], "读取附件");
+    source.projectPreparedRunWithUserMessage(run);
+    source.finishRun(run.runId, "completed", null);
+    const log = new ThreadLog(path.join(directory, "conversations"));
+    log.append(creation.conversation.id, { type: "conversation_created", payload: creation });
+    log.append(creation.conversation.id, { type: "legacy_snapshot_imported", payload: {
+      ...source.exportThreadLogLegacySnapshot(creation.conversation.id), attachmentRefs: [],
+    } });
+    log.append(creation.conversation.id, { type: "state_checkpoint", payload: {
+      ...source.exportThreadLogStartupState(creation.conversation.id), format: 1, attachmentRefs: [],
+    } });
+    const recovered = new AgentDatabase(":memory:");
+    const recoveredAttachments = new ConversationAttachmentStore(recovered, new ProjectRegistry(recovered), root);
+    new EventProjector(recovered, log, (reference) => recoveredAttachments.resolveThreadLogPaths(reference))
+      .projectAllConversationLogs({ releaseHistory: true });
+    expect(recovered.getConversationAttachment(creation.conversation.id, attachment.id).name).toBe("old.txt");
+    source.close();
+    recovered.close();
+  });
+  it("restores compact startup state and replays only its tail while preserving full history", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "event-projector-state-checkpoint-"));
+    temporaryDirectories.push(directory);
+    const database = new AgentDatabase(":memory:");
+    const creation = database.prepareConversationCreation(null);
+    const id = creation.conversation.id;
+    const log = new ThreadLog(directory);
+    log.append(id, { type: "conversation_created", payload: creation });
+    const runId = crypto.randomUUID();
+    log.append(id, { type: "run_created", payload: { runId, modelId: "demo" } });
+    for (let i = 0; i < 260; i++) log.append(id, {
+      type: "user_message", payload: { runId, messageId: crypto.randomUUID(), content: `历史 ${i}` },
+    });
+    log.append(id, { type: "run_finished", payload: { runId, status: "completed" } });
+    const projector = new EventProjector(database, log);
+    projector.projectAllConversationLogs({ releaseHistory: true });
+    projector.checkpointInactiveConversations();
+    const checkpoint = log.readLatestStateCheckpoint(id)!;
+    expect(checkpoint.event.payload.timeline).toEqual([]);
+    expect(checkpoint.event.payload.modelMessages).toEqual([]);
+    expect(JSON.stringify(checkpoint.event.payload)).not.toContain("历史 259");
+    projector.checkpointInactiveConversations();
+    expect(log.readLatestStateCheckpoint(id)?.event.eventId).toBe(checkpoint.event.eventId);
+    log.append(id, { type: "conversation_properties_changed", payload: {
+      agent: null, changed: ["title"], properties: conversationMutablePropertiesSchema.strip().parse({ ...database.getConversation(id), title: "新标题" }),
+    } });
+    const restarted = new AgentDatabase(":memory:");
+    const scan = vi.spyOn(log, "scan");
+    const replay = vi.spyOn(restarted, "restoreThreadLogBusinessEvents");
+    const next = new EventProjector(restarted, log);
+    next.projectAllConversationLogs({ releaseHistory: true });
+    expect(scan.mock.calls[0]?.[2]).toMatchObject({ sequence: checkpoint.event.sequence });
+    expect(replay.mock.calls.flatMap((call) => call[1])).toHaveLength(1);
+    expect(restarted.getConversation(id)).toMatchObject({ title: "新标题", lastRunStatus: "completed" });
+    expect(next.listTimelinePage({ conversationId: id, limit: 20 }).items[0]).toMatchObject({ content: "历史 240" });
+    next.ensureConversationHistoryProjected(id);
+    expect(restarted.listContextMessages(id)).toHaveLength(260);
+    expect(log.readContext(id)?.messages).toHaveLength(260);
+    log.append(id, { type: "state_checkpoint", payload: { format: 999 } });
+    const fallback = new AgentDatabase(":memory:");
+    new EventProjector(fallback, log).projectAllConversationLogs({ releaseHistory: true });
+    expect(fallback.getConversation(id)).toMatchObject({ title: "新标题", lastRunStatus: "completed" });
+    fallback.close();
+    database.close();
+    restarted.close();
+  });
+
+  it("streams startup batches and preserves terminal state across batch boundaries", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "event-projector-batches-"));
+    temporaryDirectories.push(directory);
+    const source = new AgentDatabase(":memory:");
+    const creation = source.prepareConversationCreation(null);
+    const id = creation.conversation.id;
+    const log = new ThreadLog(directory);
+    log.append(id, { type: "conversation_created", payload: creation });
+    const runId = crypto.randomUUID();
+    log.append(id, { type: "run_created", payload: { runId, modelId: "demo" } });
+    for (let i = 0; i < 260; i++) log.append(id, {
+      type: "user_message", payload: { runId, messageId: crypto.randomUUID(), content: `输入 ${i}` },
+    });
+    log.append(id, { type: "run_finished", payload: { runId, status: "completed" } });
+    const database = new AgentDatabase(":memory:");
+    const replay = vi.spyOn(database, "restoreThreadLogBusinessEvents");
+    const fullRead = vi.spyOn(log, "read");
+    const projector = new EventProjector(database, log);
+    projector.projectAllConversationLogs({ releaseHistory: true });
+    expect(fullRead).not.toHaveBeenCalled();
+    expect(replay.mock.calls.every((call) => call[1].length <= 128)).toBe(true);
+    expect(database.listTimeline(id)).toEqual([]);
+    expect(database.getConversation(id).lastRunStatus).toBe("completed");
+    expect(projector.listTimelinePage({ conversationId: id, limit: 20 }).items[0]).toMatchObject({ content: "输入 240" });
+    source.close();
+    database.close();
+  });
+
+  it("restores messages appended after a legacy import on restart", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "event-projector-import-tail-"));
+    temporaryDirectories.push(directory);
+    const source = new AgentDatabase(":memory:");
+    const conversation = source.createConversation(null);
+    const original = source.createRunWithUserMessage(conversation.id, "迁移前", "test-model");
+    source.finishRun(original.runId, "completed", null);
+    const log = new ThreadLog(directory);
+    new ThreadLogLegacyImporter(source, log, new EventProjector(source, log)).importMissingConversationLogs();
+    const next = source.createRunWithUserMessage(conversation.id, "迁移后", "test-model");
+    log.append(conversation.id, { type: "run_created", payload: { runId: next.runId, modelId: "test-model" } });
+    log.append(conversation.id, { type: "user_message", payload: { message: next.userMessage, content: "迁移后", runId: next.runId } });
+    log.append(conversation.id, { type: "run_finished", payload: { runId: next.runId, status: "completed" } });
+    const restored = new AgentDatabase(":memory:");
+    new EventProjector(restored, log).projectAllConversationLogs();
+    expect(restored.listTimeline(conversation.id).map((item) => "content" in item ? item.content : "")).toEqual(["迁移前", "迁移后"]);
+    expect(restored.getConversation(conversation.id).lastRunStatus).toBe("completed");
+    const startup = new AgentDatabase(":memory:");
+    const startupProjector = new EventProjector(startup, log);
+    const fullRead = vi.spyOn(log, "read");
+    startupProjector.projectAllConversationLogs({ releaseHistory: true });
+    expect(fullRead).not.toHaveBeenCalled();
+    expect(startup.listTimeline(conversation.id)).toEqual([]);
+    expect(startup.getConversation(conversation.id).lastRunStatus).toBe("completed");
+    expect(startupProjector.listTimelinePage({ conversationId: conversation.id, limit: 20 }).items).toHaveLength(2);
+    startup.close();
+    source.close();
+    restored.close();
+  });
+
+  it("evicts inactive history and restores it from JSONL on demand", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "event-projector-lazy-"));
+    temporaryDirectories.push(directory);
+    const source = new AgentDatabase(":memory:");
+    const conversation = source.createConversation(null);
+    const run = source.createRunWithUserMessage(conversation.id, "较早的输入", "test-model");
+    source.appendAssistantTurn({
+      content: "较早的输出",
+      conversationId: conversation.id,
+      messageId: crypto.randomUUID(),
+      modelId: "test-model",
+      runId: run.runId,
+      toolCalls: [],
+    });
+    source.finishRun(run.runId, "completed", null);
+    const threadLog = new ThreadLog(path.join(directory, "conversations"));
+    const sourceProjector = new EventProjector(source, threadLog);
+    new ThreadLogLegacyImporter(source, threadLog, sourceProjector)
+      .importMissingConversationLogs();
+
+    const recovered = new AgentDatabase(":memory:");
+    const projector = new EventProjector(recovered, threadLog);
+    projector.projectAllConversationLogs();
+    expect(recovered.listTimeline(conversation.id)).toHaveLength(2);
+
+    projector.releaseInactiveConversationHistories();
+    expect(recovered.listTimeline(conversation.id)).toEqual([]);
+    expect(recovered.getConversation(conversation.id).lastRunStatus).toBe("completed");
+
+    const hydrate = vi.spyOn(projector, "ensureConversationHistoryProjected");
+    const search = vi.spyOn(recovered, "searchConversations");
+    expect(projector.listTimelinePage({ conversationId: conversation.id, limit: 20 }).items).toHaveLength(2);
+    expect(await projector.searchConversations({ conversationId: conversation.id, query: "较早", limit: 10 })).toHaveLength(2);
+    expect(recovered.listTimeline(conversation.id)).toEqual([]);
+    expect(hydrate).not.toHaveBeenCalled();
+    expect(search).not.toHaveBeenCalled();
+
+    projector.ensureConversationHistoryProjected(conversation.id);
+    expect(recovered.listTimeline(conversation.id).map((item) => item.kind)).toEqual([
+      "message",
+      "message",
+    ]);
+  });
+
   it("indexes each JSONL event once and advances a per-conversation cursor", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "event-projector-"));
     temporaryDirectories.push(directory);
@@ -68,6 +443,39 @@ describe("EventProjector", () => {
     });
   });
 
+  it("skips unchanged JSONL files at startup and replays a file after it grows", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "event-projector-signature-"));
+    temporaryDirectories.push(directory);
+    const database = new AgentDatabase(":memory:");
+    const conversation = database.createConversation(null);
+    const threadLog = new ThreadLog(path.join(directory, "conversations"));
+    const projector = new EventProjector(database, threadLog);
+    threadLog.append(conversation.id, {
+      payload: { content: "已投影" },
+      type: "user_message",
+    });
+    projector.projectConversation(conversation.id);
+    const read = vi.spyOn(threadLog, "read");
+
+    expect(projector.projectAllConversationLogs()).toMatchObject([
+      { projectedEventCount: 0 },
+    ]);
+    expect(read).not.toHaveBeenCalled();
+
+    const appended = threadLog.append(conversation.id, {
+      payload: { content: "尚未投影" },
+      type: "assistant_message",
+    });
+    expect(projector.projectAllConversationLogs()).toMatchObject([
+      {
+        cursor: { lastEventId: appended.eventId, lastSequence: 2 },
+        projectedEventCount: 1,
+      },
+    ]);
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(projector.isConversationProjectionCurrent(conversation.id)).toBe(true);
+  });
+
   it("catches up all known conversations without reading nonexistent logs", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "event-projector-"));
     temporaryDirectories.push(directory);
@@ -89,6 +497,61 @@ describe("EventProjector", () => {
       { indexedEventCount: 1, isConsistent: true, logEventCount: 1 },
       { indexedEventCount: 0, isConsistent: true, logEventCount: 0 },
     ]));
+  });
+
+  it("clears a stale event index when its Conversation log no longer exists", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "event-projector-missing-log-"));
+    temporaryDirectories.push(directory);
+    const database = new AgentDatabase(":memory:");
+    const conversation = database.createConversation(null);
+    database.projectThreadLogEvents(conversation.id, [{
+      createdAt: new Date().toISOString(),
+      eventId: crypto.randomUUID(),
+      payload: { content: "没有来源日志的旧索引" },
+      sequence: 1,
+      type: "user_message",
+    }]);
+    const projector = new EventProjector(
+      database,
+      new ThreadLog(path.join(directory, "conversations")),
+    );
+
+    expect(projector.projectConversation(conversation.id)).toEqual({
+      cursor: null,
+      projectedEventCount: 0,
+    });
+    expect(projector.verifyConversation(conversation.id)).toEqual({
+      indexedEventCount: 0,
+      isConsistent: true,
+      logEventCount: 0,
+    });
+  });
+
+  it("skips a persisted deletion-pending Conversation even when its JSONL still exists", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "event-projector-pending-delete-"));
+    temporaryDirectories.push(directory);
+    const database = new AgentDatabase(":memory:");
+    const active = database.createConversation(null);
+    const pendingDeletion = database.createConversation(null);
+    const threadLog = new ThreadLog(path.join(directory, "conversations"));
+    threadLog.append(active.id, {
+      payload: { content: "继续投影" },
+      type: "user_message",
+    });
+    threadLog.append(pendingDeletion.id, {
+      payload: { content: "不应在启动时复活" },
+      type: "user_message",
+    });
+    database.createConversationDeletionTask(pendingDeletion.id);
+
+    const projector = new EventProjector(database, threadLog);
+    const results = projector.projectAllConversationLogs();
+
+    expect(database.listProjectableConversationIds()).toEqual([active.id]);
+    expect(results).toHaveLength(1);
+    expect(database.getThreadLogProjectionCursor(active.id)?.lastSequence).toBe(1);
+    expect(() => database.getThreadLogProjectionCursor(pendingDeletion.id)).toThrow("not found");
+    expect(projector.verifyAllConversationLogs()).toHaveLength(1);
   });
 
   it("projects a newly appended event without replaying earlier indexed events", async () => {
@@ -113,6 +576,49 @@ describe("EventProjector", () => {
       cursor: { lastSequence: 2 },
     });
     expect(projector.verifyConversation(conversation.id)).toMatchObject({
+      indexedEventCount: 2,
+      isConsistent: true,
+      logEventCount: 2,
+    });
+  });
+
+  it("rebuilds a stale event index when a Conversation log was reseeded", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "event-projector-reseeded-"));
+    temporaryDirectories.push(directory);
+    const database = new AgentDatabase(":memory:");
+    const conversation = database.createConversation(null);
+    const threadLog = new ThreadLog(path.join(directory, "conversations"));
+    const projector = new EventProjector(database, threadLog);
+    const staleFirst = threadLog.append(conversation.id, {
+      payload: { content: "旧日志" },
+      type: "user_message",
+    });
+    threadLog.append(conversation.id, {
+      payload: { content: "旧回复" },
+      type: "assistant_message",
+    });
+    projector.projectConversation(conversation.id);
+
+    threadLog.quarantine(conversation.id);
+    threadLog.append(conversation.id, {
+      payload: { content: "重新生成的日志" },
+      type: "user_message",
+    });
+    const replacementTail = threadLog.append(conversation.id, {
+      payload: { content: "重新生成的回复" },
+      type: "assistant_message",
+    });
+    database.resetThreadLogProjection(conversation.id);
+    database.projectThreadLogEvents(conversation.id, [staleFirst, replacementTail]);
+
+    expect(projector.projectConversation(conversation.id)).toMatchObject({
+      projectedEventCount: 2,
+      cursor: {
+        lastEventId: replacementTail.eventId,
+        lastSequence: 2,
+      },
+    });
+    expect(projector.verifyConversation(conversation.id)).toEqual({
       indexedEventCount: 2,
       isConsistent: true,
       logEventCount: 2,
@@ -182,11 +688,25 @@ describe("EventProjector", () => {
       runId: run.runId,
       toolCalls: [{ arguments: "{}", id: "call-directory", name: "list_directory" }],
     });
+    const providerState = {
+      apiFormat: "openai-chat-completions" as const,
+      baseUrl: "https://example.test/v1",
+      modelId: "test-model",
+      payload: { responseId: "response-1" },
+      generationDurationMs: 2000,
+      usage: {
+        cachedInputTokens: 80,
+        inputTokens: 100,
+        outputTokens: 10,
+        totalTokens: 110,
+      },
+    };
     threadLog.append(creation.conversation.id, {
       payload: {
         content: "先调用目录工具。",
         messageId: assistant?.id ?? crypto.randomUUID(),
         modelId: "test-model",
+        providerState,
         runId: run.runId,
         timelineMessage: assistant,
         toolCalls: [{ arguments: "{}", id: "call-directory", name: "list_directory" }],
@@ -244,7 +764,11 @@ describe("EventProjector", () => {
     ]);
     expect(recovered.listContextMessages(creation.conversation.id)).toEqual(expect.arrayContaining([
       expect.objectContaining({ content: "检查恢复链路", role: "user" }),
-      expect.objectContaining({ content: "先调用目录工具。", role: "assistant" }),
+      expect.objectContaining({
+        content: "先调用目录工具。",
+        providerState,
+        role: "assistant",
+      }),
       expect.objectContaining({ content: "{\"entries\":[]}", role: "tool", toolCallId: "call-directory" }),
     ]));
     source.close();
@@ -526,6 +1050,7 @@ describe("EventProjector", () => {
         content: "我先读取配置。",
         messageId: crypto.randomUUID(),
         modelId: "test-model",
+        reasoningContent: "先分析配置来源。",
         runId: queued.runId,
         toolCalls: [{ arguments: "{}", id: "call-read", name: "read_file" }],
         writeAhead: true,
@@ -581,7 +1106,11 @@ describe("EventProjector", () => {
     });
     projector.projectBusinessEvent(creation.conversation.id, checkpointEvent);
     expect(source.listTimeline(creation.conversation.id)).toEqual(expect.arrayContaining([
-      expect.objectContaining({ content: "我先读取配置。", role: "assistant" }),
+      expect.objectContaining({
+        content: "我先读取配置。",
+        reasoningContent: "先分析配置来源。",
+        role: "assistant",
+      }),
       expect.objectContaining({ kind: "tool", name: "read_file", status: "completed" }),
     ]));
     expect(source.listContextMessages(creation.conversation.id)).toEqual(expect.arrayContaining([
@@ -600,7 +1129,11 @@ describe("EventProjector", () => {
     const recovered = new AgentDatabase(":memory:");
     new EventProjector(recovered, threadLog).projectAllConversationLogs();
     expect(recovered.listTimeline(creation.conversation.id)).toEqual(expect.arrayContaining([
-      expect.objectContaining({ content: "我先读取配置。", role: "assistant" }),
+      expect.objectContaining({
+        content: "我先读取配置。",
+        reasoningContent: "先分析配置来源。",
+        role: "assistant",
+      }),
       expect.objectContaining({ kind: "tool", name: "read_file", status: "completed" }),
     ]));
     expect(recovered.listContextMessages(creation.conversation.id)).toEqual(expect.arrayContaining([
@@ -615,6 +1148,90 @@ describe("EventProjector", () => {
       coveredThroughSequence: 3,
       summary: "已读取配置，等待下一步。",
     });
+    source.close();
+    recovered.close();
+  });
+
+  it("updates and recovers one durable model retry timeline item", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "event-projector-model-retry-"));
+    temporaryDirectories.push(directory);
+    const source = new AgentDatabase(":memory:");
+    const threadLog = new ThreadLog(path.join(directory, "conversations"));
+    const creation = source.prepareConversationCreation(null);
+    const projector = new EventProjector(source, threadLog);
+    projector.projectBusinessEvent(creation.conversation.id, threadLog.append(
+      creation.conversation.id,
+      { payload: creation, type: "conversation_created" },
+    ));
+    const queued = source.prepareRunWithUserMessage(
+      creation.conversation.id,
+      "重试记录需要持久化",
+      "test-model",
+    );
+    projector.projectBusinessEvent(creation.conversation.id, threadLog.append(
+      creation.conversation.id,
+      {
+        payload: {
+          content: queued.userMessage.content,
+          createdAt: queued.runCreatedAt,
+          executionSnapshot: queued.executionSnapshot,
+          message: queued.userMessage,
+          messageId: queued.userMessage.id,
+          modelContent: queued.modelContent,
+          modelId: queued.modelId,
+          runId: queued.runId,
+          title: queued.nextTitle,
+        },
+        type: "run_queued",
+      },
+    ));
+    const createdAt = new Date().toISOString();
+    const retrying = conversationModelRetryItemSchema.parse({
+      attempt: 1,
+      conversationId: creation.conversation.id,
+      createdAt,
+      id: crypto.randomUUID(),
+      kind: "model_retry",
+      maxAttempts: 5,
+      reason: "HTTP 402: Insufficient Balance",
+      retryInMs: 1_000,
+      runId: queued.runId,
+      status: "retrying",
+      updatedAt: createdAt,
+    });
+    projector.projectBusinessEvent(creation.conversation.id, threadLog.append(
+      creation.conversation.id,
+      { payload: { retry: retrying, writeAhead: true }, type: "model_retry_updated" },
+    ));
+    const failed = conversationModelRetryItemSchema.parse({
+      ...retrying,
+      attempt: 5,
+      retryInMs: null,
+      status: "failed",
+      updatedAt: new Date().toISOString(),
+    });
+    projector.projectBusinessEvent(creation.conversation.id, threadLog.append(
+      creation.conversation.id,
+      { payload: { retry: failed, writeAhead: true }, type: "model_retry_updated" },
+    ));
+
+    expect(source.listTimeline(creation.conversation.id)).toEqual([
+      expect.objectContaining({ content: "重试记录需要持久化", role: "user" }),
+      expect.objectContaining({
+        attempt: 5,
+        id: retrying.id,
+        kind: "model_retry",
+        reason: "HTTP 402: Insufficient Balance",
+        status: "failed",
+      }),
+    ]);
+
+    const recovered = new AgentDatabase(":memory:");
+    new EventProjector(recovered, threadLog).projectAllConversationLogs();
+    expect(recovered.listTimeline(creation.conversation.id)).toEqual([
+      expect.objectContaining({ content: "重试记录需要持久化", role: "user" }),
+      expect.objectContaining({ id: retrying.id, kind: "model_retry", status: "failed" }),
+    ]);
     source.close();
     recovered.close();
   });
@@ -707,7 +1324,8 @@ describe("EventProjector", () => {
     projector.projectBusinessEvent(creation.conversation.id, cancellationEvent);
     expect(source.listPendingMessages(creation.conversation.id)).toEqual([]);
     expect(source.getConversationAttachment(creation.conversation.id, attachmentId).pendingMessageId)
-      .toBeNull();
+      .toBe(pending.message.id);
+    expect(source.listDraftConversationAttachments(creation.conversation.id)).toEqual([]);
     source.close();
   });
 
@@ -769,7 +1387,7 @@ describe("EventProjector", () => {
     recovered.close();
   });
 
-  it("consumes a write-ahead Steer message into the active Run", async () => {
+  it.each(["active", "completed", "failed", "cancelled"] as const)("restores write-ahead Steer messages when their Run is %s", async (status) => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "event-projector-write-ahead-steer-"));
     temporaryDirectories.push(directory);
     const source = new AgentDatabase(":memory:");
@@ -843,20 +1461,48 @@ describe("EventProjector", () => {
       expect.objectContaining({ content: "补充约束：不要修改配置", role: "user", runId: run.runId }),
     ]));
 
-    // Simulate a process crash after the JSONL append, but before a later
-    // process has indexed the event stream. Recovery must replay the pending
-    // snapshot before consuming the Steer message into the active Run.
+    if (status !== "active") {
+      projector.projectBusinessEvent(creation.conversation.id, threadLog.append(creation.conversation.id, {
+        payload: { assistantKind: "turn", content: "本轮结束", error: null,
+          messageId: crypto.randomUUID(), modelId: "test-model", result: "本轮结束", runId: run.runId, status },
+        type: "run_terminal",
+      }));
+      projector.checkpointInactiveConversations();
+    }
+    // Startup restores compact Run state first. Lazy history hydration must not
+    // require a historical Steer to target a currently active Run.
     const recovered = new AgentDatabase(":memory:");
-    new EventProjector(recovered, threadLog).projectAllConversationLogs();
-    expect(recovered.listPendingMessages(creation.conversation.id)).toEqual([]);
-    expect(recovered.listTimeline(creation.conversation.id)).toEqual(expect.arrayContaining([
-      expect.objectContaining({ content: "补充约束：不要修改配置", role: "user", runId: run.runId }),
-    ]));
-    expect(recovered.listContextMessages(creation.conversation.id)).toEqual(expect.arrayContaining([
-      expect.objectContaining({ content: "补充约束：不要修改配置", role: "user", runId: run.runId }),
-    ]));
-    source.close();
-    recovered.close();
+    const recoveredProjector = new EventProjector(recovered, threadLog);
+    try {
+      recoveredProjector.projectAllConversationLogs({ releaseHistory: status !== "active" });
+      recoveredProjector.ensureConversationHistoryProjected(creation.conversation.id);
+      expect(recovered.listPendingMessages(creation.conversation.id)).toEqual([]);
+      expect(recovered.listTimeline(creation.conversation.id)).toEqual(expect.arrayContaining([
+        expect.objectContaining({ content: "补充约束：不要修改配置", role: "user", runId: run.runId }),
+      ]));
+      expect(recovered.listContextMessages(creation.conversation.id)).toEqual(expect.arrayContaining([
+        expect.objectContaining({ content: "补充约束：不要修改配置", role: "user", runId: run.runId }),
+      ]));
+      recovered.projectThreadLogBusinessEvents(creation.conversation.id, [userEvent]);
+      expect(recovered.listTimeline(creation.conversation.id).filter((item) => item.id === consumed.userMessage.id)).toHaveLength(1);
+      expect(recovered.listContextMessages(creation.conversation.id).filter((item) => item.content === consumed.modelContent)).toHaveLength(1);
+      if (status !== "active") {
+        expect(recovered.getConversation(creation.conversation.id)).toMatchObject({ activeRunId: null, lastRunStatus: status });
+        recoveredProjector.releaseInactiveConversationHistories();
+        recoveredProjector.ensureConversationHistoryProjected(creation.conversation.id);
+        expect(recovered.listTimeline(creation.conversation.id).filter((item) => item.id === consumed.userMessage.id)).toHaveLength(1);
+        expect(recovered.listContextMessages(creation.conversation.id).filter((item) => item.content === consumed.modelContent)).toHaveLength(1);
+        const nextPending = recovered.enqueuePendingMessage({ conversationId: creation.conversation.id,
+          content: "新的实时补充", deliveryMode: "steer" });
+        expect(() => recovered.preparePendingMessageConsumption(nextPending.id, run.runId, nextPending.content))
+          .toThrow("Pending message can only steer its active conversation run.");
+        recovered.deletePendingMessage(nextPending.id);
+        expect(() => recovered.createRunWithUserMessage(creation.conversation.id, "再次发送", "test-model")).not.toThrow();
+      }
+    } finally {
+      source.close();
+      recovered.close();
+    }
   });
 
   it("rebuilds AttachmentStore metadata from JSONL references without logging paths", async () => {
@@ -1046,7 +1692,26 @@ describe("EventProjector", () => {
       type: "run_finished",
     });
     projector.projectEvent(creation.conversation.id, finishedEvent);
+    const attachmentId = crypto.randomUUID();
+    source.createConversationAttachment({
+      contextTokens: 8,
+      conversationId: creation.conversation.id,
+      createdAt: new Date().toISOString(),
+      extractedTextPath: null,
+      id: attachmentId,
+      kind: "file",
+      messageId: null,
+      mimeType: "text/plain",
+      name: "replacement.txt",
+      pendingMessageId: null,
+      projectPath: null,
+      sizeBytes: 16,
+      source: "upload",
+      storedPath: path.join(directory, "replacement.txt"),
+      truncated: false,
+    });
     const replacement = source.prepareLatestUserMessageReplacement({
+      attachmentIds: [attachmentId],
       content: "修正后的任务",
       conversationId: creation.conversation.id,
       messageId: first.userMessage.id,
@@ -1078,8 +1743,14 @@ describe("EventProjector", () => {
       }),
     ]);
     expect(source.listContextMessages(creation.conversation.id)).toEqual([
-      expect.objectContaining({ content: "修正后的任务", runId: replacement.runId }),
+      expect.objectContaining({
+        attachmentIds: [attachmentId],
+        content: "修正后的任务",
+        runId: replacement.runId,
+      }),
     ]);
+    expect(source.getConversationAttachment(creation.conversation.id, attachmentId).messageId)
+      .toBe(first.userMessage.id);
 
     const recovered = new AgentDatabase(":memory:");
     new EventProjector(recovered, threadLog).projectAllConversationLogs();
@@ -1131,16 +1802,100 @@ describe("EventProjector", () => {
       payload: { runId: run.runId },
       type: "run_started",
     });
+    const retry = conversationModelRetryItemSchema.parse({
+      attempt: 2,
+      conversationId: creation.conversation.id,
+      createdAt: "2026-09-02T10:00:00.000Z",
+      id: crypto.randomUUID(),
+      kind: "model_retry",
+      maxAttempts: 5,
+      reason: "HTTP 402: Insufficient Balance",
+      retryInMs: 2_000,
+      runId: run.runId,
+      status: "retrying",
+      updatedAt: "2026-09-02T10:00:01.000Z",
+    });
+    threadLog.append(creation.conversation.id, {
+      payload: { retry },
+      type: "model_retry_updated",
+    });
+
+    const command = conversationToolItemSchema.parse({
+      id: crypto.randomUUID(), kind: "tool", conversationId: creation.conversation.id,
+      runId: run.runId, batchId: null, createdAt: retry.createdAt,
+      name: "run_command", arguments: '{"command":"ping -n 4 example.test"}',
+      status: "running", result: null, diff: null,
+    });
+    threadLog.append(creation.conversation.id, {
+      type: "tool_call_requested", payload: { runId: run.runId, tool: command, toolCallId: "call-ping" },
+    });
 
     const recovered = new AgentDatabase(":memory:");
     new EventProjector(recovered, threadLog).projectAllConversationLogs();
     expect(recovered.getConversation(creation.conversation.id).lastRunStatus).toBe("running");
+    expect(recovered.listTimeline(creation.conversation.id)).toContainEqual(expect.objectContaining({
+      id: retry.id,
+      status: "retrying",
+    }));
 
-    recovered.interruptRecoveredThreadLogRuns();
+    const projector = new EventProjector(recovered, threadLog);
+    for (const recovery of recovered.interruptRecoveredThreadLogRuns()) {
+      projector.projectEvent(recovery.conversationId, threadLog.append(recovery.conversationId, recovery.event));
+    }
     expect(recovered.getConversation(creation.conversation.id).lastRunStatus).toBe("failed");
     expect(recovered.listQueuedRunRecoveries()).toEqual([]);
+    expect(recovered.listTimeline(creation.conversation.id)).toContainEqual(expect.objectContaining({
+      id: retry.id,
+      reason: retry.reason,
+      retryInMs: null,
+      status: "failed",
+    }));
+    expect(recovered.listTimeline(creation.conversation.id)).toContainEqual(expect.objectContaining({
+      id: command.id, status: "failed",
+    }));
+    const interrupted = recovered.listTimeline(creation.conversation.id).find(item => item.id === command.id);
+    expect(interrupted?.kind === "tool" ? interrupted.result : null).toContain("执行已中断");
+    const restarted = new AgentDatabase(":memory:");
+    const restartedProjector = new EventProjector(restarted, threadLog);
+    restartedProjector.projectAllConversationLogs({ releaseHistory: true });
+    expect(restartedProjector.listTimelinePage({ conversationId: creation.conversation.id, limit: 20 }).items)
+      .toContainEqual(expect.objectContaining({ id: command.id, status: "failed" }));
+    expect(restarted.interruptRecoveredThreadLogRuns()).toEqual([]);
+    restarted.close();
     source.close();
     recovered.close();
+  });
+
+  it.each(["completed", "failed", "cancelled"] as const)("settles legacy running tools under a %s Run without changing completed output", async (status) => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "event-projector-stale-command-"));
+    temporaryDirectories.push(directory);
+    const source = new AgentDatabase(":memory:");
+    const log = new ThreadLog(directory);
+    const creation = source.prepareConversationCreation(null);
+    const conversationId = creation.conversation.id;
+    const runId = crypto.randomUUID();
+    log.append(conversationId, { type: "conversation_created", payload: creation });
+    log.append(conversationId, { type: "run_created", payload: { runId, modelId: "test-model" } });
+    log.append(conversationId, { type: "run_started", payload: { runId } });
+    const running = conversationToolItemSchema.parse({
+      id: crypto.randomUUID(), kind: "tool", conversationId, runId, batchId: null,
+      createdAt: new Date().toISOString(), name: "run_command", arguments: '{"command":"echo test"}',
+      status: "running", result: null, diff: null,
+    });
+    const completed = { ...running, id: crypto.randomUUID(), status: "completed", result: "kept output" };
+    log.append(conversationId, { type: "tool_call_requested", payload: { tool: running } });
+    log.append(conversationId, { type: "tool_result", payload: { tool: completed } });
+    log.append(conversationId, { type: "run_finished", payload: { runId, status } });
+    const recovered = new AgentDatabase(":memory:");
+    const projector = new EventProjector(recovered, log);
+    projector.projectAllConversationLogs({ releaseHistory: true });
+    const page = projector.listTimelinePage({ conversationId, limit: 20 });
+    expect(page.items).toContainEqual(expect.objectContaining({ id: running.id, status: "failed" }));
+    const interrupted = page.items.find(item => item.id === running.id);
+    expect(interrupted?.kind === "tool" ? interrupted.result : null).toContain("执行已中断");
+    expect(page.items).toContainEqual(completed);
+    expect(recovered.interruptRecoveredThreadLogRuns()).toEqual([]);
+    recovered.close(); source.close();
   });
 
   it("restores a pending Tool approval before startup marks its Run interrupted", async () => {
@@ -1209,8 +1964,97 @@ describe("EventProjector", () => {
     expect(recovered.listTimeline(creation.conversation.id)).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: tool.id, status: "awaiting_approval" }),
     ]));
-    recovered.interruptRecoveredThreadLogRuns();
+    const projector = new EventProjector(recovered, threadLog);
+    for (const recovery of recovered.interruptRecoveredThreadLogRuns()) {
+      projector.projectEvent(recovery.conversationId, threadLog.append(recovery.conversationId, recovery.event));
+    }
     expect(recovered.getConversation(creation.conversation.id).lastRunStatus).toBe("failed");
+    expect(recovered.listTimeline(creation.conversation.id)).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: tool.id,
+        result: "审批已失效：所属运行已经结束。",
+        status: "cancelled",
+      }),
+    ]));
+    const restarted = new AgentDatabase(":memory:");
+    const restartedProjector = new EventProjector(restarted, threadLog);
+    restartedProjector.projectAllConversationLogs({ releaseHistory: true });
+    expect(restarted.getConversation(creation.conversation.id).lastRunStatus).toBe("failed");
+    expect(restartedProjector.listTimelinePage({ conversationId: creation.conversation.id, limit: 20 }).items)
+      .toContainEqual(expect.objectContaining({ id: tool.id, status: "cancelled" }));
+    expect(restarted.interruptRecoveredThreadLogRuns()).toEqual([]);
+    restarted.close();
+    source.close();
+    recovered.close();
+  });
+
+  it("restores an approved Tool as running before its result arrives", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "event-projector-approved-tool-"));
+    temporaryDirectories.push(directory);
+    const source = new AgentDatabase(":memory:");
+    const threadLog = new ThreadLog(path.join(directory, "conversations"));
+    const creation = source.prepareConversationCreation(null);
+    source.projectConversationCreated(creation);
+    threadLog.append(creation.conversation.id, {
+      payload: creation,
+      type: "conversation_created",
+    });
+    const run = source.createRunWithUserMessage(
+      creation.conversation.id,
+      "批准后执行命令",
+      "test-model",
+    );
+    threadLog.append(creation.conversation.id, {
+      payload: {
+        content: run.userMessage.content,
+        message: run.userMessage,
+        messageId: run.userMessage.id,
+        modelContent: run.userMessage.content,
+        runId: run.runId,
+      },
+      type: "user_message",
+    });
+    threadLog.append(creation.conversation.id, {
+      payload: { modelId: "test-model", runId: run.runId },
+      type: "run_created",
+    });
+    threadLog.append(creation.conversation.id, {
+      payload: { runId: run.runId },
+      type: "run_started",
+    });
+    const tool = conversationToolItemSchema.parse({
+      arguments: '{"command":"npm test"}',
+      batchId: null,
+      conversationId: creation.conversation.id,
+      createdAt: new Date().toISOString(),
+      diff: null,
+      executionMode: "serial",
+      id: crypto.randomUUID(),
+      kind: "tool",
+      name: "run_command",
+      result: null,
+      runId: run.runId,
+      status: "running",
+    });
+    threadLog.append(creation.conversation.id, {
+      payload: { runId: run.runId, tool, toolCallId: "call-command" },
+      type: "tool_call_requested",
+    });
+    threadLog.append(creation.conversation.id, {
+      payload: { permissionTool: "run_command", runId: run.runId, toolId: tool.id },
+      type: "tool_approval_requested",
+    });
+    threadLog.append(creation.conversation.id, {
+      payload: { approved: true, runId: run.runId, scope: "once", tool, toolId: tool.id },
+      type: "tool_approval_decided",
+    });
+
+    const recovered = new AgentDatabase(":memory:");
+    new EventProjector(recovered, threadLog).projectAllConversationLogs();
+
+    expect(recovered.listTimeline(creation.conversation.id)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: tool.id, status: "running" }),
+    ]));
     source.close();
     recovered.close();
   });
@@ -1305,6 +2149,11 @@ describe("EventProjector", () => {
       payload: { messageId: resultMessage.id },
       type: "agent_message_read",
     });
+    const endedTask = source.endSubagent(parentCreation.conversation.id, child.id);
+    threadLog.append(parentCreation.conversation.id, {
+      payload: { task: endedTask },
+      type: "subagent_task_ended",
+    });
 
     const recovered = new AgentDatabase(":memory:");
     new EventProjector(recovered, threadLog).projectAllConversationLogs();
@@ -1318,7 +2167,7 @@ describe("EventProjector", () => {
         id: startedTask.id,
         resultMessageId: resultMessage.id,
         sourceRunId: parentRun.runId,
-        status: "completed",
+        status: "ended",
         targetRunId: childRun.runId,
       }),
     ]);

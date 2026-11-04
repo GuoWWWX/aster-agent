@@ -6,7 +6,11 @@ import {
   type ConversationContextUsage,
 } from "@agent/protocol";
 
-import type { ModelMessage, ModelToolDefinition } from "../model/model-contracts.js";
+import type {
+  ModelMessageAttachment,
+  ModelMessage,
+  ModelToolDefinition,
+} from "../model/model-contracts.js";
 import { AgentDatabase, type StoredContextMessage } from "../storage/agent-database.js";
 import { ConversationAttachmentStore } from "../storage/conversation-attachment-store.js";
 import { ThreadLog } from "../storage/thread-log.js";
@@ -15,6 +19,7 @@ import { buildManagedContext, type ManagedContextSourceMessage } from "./context
 export type CompiledContext = {
   compactionCandidates: ManagedContextSourceMessage[];
   messages: ModelMessage[];
+  transientMessages: ModelMessage[];
   usage: ConversationContextUsage;
 };
 
@@ -24,12 +29,31 @@ export type ContextCompilerInput = {
   conversationId: string;
   includeImageData: boolean;
   outputReserveTokens: number;
+  estimatedSkillCatalogTokens: number;
+  forceCompaction?: boolean;
   /** Capacity reserved for the mutable task list that can appear mid-Run. */
   reservedTaskListTokens?: number;
   reservedSkillTokens: number;
   systemMessage: ModelMessage;
   toolDefinitions: readonly ModelToolDefinition[];
 };
+
+export function transientImageContextMessage(
+  attachments: readonly ModelMessageAttachment[],
+): ModelMessage | null {
+  const images = attachments.filter((attachment) => attachment.kind === "image");
+  if (images.length === 0) return null;
+  return {
+    attachments: [...images],
+    content: [
+      "[Current user image attachments]",
+      "These images belong to the immediately preceding user request and are transient model input.",
+    ].join("\n"),
+    role: "user",
+    toolCallId: null,
+    toolCalls: [],
+  };
+}
 
 export class ContextCompiler {
   public constructor(
@@ -39,34 +63,46 @@ export class ContextCompiler {
   ) {}
 
   public compile(input: ContextCompilerInput): CompiledContext {
-    let threadContext: ReturnType<ThreadLog["readContext"]>;
-    try {
-      threadContext = this.threadLog === null
-        ? null
-        : this.threadLog.readContext(input.conversationId);
-    } catch {
-      // Startup repairs unreadable logs into a SQLite snapshot. If corruption
-      // occurs while the app is running, preserve conversation availability
-      // until that repair path runs instead of failing the next model request.
-      threadContext = null;
-    }
+    // A corrupt canonical log must fail visibly, never silently use a stale SQL history.
+    const threadContext = this.threadLog?.readUncoveredContext(input.conversationId) ?? null;
     const databaseMessages = threadContext === null
       ? this.database.listContextMessages(input.conversationId)
       : [];
     const sourceMessages = threadContext?.messages ?? databaseMessages;
-    const storedMessages = sanitizeStoredModelMessages(sourceMessages).map((message) => ({
-      ...message,
-      attachments: this.attachments?.toModelAttachments(
-        input.conversationId,
-        message.attachmentIds,
-        input.includeImageData,
-      ) ?? [],
-    }));
+    const latestUserSequence = sourceMessages.findLast(
+      (message) => message.role === "user",
+    )?.sequence ?? null;
+    const latestUserAttachmentIds = sourceMessages.findLast(
+      (message) => message.sequence === latestUserSequence,
+    )?.attachmentIds ?? [];
+    const currentImageAttachments = this.attachments?.toModelAttachments(
+      input.conversationId,
+      latestUserAttachmentIds,
+      input.includeImageData,
+    ) ?? [];
+    const transientImageMessage = transientImageContextMessage(currentImageAttachments);
+    const transientMessages = transientImageMessage === null ? [] : [transientImageMessage];
+    const coveredMatches = threadContext === null ? [] : this.threadLog?.searchCoveredContext(
+      input.conversationId, sourceMessages.findLast((message) => message.role === "user")?.content ?? "",
+    ) ?? [];
+    const storedMessages = sanitizeStoredModelMessages([...coveredMatches, ...sourceMessages])
+      .filter((message) => !isRuntimeControlMessage(message))
+      .map((message) => ({
+        ...message,
+        attachments: this.attachments?.toModelAttachments(
+          input.conversationId,
+          message.attachmentIds,
+          false,
+          true,
+        ) ?? [],
+      }));
     const latestUserMessage = [...storedMessages].reverse().find((message) => message.role === "user");
     const latestDatabaseUserMessage = threadContext === null
-      ? [...databaseMessages].reverse().find((message) => message.role === "user") ?? null
-      : this.database.getLatestContextUserMessage(input.conversationId);
-    const relevantMessages = latestUserMessage === undefined
+      ? [...databaseMessages].reverse().find((message) => message.role === "user") ?? null : null;
+    const coveredSequences = new Set(coveredMatches.map((message) => message.sequence));
+    const relevantMessages = threadContext !== null
+      ? storedMessages.filter((message) => coveredSequences.has(message.sequence))
+      : latestUserMessage === undefined
       ? []
       : this.database
         .searchContextMessages({
@@ -84,9 +120,8 @@ export class ContextCompiler {
         ))
         .filter((message): message is (typeof storedMessages)[number] => message !== undefined);
     const managed = buildManagedContext({
-      checkpoint: threadContext?.checkpoint === undefined || threadContext.checkpoint === null
-        ? this.database.getContextCheckpoint(input.conversationId)
-        : {
+      checkpoint: threadContext === null ? this.database.getContextCheckpoint(input.conversationId)
+        : threadContext.checkpoint === null ? null : {
           ...threadContext.checkpoint,
           conversationId: input.conversationId,
         },
@@ -96,7 +131,9 @@ export class ContextCompiler {
         input.contextWindowTokens,
       ),
       estimatedSystemTokens: estimateMessageTokens(input.systemMessage).contentTokens,
+      estimatedSkillCatalogTokens: input.estimatedSkillCatalogTokens,
       estimatedToolDefinitionTokens: estimateContextTokens(JSON.stringify(input.toolDefinitions)),
+      ...(input.forceCompaction === undefined ? {} : { forceCompaction: input.forceCompaction }),
       outputReserveTokens: input.outputReserveTokens,
       relevantMessages,
       reservedSkillTokens: input.reservedSkillTokens,
@@ -104,11 +141,14 @@ export class ContextCompiler {
         ? {}
         : { reservedTaskListTokens: input.reservedTaskListTokens }),
       sourceMessages: storedMessages,
+      transientMessages,
     });
     return {
       compactionCandidates: managed.compactionCandidates,
       messages: [input.systemMessage, ...managed.messages],
-      usage: managed.usage,
+      transientMessages,
+      usage: { ...managed.usage, omittedMessageCount: managed.usage.omittedMessageCount
+        + (threadContext === null ? 0 : threadContext.totalMessageCount - sourceMessages.length - coveredMatches.length) },
     };
   }
 }
@@ -149,7 +189,9 @@ function sanitizeStoredModelMessages<T extends StoredContextMessage>(messages: r
       });
       if (message.content.trim().length === 0 && toolCalls.length === 0) return [];
       const sanitized = { ...message, toolCalls };
-      if (toolCalls.length !== message.toolCalls.length) delete sanitized.providerState;
+      if (toolCalls.length === 0 || toolCalls.length !== message.toolCalls.length) {
+        delete sanitized.providerState;
+      }
       return [sanitized];
     }
     if (message.role === "tool") {
@@ -160,4 +202,8 @@ function sanitizeStoredModelMessages<T extends StoredContextMessage>(messages: r
     }
     return [message];
   });
+}
+
+function isRuntimeControlMessage(message: StoredContextMessage): boolean {
+  return message.role === "user" && message.content.trim().toLowerCase() === "/compact";
 }

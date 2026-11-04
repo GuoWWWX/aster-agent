@@ -15,6 +15,7 @@ import {
   reorderTableColumn,
   reorderTableRow,
   serializeMarkdownTable,
+  tableCellPointerSelection,
   tableSelectionBounds,
   tableSelectionCoversWholeTable,
   tableSelectionToTsv,
@@ -54,13 +55,14 @@ it("Obsidian 双链别名中的管道不会拆成额外列", () => {
       "转型主攻方向",
     ],
   ]);
-  assert.equal(serializeMarkdownTable(table), source.replace(/ ---- /g, " --- "));
+  assert.equal(serializeMarkdownTable(table), source);
 });
 
 it("解析对齐并按最大列数补齐", () => {
   assert.deepEqual(parseMarkdownTable("A | B\r\n:--- | ---:\r\n1 | 2 | 3"), {
     rows: [["A", "B", ""], ["1", "2", "3"]],
     alignments: ["left", "right", "none"],
+    columnWeights: [3, 3, 3],
   });
 });
 
@@ -167,6 +169,25 @@ it("单格、整行、整列和矩形选区按 TSV 复制并可清空", () => {
   assert.equal(tableSelectionToTsv(table, { kind: "row", index: 1 }), "A\tB\tC");
   assert.equal(tableSelectionToTsv(table, { kind: "column", index: 0 }), "H1\r\nA\r\nD");
   assert.deepEqual(clearTableSelection(table, range).rows, [["H1", "H2", "H3"], ["A", "", ""], ["D", "", ""]]);
+});
+
+it("阅读模式和编辑模式使用相同的单元格点击与 Shift 扩选规则", () => {
+  const first = tableCellPointerSelection(null, { row: 1, column: 1 }, false);
+  assert.deepEqual(first, {
+    kind: "cell",
+    anchor: { row: 1, column: 1 },
+    focus: { row: 1, column: 1 },
+  });
+  assert.deepEqual(tableCellPointerSelection(first, { row: 3, column: 2 }, true), {
+    kind: "range",
+    anchor: { row: 1, column: 1 },
+    focus: { row: 3, column: 2 },
+  });
+  assert.deepEqual(tableCellPointerSelection({ kind: "row", index: 1 }, { row: 2, column: 0 }, true), {
+    kind: "cell",
+    anchor: { row: 2, column: 0 },
+    focus: { row: 2, column: 0 },
+  });
 });
 
 it("拖选覆盖所有单元格时识别为整张表格", () => {

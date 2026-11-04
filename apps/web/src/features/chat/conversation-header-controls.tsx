@@ -1,0 +1,478 @@
+import { LoadingState } from "../../components/ui/loading.js";
+import {
+  Bot,
+  ChevronDown,
+  GitBranch,
+  X,
+} from "lucide-react";
+import { useEffect, useMemo, useRef, useState, type ReactElement } from "react";
+
+import type {
+  ConversationTimelineItem,
+  GitReviewSnapshot,
+  ProjectSummary,
+} from "@agent/protocol";
+
+import { Popover, PopoverContent, PopoverTrigger } from "../../components/ui/popover.js";
+import { IconButton } from "../../components/ui/icon-button.js";
+import { FileTypeIcon } from "../../components/ui/file-type-icon.js";
+import type { AgentClient } from "../../runtime/index.js";
+import { SubagentAvatar } from "../team/agent-avatar.js";
+import type { ProjectSession } from "../projects/project-session-model.js";
+import { getGitReviewCache } from "../workspace/git-review-cache.js";
+import { BackgroundPrograms } from "./background-programs.js";
+
+type ConversationHeaderControlsProps = {
+  active?: boolean;
+  agentClient: AgentClient;
+  conversationId?: string;
+  project: ProjectSummary | null;
+  subagents: readonly ProjectSession[];
+  onDeleteSubagent?: (subagent: ProjectSession) => Promise<void>;
+  onOpenGitReview?: (path?: string) => void;
+  onOpenSubagent?: (subagent: ProjectSession) => void;
+};
+
+const SUBAGENT_PREVIEW_CONCURRENCY = 2;
+
+export function ConversationHeaderControls({
+  active = true,
+  agentClient,
+  conversationId,
+  project,
+  subagents,
+  onDeleteSubagent,
+  onOpenGitReview,
+  onOpenSubagent,
+}: ConversationHeaderControlsProps): ReactElement | null {
+  const [subagentOpen, setSubagentOpen] = useState(false);
+  const [gitOpen, setGitOpen] = useState(false);
+  const [deletingSubagentId, setDeletingSubagentId] = useState<string | null>(null);
+  const [subagentActionError, setSubagentActionError] = useState<string | null>(null);
+  const [subagentPreviews, setSubagentPreviews] = useState<Record<string, string>>({});
+  const subagentPreviewCacheRef = useRef(new Map<string, string>());
+  const subagentPreviewRevisionRef = useRef(new Map<string, string>());
+  const [gitAvailable, setGitAvailable] = useState(false);
+  const gitReviewCache = getGitReviewCache(agentClient);
+  const [gitSnapshotState, setGitSnapshotState] = useState<{
+    projectId: string;
+    snapshot: GitReviewSnapshot;
+  } | null>(null);
+  const visibleSubagents = useMemo(
+    () => subagents.filter((subagent) => !subagent.isArchived),
+    [subagents],
+  );
+  const activeSubagents = useMemo(
+    () => visibleSubagents.filter(isActiveSubagent),
+    [visibleSubagents],
+  );
+  const completedSubagents = useMemo(
+    () => visibleSubagents.filter((subagent) => (
+      !isActiveSubagent(subagent) && subagent.subagentTaskStatus !== "ended"
+    )),
+    [visibleSubagents],
+  );
+  const endedSubagents = useMemo(
+    () => visibleSubagents.filter((subagent) => subagent.subagentTaskStatus === "ended"),
+    [visibleSubagents],
+  );
+
+  const deleteSubagent = async (subagent: ProjectSession): Promise<void> => {
+    if (onDeleteSubagent === undefined || !canDeleteSubagent(subagent)) return;
+    setDeletingSubagentId(subagent.id);
+    setSubagentActionError(null);
+    try {
+      await onDeleteSubagent(subagent);
+    } catch (error) {
+      setSubagentActionError(error instanceof Error ? error.message : "无法删除子代理。");
+    } finally {
+      setDeletingSubagentId(null);
+    }
+  };
+
+  useEffect(() => {
+    let disposed = false;
+    void agentClient.getCapabilities().then((capabilities) => {
+      if (!disposed) setGitAvailable(capabilities.git);
+    }).catch(() => {
+      if (!disposed) setGitAvailable(false);
+    });
+    return () => {
+      disposed = true;
+    };
+  }, [agentClient]);
+
+  useEffect(() => {
+    if (project === null || !gitAvailable) return;
+    let disposed = false;
+    const applySnapshot = (snapshot: GitReviewSnapshot): void => {
+      if (!disposed) setGitSnapshotState({ projectId: project.id, snapshot });
+    };
+    const unsubscribe = gitReviewCache.subscribe(project.id, applySnapshot);
+    void gitReviewCache.warmProject(project.id).then(applySnapshot).catch(() => undefined);
+    return () => {
+      disposed = true;
+      unsubscribe();
+    };
+  }, [gitAvailable, gitReviewCache, project]);
+
+  useEffect(() => {
+    const visibleIds = new Set(visibleSubagents.map((subagent) => subagent.id));
+    let cacheChanged = false;
+    for (const cachedId of subagentPreviewCacheRef.current.keys()) {
+      if (visibleIds.has(cachedId)) continue;
+      subagentPreviewCacheRef.current.delete(cachedId);
+      subagentPreviewRevisionRef.current.delete(cachedId);
+      cacheChanged = true;
+    }
+    for (const subagent of visibleSubagents) {
+      const revision = subagent.updatedAt
+        ?? `${subagent.activeRunId ?? "idle"}:${subagent.lastRunStatus ?? "none"}:${subagent.subagentTaskStatus ?? "none"}`;
+      if (subagentPreviewRevisionRef.current.get(subagent.id) === revision) continue;
+      subagentPreviewRevisionRef.current.set(subagent.id, revision);
+      cacheChanged = subagentPreviewCacheRef.current.delete(subagent.id) || cacheChanged;
+    }
+    if (!cacheChanged) return;
+    setSubagentPreviews((current) => Object.fromEntries(
+      Object.entries(current).filter(([id]) => subagentPreviewCacheRef.current.has(id)),
+    ));
+  }, [visibleSubagents]);
+
+  useEffect(() => {
+    if (!subagentOpen || visibleSubagents.length === 0) return;
+    let disposed = false;
+    const pendingSubagents = visibleSubagents.filter(
+      (subagent) => !subagentPreviewCacheRef.current.has(subagent.id),
+    );
+    let nextIndex = 0;
+    const loadNext = async (): Promise<void> => {
+      while (!disposed) {
+        const subagent = pendingSubagents[nextIndex];
+        nextIndex += 1;
+        if (subagent === undefined) return;
+        let preview: string;
+        try {
+          const page = await agentClient.listConversationTimelinePage({
+            conversationId: subagent.id,
+            limit: 40,
+          });
+          preview = latestSubagentOutput(page.items, isActiveSubagent(subagent));
+        } catch {
+          preview = isActiveSubagent(subagent) ? "正在处理…" : "暂无模型输出";
+        }
+        if (disposed) return;
+        subagentPreviewCacheRef.current.set(subagent.id, preview);
+        setSubagentPreviews((current) => current[subagent.id] === preview
+          ? current
+          : { ...current, [subagent.id]: preview });
+      }
+    };
+    const workerCount = Math.min(SUBAGENT_PREVIEW_CONCURRENCY, pendingSubagents.length);
+    for (let index = 0; index < workerCount; index += 1) void loadNext();
+    return () => {
+      disposed = true;
+    };
+  }, [agentClient, subagentOpen, visibleSubagents]);
+
+  const gitSnapshot = project !== null && gitSnapshotState?.projectId === project.id
+    ? gitSnapshotState.snapshot
+    : null;
+
+  return (
+    <div className="conversation-header-controls">
+      {conversationId === undefined ? null : <BackgroundPrograms key={conversationId} active={active} agentClient={agentClient} conversationId={conversationId} />}
+      <Popover open={subagentOpen} onOpenChange={setSubagentOpen}>
+        <PopoverTrigger asChild>
+          <button
+            aria-label="查看全部子代理"
+            className="conversation-header-control"
+            data-open={subagentOpen}
+            title={`${activeSubagents.length} 个活跃子代理 · ${visibleSubagents.length} 个子代理`}
+            type="button"
+          >
+            <Bot aria-hidden="true" size={14} />
+            <span>Agent</span>
+            <span aria-label={`${activeSubagents.length} 个活跃子代理`} className="conversation-header-control__count">{activeSubagents.length}</span>
+            <ChevronDown aria-hidden="true" className="conversation-header-control__chevron" size={13} />
+          </button>
+        </PopoverTrigger>
+        <PopoverContent
+          align="end"
+          className="conversation-header-popover conversation-header-popover--subagents"
+          side="bottom"
+          sideOffset={5}
+        >
+          {visibleSubagents.length === 0 ? <p className="conversation-header-popover__empty">暂无子代理</p> : null}
+          <SubagentGroup
+            deletingSubagentId={deletingSubagentId}
+            label="正在运行"
+            previews={subagentPreviews}
+            subagents={activeSubagents}
+            onDelete={(subagent) => void deleteSubagent(subagent)}
+            onOpen={(subagent) => {
+              setSubagentOpen(false);
+              onOpenSubagent?.(subagent);
+            }}
+          />
+          <SubagentGroup
+            deletingSubagentId={deletingSubagentId}
+            label="完成工作"
+            previews={subagentPreviews}
+            subagents={completedSubagents}
+            onDelete={(subagent) => void deleteSubagent(subagent)}
+            onOpen={(subagent) => {
+              setSubagentOpen(false);
+              onOpenSubagent?.(subagent);
+            }}
+          />
+          <SubagentGroup
+            deletingSubagentId={deletingSubagentId}
+            label="已结束"
+            previews={subagentPreviews}
+            subagents={endedSubagents}
+            onDelete={(subagent) => void deleteSubagent(subagent)}
+            onOpen={(subagent) => {
+              setSubagentOpen(false);
+              onOpenSubagent?.(subagent);
+            }}
+          />
+          {subagentActionError === null ? null : (
+            <p className="conversation-header-popover__error" role="alert">{subagentActionError}</p>
+          )}
+        </PopoverContent>
+      </Popover>
+
+      {project === null || !gitAvailable ? null : (
+        <Popover open={gitOpen} onOpenChange={setGitOpen}>
+          <PopoverTrigger asChild>
+            <button
+              aria-label="查看 Git 变更"
+              className="conversation-header-control conversation-header-control--git"
+              data-open={gitOpen}
+              title={gitSnapshot?.isRepository === false ? "当前项目不是 Git 仓库" : "查看 Git 变更"}
+              type="button"
+            >
+              <GitBranch aria-hidden="true" size={14} />
+              <span className="conversation-header-control__branch">
+                {gitSnapshot?.branch ?? "Git"}
+              </span>
+              {gitSnapshot?.isRepository === true ? (
+                <GitTotals snapshot={gitSnapshot} />
+              ) : null}
+              <ChevronDown aria-hidden="true" className="conversation-header-control__chevron" size={13} />
+            </button>
+          </PopoverTrigger>
+          <PopoverContent
+            align="end"
+            className="conversation-header-popover conversation-header-popover--git"
+            side="bottom"
+            sideOffset={5}
+          >
+            <div className="conversation-header-popover__heading">
+              <span><GitBranch aria-hidden="true" size={14} />当前分支</span>
+              <strong title={gitSnapshot?.branch ?? undefined}>{gitSnapshot?.branch ?? "未识别"}</strong>
+            </div>
+            {gitSnapshot?.isRepository === true ? <div className="flex flex-wrap items-center gap-x-2 gap-y-1 px-1.5 py-1 text-[length:var(--app-font-size-auxiliary)] text-[var(--app-muted-foreground)]">
+              <span>{gitSnapshot.changes.length} 个文件</span><GitTotals snapshot={gitSnapshot} />
+              <span title={gitSnapshot.upstream ?? "尚未设置上游分支"}>
+                {gitSnapshot.upstream === null ? "未跟踪远程分支" : `↓ ${gitSnapshot.behind} 待拉取 · ↑ ${gitSnapshot.ahead} 待推送`}
+              </span>
+            </div> : null}
+            {gitSnapshot === null ? (
+              <LoadingState label="正在读取 Git 状态…" compact />
+            ) : !gitSnapshot.isRepository ? (
+              <p className="conversation-header-popover__empty">当前项目不是 Git 仓库</p>
+            ) : gitSnapshot.changes.length === 0 ? (
+              <p className="conversation-header-popover__empty">工作区没有文件变更</p>
+            ) : (
+              <div className="conversation-header-popover__files">
+                {[false, true].map((staged) => <section key={String(staged)}>
+                  {gitSnapshot.changes.some((change) => change.isStaged === staged) ? <div className="px-1.5 py-1 text-[length:var(--app-font-size-auxiliary)] text-[var(--app-muted-foreground)]">
+                    {staged ? "已暂存" : "未暂存"} · {gitSnapshot.changes.filter((change) => change.isStaged === staged).length}
+                  </div> : null}
+                {gitSnapshot.changes.filter((change) => change.isStaged === staged).map((change) => (
+                  <button
+                    aria-label={`查看 ${change.path} 的文件差异`}
+                    className="conversation-header-popover__file"
+                    disabled={onOpenGitReview === undefined}
+                    key={change.path}
+                    title={`${change.path} · ${change.isStaged ? "已暂存" : "未暂存"} · ${gitStatusLabel(change.status)}`}
+                    type="button"
+                    onClick={() => {
+                      setGitOpen(false);
+                      onOpenGitReview?.(change.path);
+                    }}
+                  >
+                    <FileTypeIcon className="shrink-0" path={change.path} size={14} />
+                    <span className="flex-1" title={change.path}>{change.path.split("/").at(-1)}</span>
+                    <small title={change.isStaged ? "已暂存" : "未暂存"}>{gitStatusLabel(change.status)}</small>
+                    {change.additions === null || change.deletions === null ? (
+                      <small>二进制</small>
+                    ) : (
+                      <small>
+                        {change.additions > 0 ? <span data-kind="addition">+{change.additions}</span> : null}
+                        {change.deletions > 0 ? <span data-kind="deletion">−{change.deletions}</span> : null}
+                      </small>
+                    )}
+                  </button>
+                ))}
+                </section>)}
+              </div>
+            )}
+            <button
+              aria-label="打开完整 Git 审阅"
+              className="conversation-header-popover__open"
+              disabled={onOpenGitReview === undefined || gitSnapshot?.isRepository !== true}
+              type="button"
+              onClick={() => {
+                setGitOpen(false);
+                onOpenGitReview?.();
+              }}
+            >
+              打开完整 Git 审阅
+              <span className="block text-[length:var(--app-font-size-auxiliary)] text-[var(--app-muted-foreground)]">切换分支 · 更新 · 提交 · 推送</span>
+            </button>
+          </PopoverContent>
+        </Popover>
+      )}
+    </div>
+  );
+}
+
+function SubagentGroup({
+  deletingSubagentId,
+  label,
+  previews,
+  subagents,
+  onDelete,
+  onOpen,
+}: {
+  deletingSubagentId: string | null;
+  label: string;
+  previews: Readonly<Record<string, string>>;
+  subagents: readonly ProjectSession[];
+  onDelete: (subagent: ProjectSession) => void;
+  onOpen: (subagent: ProjectSession) => void;
+}): ReactElement | null {
+  if (subagents.length === 0) return null;
+  return (
+    <section className="conversation-header-popover__group">
+      <h2>{label}<span>{subagents.length}</span></h2>
+      {subagents.map((subagent) => (
+        <div
+          className="conversation-header-popover__subagent"
+          data-subagent-id={subagent.id}
+          key={subagent.id}
+        >
+          <button
+            aria-label={`打开子代理对话 ${subagent.title}`}
+            className="conversation-header-popover__subagent-open"
+            type="button"
+            onClick={() => onOpen(subagent)}
+          >
+            <SubagentStatusAvatar subagent={subagent} />
+            <span className="conversation-header-popover__subagent-copy">
+              <strong>{subagent.title}</strong>
+              <small>{previews[subagent.id] ?? (isActiveSubagent(subagent) ? "正在处理…" : "正在读取输出…")}</small>
+            </span>
+          </button>
+          {canDeleteSubagent(subagent) ? (
+            <span className="conversation-header-popover__subagent-actions">
+              <IconButton
+                disabled={deletingSubagentId === subagent.id}
+                label={`删除子代理 ${subagent.title}`}
+                size="compact"
+                variant="quiet"
+                onClick={() => onDelete(subagent)}
+              >
+                <X aria-hidden="true" size={14} />
+              </IconButton>
+            </span>
+          ) : null}
+        </div>
+      ))}
+    </section>
+  );
+}
+
+type SubagentVisualStatus = "ended" | "completed" | "failed" | "working";
+
+function SubagentStatusAvatar({ subagent }: { subagent: ProjectSession }): ReactElement {
+  const status = subagentVisualStatus(subagent);
+  const label = status === "working"
+    ? "工作中"
+    : status === "failed"
+      ? "执行出错"
+      : status === "completed"
+        ? "已完成"
+        : "已结束";
+  return (
+    <span
+      aria-label={label}
+      className="conversation-header-popover__subagent-avatar"
+      data-subagent-status={status}
+      role="img"
+      title={label}
+    >
+      <SubagentAvatar icon={subagent.avatarIcon} seed={subagent.id} size="compact" />
+      <span aria-hidden="true" className="conversation-header-popover__subagent-status" />
+    </span>
+  );
+}
+
+function subagentVisualStatus(subagent: ProjectSession): SubagentVisualStatus {
+  if (subagent.subagentTaskStatus === "ended") return "ended";
+  if (isActiveSubagent(subagent)) return "working";
+  if (subagent.lastRunStatus !== null) {
+    return subagent.lastRunStatus === "failed" ? "failed" : "completed";
+  }
+  return subagent.subagentTaskStatus === "failed" ? "failed" : "completed";
+}
+
+function canDeleteSubagent(subagent: ProjectSession): boolean {
+  return !isActiveSubagent(subagent);
+}
+
+export function gitStatusLabel(status: string): string {
+  if (status === "??") return "未跟踪";
+  if (status.includes("U") || status === "AA" || status === "DD") return "冲突";
+  const labels = new Set(status.trim().split("").map((code) => ({
+    A: "新增", M: "修改", D: "删除", R: "重命名", C: "复制", T: "类型变更", "!": "已忽略",
+  })[code]));
+  return [...labels].filter(Boolean).join(" / ") || "变更";
+}
+
+function GitTotals({ snapshot }: { snapshot: GitReviewSnapshot }): ReactElement | null {
+  const additions = snapshot.changes.reduce((total, change) => total + (change.additions ?? 0), 0);
+  const deletions = snapshot.changes.reduce((total, change) => total + (change.deletions ?? 0), 0);
+  if (additions === 0 && deletions === 0 && snapshot.changes.length === 0) return null;
+  return (
+    <span className="conversation-header-control__git-totals">
+      {additions > 0 ? <span data-kind="addition">+{additions}</span> : null}
+      {deletions > 0 ? <span data-kind="deletion">−{deletions}</span> : null}
+    </span>
+  );
+}
+
+function isActiveSubagent(subagent: ProjectSession): boolean {
+  return subagent.activeRunId !== null
+    || subagent.subagentTaskStatus === "queued"
+    || subagent.subagentTaskStatus === "running";
+}
+
+function latestSubagentOutput(
+  timeline: readonly ConversationTimelineItem[],
+  active: boolean,
+): string {
+  for (let index = timeline.length - 1; index >= 0; index -= 1) {
+    const item = timeline[index];
+    if (item?.kind !== "message" || item.role !== "assistant") continue;
+    const normalized = item.content
+      .replace(/<think(?:ing)?>[\s\S]*?<\/think(?:ing)?>/giu, " ")
+      .replace(/[`*_>#()[\]~-]+/gu, " ")
+      .replace(/\s+/gu, " ")
+      .trim();
+    if (normalized.length > 0) return normalized;
+  }
+  return active ? "正在处理…" : "暂无模型输出";
+}

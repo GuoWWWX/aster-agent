@@ -1,0 +1,66 @@
+name: Windows release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.15.1
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: Validate version tag
+        shell: pwsh
+        run: |
+          $desktopVersion = node -p "require('./apps/desktop/package.json').version"
+          $rootVersion = node -p "require('./package.json').version"
+          if ($desktopVersion -notmatch '^\d+\.\d+\.\d+$' -or $env:GITHUB_REF_NAME -ne "v$desktopVersion" -or $desktopVersion -ne $rootVersion) {
+            throw 'The tag and both package versions must match.'
+          }
+          git merge-base --is-ancestor HEAD origin/main
+          if ($LASTEXITCODE -ne 0) { throw 'Release tags must point to a commit on main.' }
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build shared protocol
+        run: pnpm --filter @agent/protocol build
+      - name: Lint
+        run: pnpm lint
+      - name: Typecheck
+        run: pnpm typecheck
+      - name: Test
+        env:
+          TEMP: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
+        run: pnpm test:ci
+      - name: Build Windows installer and update metadata
+        run: pnpm package:win
+      - name: Publish release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $version = node -p "require('./apps/desktop/package.json').version"
+          $installer = "release/Aster-$version-x64-setup.exe"
+          $blockmap = "$installer.blockmap"
+          $manifest = 'release/latest.yml'
+          foreach ($file in @($installer, $blockmap, $manifest)) {
+            if (-not (Test-Path -LiteralPath $file)) { throw "Missing release artifact: $file" }
+          }
+          gh release create $env:GITHUB_REF_NAME $installer $blockmap $manifest --verify-tag --generate-notes
+          if ($LASTEXITCODE -ne 0) { throw 'Failed to create the GitHub release.' }

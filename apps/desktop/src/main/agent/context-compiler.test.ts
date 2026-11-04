@@ -1,13 +1,106 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { appendFile, mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { AgentDatabase } from "../storage/agent-database.js";
+import { ConversationAttachmentStore } from "../storage/conversation-attachment-store.js";
+import { ProjectRegistry } from "../projects/project-registry.js";
 import { ThreadLog } from "../storage/thread-log.js";
 import { ContextCompiler } from "./context-compiler.js";
 
 describe("ContextCompiler", () => {
+  it("keeps only the latest user images inline and turns historical images into references", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "agent-context-images-"));
+    const database = new AgentDatabase(":memory:");
+    try {
+      const conversation = database.createConversation(null);
+      const attachments = new ConversationAttachmentStore(
+        database,
+        new ProjectRegistry(database),
+        path.join(root, "attachments"),
+      );
+      const imageBytes = Buffer.from(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl2nksAAAAASUVORK5CYII=",
+        "base64",
+      );
+      const historicalImage = await attachments.importBytes(conversation.id, {
+        bytes: imageBytes,
+        mimeType: "image/png",
+        name: "historical.png",
+      });
+      const first = database.createRunWithUserMessage(
+        conversation.id,
+        "先看这张历史图片",
+        "test-model",
+        [historicalImage.id],
+      );
+      database.appendAssistantTurn({
+        content: "已经看过历史图片。",
+        conversationId: conversation.id,
+        messageId: crypto.randomUUID(),
+        modelId: "test-model",
+        runId: first.runId,
+        toolCalls: [],
+      });
+      database.finishRun(first.runId, "completed", null);
+      const currentImage = await attachments.importBytes(conversation.id, {
+        bytes: imageBytes,
+        mimeType: "image/png",
+        name: "current.png",
+      });
+      database.createRunWithUserMessage(
+        conversation.id,
+        "再看这张新图片",
+        "test-model",
+        [currentImage.id],
+      );
+
+      const compiler = new ContextCompiler(database, attachments);
+      const compile = (includeImageData: boolean) => compiler.compile({
+        contextCompressionConfiguration: {
+          mode: "tokens",
+          percentageThreshold: 80,
+          tokenThreshold: 20_000,
+        },
+        contextWindowTokens: 30_000,
+        conversationId: conversation.id,
+        includeImageData,
+        estimatedSkillCatalogTokens: 0,
+        outputReserveTokens: 1_000,
+        reservedSkillTokens: 0,
+        systemMessage: {
+          attachments: [], content: "系统指令", role: "system", toolCallId: null, toolCalls: [],
+        },
+        toolDefinitions: [],
+      });
+      const context = compile(true);
+      const estimate = compile(false);
+      expect(estimate.usage.estimatedAttachmentTokens).toBe(context.usage.estimatedAttachmentTokens);
+      expect(estimate.usage.estimatedInputTokens).toBe(context.usage.estimatedInputTokens);
+      expect(estimate.transientMessages[0]?.attachments[0]).toMatchObject({ kind: "image", data: null });
+      const users = context.messages.filter((message) => message.role === "user");
+
+      expect(users[0]?.attachments).toEqual([
+        expect.objectContaining({ kind: "text", name: "historical.png", readState: "metadata_only" }),
+      ]);
+      expect(users[0]?.attachments[0]?.kind === "text" && users[0].attachments[0].content)
+        .toContain("view_attachments");
+      expect(users[1]?.attachments).toEqual([
+        expect.objectContaining({ kind: "text", name: "current.png", readState: "metadata_only" }),
+      ]);
+      expect(users).toHaveLength(2);
+      const currentAttachment = context.transientMessages[0]?.attachments[0];
+      expect(currentAttachment).toMatchObject({ kind: "image", name: "current.png" });
+      expect(currentAttachment?.kind === "image" ? typeof currentAttachment.data : null)
+        .toBe("string");
+      expect(context.transientMessages[0]?.content).toContain("Current user image attachments");
+    } finally {
+      database.close();
+      await rm(root, { force: true, recursive: true });
+    }
+  });
+
   it("builds the model context from persisted messages and applies the checkpoint", () => {
     const database = new AgentDatabase(":memory:");
     const conversation = database.createConversation(null);
@@ -46,6 +139,7 @@ describe("ContextCompiler", () => {
       contextWindowTokens: 20_000,
       conversationId: conversation.id,
       includeImageData: false,
+      estimatedSkillCatalogTokens: 0,
       outputReserveTokens: 1_000,
       reservedSkillTokens: 0,
       systemMessage: {
@@ -60,7 +154,7 @@ describe("ContextCompiler", () => {
 
     expect(context.messages[0]).toMatchObject({ role: "system", content: "系统指令" });
     expect(context.messages.map((message) => message.content)).toContain("继续检查登录页的表单校验");
-    expect(context.messages.some((message) => message.content.includes("结构化压缩检查点"))).toBe(true);
+    expect(context.messages.some((message) => message.content.includes("structured compression checkpoint"))).toBe(true);
     expect(context.messages.some((message) => message.content === "登录页需要补充表单校验")).toBe(false);
     expect(context.usage.omittedMessageCount).toBe(2);
     database.close();
@@ -88,6 +182,7 @@ describe("ContextCompiler", () => {
       contextWindowTokens: 20_000,
       conversationId: conversation.id,
       includeImageData: false,
+      estimatedSkillCatalogTokens: 0,
       outputReserveTokens: 1_000,
       reservedSkillTokens: 0,
       systemMessage: {
@@ -100,7 +195,99 @@ describe("ContextCompiler", () => {
     database.close();
   });
 
-  it("prefers the canonical JSONL history while retaining SQLite for search", async () => {
+  it("keeps provider replay for tool results but removes it from completed final replies", () => {
+    const database = new AgentDatabase(":memory:");
+    const conversation = database.createConversation(null);
+    const first = database.createRunWithUserMessage(
+      conversation.id,
+      "读取配置并给出结论",
+      "test-model",
+    );
+    const toolCall = {
+      arguments: '{"path":"config.json"}',
+      id: "call-read-config",
+      name: "read_file",
+    };
+    const toolProviderState = {
+      apiFormat: "openai-responses" as const,
+      baseUrl: "https://example.test/v1",
+      modelId: "test-model",
+      payload: [{ id: "reasoning-tool", type: "reasoning" }],
+    };
+    const finalProviderState = {
+      ...toolProviderState,
+      payload: [{ id: "reasoning-final", type: "reasoning" }],
+    };
+    database.appendAssistantTurn({
+      content: "我先读取配置。",
+      conversationId: conversation.id,
+      messageId: crypto.randomUUID(),
+      modelId: "test-model",
+      providerState: toolProviderState,
+      runId: first.runId,
+      toolCalls: [toolCall],
+    });
+    const tool = {
+      arguments: toolCall.arguments,
+      batchId: null,
+      conversationId: conversation.id,
+      createdAt: new Date().toISOString(),
+      diff: null,
+      id: crypto.randomUUID(),
+      kind: "tool" as const,
+      name: toolCall.name,
+      result: '{"theme":"dark"}',
+      runId: first.runId,
+      status: "completed" as const,
+    };
+    database.appendToolStarted({ ...tool, result: null, status: "running" });
+    database.completeTool({
+      providerCallId: toolCall.id,
+      result: tool.result,
+      tool,
+    });
+    database.appendAssistantTurn({
+      content: "配置使用深色主题。",
+      conversationId: conversation.id,
+      messageId: crypto.randomUUID(),
+      modelId: "test-model",
+      providerState: finalProviderState,
+      runId: first.runId,
+      toolCalls: [],
+    });
+    database.finishRun(first.runId, "completed", null);
+    database.createRunWithUserMessage(conversation.id, "继续处理新问题", "test-model");
+
+    const context = new ContextCompiler(database, null).compile({
+      contextCompressionConfiguration: {
+        mode: "tokens",
+        percentageThreshold: 80,
+        tokenThreshold: 10_000,
+      },
+      contextWindowTokens: 20_000,
+      conversationId: conversation.id,
+      includeImageData: false,
+      estimatedSkillCatalogTokens: 0,
+      outputReserveTokens: 1_000,
+      reservedSkillTokens: 0,
+      systemMessage: {
+        attachments: [], content: "系统指令", role: "system", toolCallId: null, toolCalls: [],
+      },
+      toolDefinitions: [],
+    });
+
+    const toolAssistant = context.messages.find((message) =>
+      message.role === "assistant" && message.toolCalls.length > 0
+    );
+    const finalAssistant = context.messages.find((message) =>
+      message.role === "assistant" && message.content === "配置使用深色主题。"
+    );
+    expect(toolAssistant?.providerState).toEqual(toolProviderState);
+    expect(finalAssistant?.providerState).toBeUndefined();
+    database.close();
+  });
+
+  it("compiles canonical JSONL without SQL history or full context reads and rejects corruption", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "agent-context-log-"));
     const database = new AgentDatabase(":memory:");
     try {
@@ -117,25 +304,34 @@ describe("ContextCompiler", () => {
         type: "user_message",
       });
 
-      const context = new ContextCompiler(database, null, log).compile({
+      const fullRead = vi.spyOn(log, "readContext").mockImplementation(() => { throw new Error("full read forbidden"); });
+      const sqlSearch = vi.spyOn(database, "searchContextMessages").mockImplementation(() => { throw new Error("SQL search forbidden"); });
+      const compiler = new ContextCompiler(database, null, log);
+      const input = {
         contextCompressionConfiguration: {
-          mode: "tokens",
+          mode: "tokens" as const,
           percentageThreshold: 80,
           tokenThreshold: 10_000,
         },
         contextWindowTokens: 20_000,
         conversationId: conversation.id,
         includeImageData: false,
+        estimatedSkillCatalogTokens: 0,
         outputReserveTokens: 1_000,
         reservedSkillTokens: 0,
         systemMessage: {
-          attachments: [], content: "系统指令", role: "system", toolCallId: null, toolCalls: [],
+          attachments: [], content: "系统指令", role: "system" as const, toolCallId: null, toolCalls: [],
         },
         toolDefinitions: [],
-      });
+      };
+      const context = compiler.compile(input);
 
       expect(context.messages.map((message) => message.content)).toContain("JSONL 中的规范模型输入");
       expect(context.messages.map((message) => message.content)).not.toContain("SQLite 中的旧输入");
+      expect(fullRead).not.toHaveBeenCalled();
+      expect(sqlSearch).not.toHaveBeenCalled();
+      await appendFile(log.getPath(conversation.id), '{"broken":true}\n');
+      expect(() => compiler.compile(input)).toThrow();
     } finally {
       database.close();
       await rm(directory, { force: true, recursive: true });

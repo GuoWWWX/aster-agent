@@ -1,6 +1,7 @@
-import { access, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { access, cp, mkdir, mkdtemp, readdir, rename, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { ProjectRegistry } from "../projects/project-registry.js";
@@ -28,13 +29,14 @@ async function createFixture() {
   const managedRoot = path.join(directory, "managed");
   await mkdir(projectRoot, { recursive: true });
 
-  const database = new AgentDatabase(path.join(directory, "agent.sqlite"));
+  const databasePath = path.join(directory, "agent.sqlite");
+  const database = new AgentDatabase(databasePath);
   databases.push(database);
   const projects = new ProjectRegistry(database);
   const project = await projects.registerDirectory(projectRoot);
   const conversation = database.createConversation(project.id);
   const store = new ConversationAttachmentStore(database, projects, managedRoot);
-  return { conversation, database, managedRoot, projectRoot, store };
+  return { conversation, database, databasePath, managedRoot, projectRoot, projects, store };
 }
 
 function createPdfFixture(): Buffer {
@@ -69,6 +71,94 @@ function createPdfFixture(): Buffer {
 }
 
 describe("ConversationAttachmentStore", () => {
+  it("stores a computer screenshot in the existing tool attachment path", async () => {
+    const { conversation, database, store } = await createFixture();
+    const run = database.createRunWithUserMessage(conversation.id, "inspect", "demo");
+    const toolId = "11111111-1111-4111-8111-111111111111";
+    database.upsertRuntimeActivity({ id: toolId, kind: "tool", conversationId: conversation.id, runId: run.runId, batchId: null,
+      createdAt: new Date().toISOString(), name: "computer_use", arguments: '{"action":"screenshot","windowId":"123"}', result: null, diff: null, status: "running" });
+    const image = await store.saveToolScreenshot(conversation.id, toolId, { source: "computer", mimeType: "image/png", contextTokens: 2048,
+      data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl2nksAAAAASUVORK5CYII=" });
+    expect(image).toMatchObject({ source: "computer", messageId: toolId, mimeType: "image/png", kind: "image" });
+    expect(image.name).toMatch(/\.png$/u);
+    expect(store.listDrafts(conversation.id)).toEqual([]);
+  });
+  it("rejects screenshot owners from another conversation and removes the rejected file", async () => {
+    const { conversation, database, managedRoot, store } = await createFixture();
+    const other = database.createConversation(null);
+    const run = database.createRunWithUserMessage(other.id, "Other conversation", "demo");
+    await expect(store.saveToolScreenshot(conversation.id, run.userMessage.id, {
+      data: "c2NyZWVuc2hvdA==", mimeType: "image/jpeg", contextTokens: 1024,
+    })).rejects.toThrow("Image owner must be a tool in this conversation.");
+    expect(await readdir(path.join(managedRoot, conversation.id, "attachments"))).toEqual([]);
+    expect(store.listDrafts(conversation.id)).toEqual([]);
+    await expect(store.saveToolScreenshot(conversation.id, run.userMessage.id, {
+      data: "", mimeType: "image/jpeg", contextTokens: 1024,
+    })).rejects.toThrow("Invalid browser screenshot.");
+  });
+  it("rebases legacy managed attachment paths without deleting the legacy snapshot", async () => {
+    const { conversation, database, managedRoot, store } = await createFixture();
+    const attachment = await store.importBytes(conversation.id, {
+      bytes: Buffer.from(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl2nksAAAAASUVORK5CYII=",
+        "base64",
+      ),
+      mimeType: "image/png",
+      name: "legacy.png",
+    });
+    const [storage] = database.listConversationAttachmentStoragePaths();
+    if (storage === undefined) throw new Error("Expected an attachment storage row.");
+    const legacyRoot = path.join(path.dirname(managedRoot), "conversation-files");
+    const legacyStoredPath = path.join(
+      legacyRoot,
+      path.relative(managedRoot, storage.storedPath),
+    );
+    await mkdir(path.dirname(legacyStoredPath), { recursive: true });
+    await rename(storage.storedPath, legacyStoredPath);
+    database.updateConversationAttachmentStoragePaths({
+      extractedTextPath: null,
+      id: attachment.id,
+      storedPath: legacyStoredPath,
+    });
+
+    await store.migrateLegacyManagedRoots([legacyRoot]);
+
+    const migrated = database.getConversationAttachment(conversation.id, attachment.id);
+    expect(migrated.storedPath).toBe(path.join(
+      managedRoot,
+      path.relative(legacyRoot, legacyStoredPath),
+    ));
+    await expect(access(migrated.storedPath)).resolves.toBeUndefined();
+    await expect(access(legacyStoredPath)).resolves.toBeUndefined();
+  });
+
+  it("rebases managed attachment paths after the application data root is moved", async () => {
+    const { conversation, database, managedRoot, projectRoot, projects, store } = await createFixture();
+    const sourcePath = path.join(projectRoot, "portable.txt");
+    await writeFile(sourcePath, "portable attachment", "utf8");
+    const [attachment] = await store.importFiles(conversation.id, [sourcePath]);
+    if (attachment === undefined) throw new Error("Expected an imported attachment.");
+    const originalPath = database.getConversationAttachment(
+      conversation.id,
+      attachment.id,
+    ).storedPath;
+    const movedRoot = path.join(path.dirname(managedRoot), "moved-conversations");
+    await cp(managedRoot, movedRoot, { recursive: true });
+    await rename(managedRoot, `${managedRoot}-offline`);
+    const movedStore = new ConversationAttachmentStore(database, projects, movedRoot);
+
+    await movedStore.migrateLegacyManagedRoots([]);
+
+    const rebasedPath = database.getConversationAttachment(conversation.id, attachment.id).storedPath;
+    expect(rebasedPath).toBe(path.join(
+      movedRoot,
+      conversation.id,
+      "attachments",
+      path.basename(originalPath),
+    ));
+    await expect(access(rebasedPath)).resolves.toBeUndefined();
+  });
+
   it("snapshots project text and uploaded images, then binds them to one message", async () => {
     const { conversation, database, projectRoot, store } = await createFixture();
     const textPath = path.join(projectRoot, "notes.md");
@@ -100,6 +190,15 @@ describe("ConversationAttachmentStore", () => {
       projectPath: null,
       source: "upload"
     });
+    const preview = store.readImagePreview(conversation.id, attachments[1]!.id);
+    expect(preview.mimeType).toBe("image/png");
+    expect(Buffer.from(preview.data, "base64").subarray(1, 4).toString("ascii"))
+      .toBe("PNG");
+    expect(() => store.readImagePreview(conversation.id, attachments[0]!.id))
+      .toThrow("Only image attachments");
+    const unrelatedConversation = database.createConversation(null);
+    expect(() => store.readImagePreview(unrelatedConversation.id, attachments[1]!.id))
+      .toThrow("not found");
 
     const modelAttachments = store.toModelAttachments(
       conversation.id,
@@ -248,6 +347,115 @@ describe("ConversationAttachmentStore", () => {
     await store.removeDraft(conversation.id, attachment.id);
 
     expect(database.listDraftConversationAttachments(conversation.id)).toEqual([]);
+    await expect(access(storedPath)).rejects.toThrow();
+  });
+
+  it("deletes cancelled queued attachments instead of restoring them as drafts", async () => {
+    const { conversation, database, store } = await createFixture();
+    const attachment = await store.importBytes(conversation.id, {
+      bytes: Buffer.from(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl2nksAAAAASUVORK5CYII=",
+        "base64",
+      ),
+      mimeType: "image/png",
+      name: "queued.png",
+    });
+    const pending = database.enqueuePendingMessage({
+      attachmentIds: [attachment.id],
+      content: "稍后发送这张图",
+      conversationId: conversation.id,
+      deliveryMode: "queue",
+    });
+    const storedPath = database.getConversationAttachment(
+      conversation.id,
+      attachment.id,
+    ).storedPath;
+
+    database.deletePendingMessage(pending.id);
+
+    expect(database.listDraftConversationAttachments(conversation.id)).toEqual([]);
+    await store.cleanupCancelledPendingMessageAttachments(pending.id);
+    expect(() => database.getConversationAttachment(conversation.id, attachment.id))
+      .toThrow("not found");
+    await expect(access(storedPath)).rejects.toThrow();
+  });
+
+  it("keeps a shared snapshot file while deleting only the cancelled queue reference", async () => {
+    const { conversation, database, store } = await createFixture();
+    const attachment = await store.importBytes(conversation.id, {
+      bytes: Buffer.from("shared attachment"),
+      mimeType: "text/plain",
+      name: "shared.txt",
+    });
+    const pending = database.enqueuePendingMessage({
+      attachmentIds: [attachment.id],
+      content: "稍后发送共享附件",
+      conversationId: conversation.id,
+      deliveryMode: "queue",
+    });
+    const stored = database.getConversationAttachment(conversation.id, attachment.id);
+    const otherConversation = database.createConversation(null);
+    database.createConversationAttachment({
+      ...stored,
+      conversationId: otherConversation.id,
+      id: crypto.randomUUID(),
+      messageId: null,
+      pendingMessageId: null,
+    });
+
+    database.deletePendingMessage(pending.id);
+    await store.cleanupCancelledPendingMessageAttachments(pending.id);
+
+    expect(() => database.getConversationAttachment(conversation.id, attachment.id))
+      .toThrow("not found");
+    await expect(access(stored.storedPath)).resolves.toBeUndefined();
+  });
+
+  it("cleans legacy cancelled queue attachments that were detached into drafts", async () => {
+    const fixture = await createFixture();
+    const attachment = await fixture.store.importBytes(fixture.conversation.id, {
+      bytes: Buffer.from(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl2nksAAAAASUVORK5CYII=",
+        "base64",
+      ),
+      mimeType: "image/png",
+      name: "legacy-queued.png",
+    });
+    const pending = fixture.database.enqueuePendingMessage({
+      attachmentIds: [attachment.id],
+      content: "旧版待发送图片",
+      conversationId: fixture.conversation.id,
+      deliveryMode: "queue",
+    });
+    fixture.database.deletePendingMessage(pending.id);
+    const storedPath = fixture.database.getConversationAttachment(
+      fixture.conversation.id,
+      attachment.id,
+    ).storedPath;
+    fixture.database.close();
+    databases.splice(databases.indexOf(fixture.database), 1);
+
+    const legacyDatabase = new DatabaseSync(fixture.databasePath);
+    legacyDatabase.prepare(
+      "UPDATE conversation_attachments SET pending_message_id = NULL WHERE id = ?",
+    ).run(attachment.id);
+    legacyDatabase.close();
+
+    const reopened = new AgentDatabase(fixture.databasePath);
+    databases.push(reopened);
+    const reopenedStore = new ConversationAttachmentStore(
+      reopened,
+      new ProjectRegistry(reopened),
+      fixture.managedRoot,
+    );
+    expect(reopened.listDraftConversationAttachments(fixture.conversation.id))
+      .toEqual([expect.objectContaining({ id: attachment.id })]);
+
+    await reopenedStore.resumeCancelledPendingMessageAttachmentCleanup();
+
+    expect(reopened.listDraftConversationAttachments(fixture.conversation.id)).toEqual([]);
+    expect(() => reopened.getConversationAttachment(fixture.conversation.id, attachment.id))
+      .toThrow("not found");
     await expect(access(storedPath)).rejects.toThrow();
   });
 

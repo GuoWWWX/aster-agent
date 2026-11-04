@@ -10,38 +10,33 @@ import { AgentDatabase } from "../storage/agent-database.js";
 import { toolErrorContent } from "../errors/tool-error.js";
 import type { ToolExecutionPolicy } from "../tools/tool-execution-policy.js";
 
-export const CREATE_TASK_LIST_TOOL_NAME = "create_task_list";
 export const UPDATE_TASK_LIST_TOOL_NAME = "update_task_list";
 export const CLOSE_TASK_LIST_TOOL_NAME = "close_task_list";
 
 const taskListToolNames = new Set([
-  CREATE_TASK_LIST_TOOL_NAME,
   UPDATE_TASK_LIST_TOOL_NAME,
   CLOSE_TASK_LIST_TOOL_NAME
 ]);
 
 const taskListUpdateSchema = z
   .object({
+    close: z.boolean().optional().describe("When all steps are completed, set true in this final update to close the checklist in the same call. Omit while work remains."),
     tasks: z.array(
       z.object({
         reason: z.string().trim().min(1).max(600).nullable().optional().describe(
-          "步骤阻塞或失败时的简短原因；其他状态不要提供。"
+          "Short reason when the step is blocked or failed. Omit it for other statuses."
         ),
         status: conversationTaskStatusSchema
-          .describe("步骤状态；同一任务清单最多一个步骤为 running；需要外部输入时使用 blocked 并说明原因，无法继续时使用 failed 并说明原因。"),
-        title: z.string().trim().min(1).max(300).describe("简短、可验证的步骤标题。")
+          .describe("Step status. Use running for every step currently being handled, including independent work progressing concurrently. Use blocked with a reason when external input is required, or failed with a reason when work cannot continue."),
+        title: z.string().trim().min(1).max(300).describe("Short, verifiable step title.")
       }).strict()
-    ).min(2).max(20).describe("完整任务清单；每次更新都必须重新提交全部步骤。")
+    ).min(2).max(20).describe("Complete task list. Resubmit every step on each update.")
   })
   .strict()
   .superRefine((value, context) => {
-    if (value.tasks.filter((task) => task.status === "running").length > 1) {
-      context.addIssue({
-        code: "custom",
-        message: "Only one task can be running at a time.",
-        path: ["tasks"]
-      });
-    }
+    if (value.close && value.tasks.some(task => task.status !== "completed")) context.addIssue({
+      code: "custom", path: ["close"], message: "Only close a checklist when every submitted step is completed.",
+    });
     value.tasks.forEach((task, index) => {
       const requiresReason = task.status === "blocked" || task.status === "failed";
       if (requiresReason && task.reason == null) {
@@ -64,6 +59,7 @@ const taskListUpdateSchema = z
 const closeTaskListSchema = z.object({}).strict();
 
 export type TaskListToolExecution = {
+  changed: boolean;
   content: string;
   isError: boolean;
   kind: "completed";
@@ -74,8 +70,15 @@ export function isTaskListToolName(value: string): boolean {
   return taskListToolNames.has(value);
 }
 
-function resultContent(taskList: ConversationTaskList | null): string {
-  return JSON.stringify({ ok: true, value: taskList });
+function resultContent(taskList: ConversationTaskList | null, changed: boolean): string {
+  return JSON.stringify({
+    ok: true,
+    value: taskList === null
+      ? { status: "closed" }
+      : changed ? { status: "updated", taskCount: taskList.tasks.length }
+        : { status: "unchanged", taskCount: taskList.tasks.length,
+          message: "清单没有变化，无需再次提交。继续当前实际工作；若已回答或正在等待，本轮可直接结束，不要重复更新无关步骤。" },
+  });
 }
 
 /**
@@ -91,22 +94,14 @@ export class TaskListTool {
     return [
       {
         description: [
-          "Create a task list for a complex, multi-step task before substantive work.",
-          "Use this only when no active task list exists. Provide the full list with exactly zero or one running task. Blocked and failed tasks must include a short reason."
-        ].join(" "),
-        name: CREATE_TASK_LIST_TOOL_NAME,
-        parameters: taskListParameters
-      },
-      {
-        description: [
-          "Update the active task list, including task titles and statuses.",
-          "Send the full list on every update. Keep at most one task running, and mark a task completed before moving to the next one. Blocked and failed tasks must include a short reason."
+          "Create or update this conversation's local execution checklist above its input for multi-step work. This does not create or update persistent task records in the conversation header.",
+          "Send one complete list combining every currently known step change (for example, finish the previous step and start the next together). Do not submit separate updates per step or bookkeeping-only transitions. Set close=true with all steps completed to finish and close in one call; no separate close_task_list is needed. Multiple tasks may be running at once. Blocked and failed tasks require a short reason."
         ].join(" "),
         name: UPDATE_TASK_LIST_TOOL_NAME,
         parameters: taskListParameters
       },
       {
-        description: "Close and remove the active task list after every task is completed and before giving the final answer.",
+        description: "Close the local execution checklist after all its steps are completed and before giving the final answer. This does not remove or complete persistent task records in the conversation header.",
         name: CLOSE_TASK_LIST_TOOL_NAME,
         parameters: modelToolParameters(closeTaskListSchema)
       }
@@ -125,11 +120,12 @@ export class TaskListTool {
   ): TaskListToolExecution {
     try {
       const parsedArguments = parseToolArguments(rawArguments);
-      const taskList = this.executeTaskListOperation(toolName, parsedArguments, conversationId);
-      return { content: resultContent(taskList), isError: false, kind: "completed", taskList };
+      const { taskList, changed } = this.executeTaskListOperation(toolName, parsedArguments, conversationId);
+      return { content: resultContent(taskList, changed), changed, isError: false, kind: "completed", taskList };
     } catch (error) {
       return {
         content: toolErrorContent(error, `tool:${toolName}`),
+        changed: false,
         isError: true,
         kind: "completed",
         taskList: null
@@ -141,20 +137,25 @@ export class TaskListTool {
     toolName: string,
     rawArguments: unknown,
     conversationId: string
-  ): ConversationTaskList | null {
+  ): { taskList: ConversationTaskList | null; changed: boolean } {
     switch (toolName) {
-      case CREATE_TASK_LIST_TOOL_NAME: {
-        const input = taskListUpdateSchema.parse(rawArguments);
-        return this.database.createTaskList(conversationId, input.tasks);
-      }
       case UPDATE_TASK_LIST_TOOL_NAME: {
         const input = taskListUpdateSchema.parse(rawArguments);
-        return this.database.updateTaskList(conversationId, input.tasks);
+        const previous = this.database.getTaskList(conversationId);
+        if (input.close) {
+          if (previous !== null) this.database.closeTaskList(conversationId);
+          return { taskList: null, changed: previous !== null };
+        }
+        if (previous?.tasks.length === input.tasks.length && input.tasks.every((task, index) => {
+          const old = previous.tasks[index]!;
+          return old.title === task.title && old.status === task.status && old.reason === (task.reason ?? null);
+        })) return { taskList: previous, changed: false };
+        return { taskList: this.database.updateTaskList(conversationId, input.tasks), changed: true };
       }
       case CLOSE_TASK_LIST_TOOL_NAME:
         closeTaskListSchema.parse(rawArguments);
         this.database.closeTaskList(conversationId);
-        return null;
+        return { taskList: null, changed: true };
       default:
         throw new Error(`Unknown task list tool: ${toolName}`);
     }

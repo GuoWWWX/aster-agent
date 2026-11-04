@@ -1,7 +1,10 @@
 import { z } from "zod";
 import {
+  agentAvatarIconSchema,
   isReasoningOptionEnabled,
+  isImageGenerationModel,
   modelReasoningOptionSchema,
+  type AgentAvatarIcon,
   type ConversationModelSelection,
   type ModelRuntimeStatus,
 } from "@agent/protocol";
@@ -19,26 +22,30 @@ const SPAWN_SUBAGENT_TOOL_NAME = "spawn_subagent";
 const LIST_MODELS_TOOL_NAME = "list_models";
 const LIST_SUBAGENTS_TOOL_NAME = "list_subagents";
 const WAIT_FOR_SUBAGENTS_TOOL_NAME = "wait_for_subagents";
+const END_SUBAGENT_TOOL_NAME = "end_subagent";
 const toolNames = new Set([
   SPAWN_SUBAGENT_TOOL_NAME,
   LIST_MODELS_TOOL_NAME,
   LIST_SUBAGENTS_TOOL_NAME,
   WAIT_FOR_SUBAGENTS_TOOL_NAME,
+  END_SUBAGENT_TOOL_NAME,
 ]);
 
 const spawnArgumentsSchema = z.object({
   agentId: z.string().trim().min(1).max(80).optional()
-    .describe("可选的已配置 Agent 或当前团队成员 ID。"),
+    .describe("Optional configured Agent or current team-member ID."),
+  icon: agentAvatarIconSchema.optional()
+    .describe("Optional dedicated avatar icon. Use only a stable icon ID declared by this schema."),
   modelId: z.string().trim().min(1).max(200).optional()
-    .describe("可选的已配置模型 ID；必须与 providerId 同时传入。"),
+    .describe("Optional configured model ID. It must be supplied together with providerId."),
+  name: z.string().trim().min(1).max(80).optional()
+    .describe("Optional short Subagent name shown in the conversation tree and tool results."),
   providerId: z.string().uuid().optional()
-    .describe("可选的模型供应商 UUID；必须与 modelId 同时传入。"),
+    .describe("Optional model-provider UUID. It must be supplied together with modelId."),
   reasoning: modelReasoningOptionSchema.optional()
-    .describe("可选的已启用推理选项；仅在显式选择 providerId 和 modelId 时使用。"),
+    .describe("Optional enabled reasoning option. Use it only when providerId and modelId are selected explicitly."),
   task: z.string().trim().min(1).max(20_000)
-    .describe("交给 Subagent 的独立、有边界且可验收的任务。"),
-  title: z.string().trim().min(1).max(200).optional()
-    .describe("可选的简短任务标题。"),
+    .describe("Independent, bounded, and verifiable task. The child does not inherit parent history: include relevant user constraints, environment facts, file ownership, dependencies, and acceptance criteria."),
 }).strict().superRefine((value, context) => {
   if ((value.providerId === undefined) !== (value.modelId === undefined)) {
     context.addIssue({
@@ -56,15 +63,31 @@ const spawnArgumentsSchema = z.object({
   }
 });
 const emptyArgumentsSchema = z.object({}).strict();
+const endArgumentsSchema = z.object({
+  conversationId: z.string().uuid()
+    .describe("Child conversation UUID returned by spawn_subagent."),
+}).strict();
 const waitArgumentsSchema = z.object({
   taskIds: z.array(z.string().uuid()).min(1).max(32)
     .refine((ids) => new Set(ids).size === ids.length, "Task identifiers must be unique.")
-    .describe("由 spawn_subagent 返回的唯一任务 UUID 列表。"),
-  timeoutMs: z.number().int().min(1_000).max(600_000).default(30_000)
-    .describe("本次等待的最长毫秒数；超时不会停止 Subagent。"),
+    .describe("Unique task UUIDs returned by spawn_subagent."),
+  timeoutMs: z.number().int().min(1_000).max(600_000).optional()
+    .describe("Optional maximum wait. Omit to wait until the condition is met. Timeout does not stop Subagents; cancellation, missing execution and stalled progress release the wait."),
   waitFor: z.enum(["any", "all"]).default("any")
-    .describe("any 等待任意任务结束；all 等待全部任务结束。"),
+    .describe("Use any to wait for one task to finish, or all to wait for every task."),
 }).strict();
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function omitUnsupportedSpawnIcon(value: unknown): unknown {
+  if (!isRecord(value) || value.icon === undefined) return value;
+  if (agentAvatarIconSchema.safeParse(value.icon).success) return value;
+  const normalized = { ...value };
+  delete normalized.icon;
+  return normalized;
+}
 
 type SubagentToolExecution = {
   content: string;
@@ -73,15 +96,19 @@ type SubagentToolExecution = {
 };
 
 type TaskWaiter = {
-  onResultMessagesRead: ((messageIds: readonly string[]) => void) | undefined;
   parentConversationId: string;
-  resolve: (value: { status: "ready" | "timeout"; tasks: SubagentTask[] }) => void;
-  taskIds: string[];
-  waitFor: "any" | "all";
+  check: () => void;
+  interrupt: () => void;
 };
 
+type WaitResult = { status: "ready" | "timeout" | "interrupted"; tasks: SubagentTask[];
+  reason?: "execution_unavailable" | "no_progress" | "new_input" };
+
 function isTerminal(task: SubagentTask): boolean {
-  return task.status === "completed" || task.status === "failed" || task.status === "cancelled";
+  return task.status === "completed"
+    || task.status === "failed"
+    || task.status === "cancelled"
+    || task.status === "ended";
 }
 
 function success(value: unknown): SubagentToolExecution {
@@ -94,16 +121,30 @@ function success(value: unknown): SubagentToolExecution {
 
 function boundedText(value: string | null, limit: number): string | null {
   if (value === null || value.length <= limit) return value;
-  return `${value.slice(0, limit - 16)}\n[内容已截断]`;
+  return `${value.slice(0, limit - 16)}\n[Content truncated]`;
 }
 
-function toToolTask(task: SubagentTask): Record<string, unknown> {
+function toToolTask(database: AgentDatabase, task: SubagentTask, frozen = false): Record<string, unknown> {
+  if (!database.hasConversation(task.childConversationId)) return {
+    id: task.id, childConversationId: task.childConversationId, runId: task.targetRunId,
+    name: task.title, status: "deleted", result: null, error: "子对话已删除。",
+  };
+  const conversation = database.getConversation(task.childConversationId);
   return {
+    avatarIcon: conversation.avatarIcon ?? null,
     childConversationId: task.childConversationId,
     completedAt: task.completedAt,
     createdAt: task.createdAt,
     error: boundedText(task.error, 4_000),
     id: task.id,
+    runId: task.targetRunId,
+    lastRunStatus: frozen ? task.status : conversation.lastRunStatus,
+    lifecycleStatus: task.status === "ended"
+      ? "ended"
+      : (frozen ? isTerminal(task) : conversation.activeRunId === null)
+        ? "completed"
+        : "working",
+    name: task.title,
     result: boundedText(task.result, 8_000),
     status: task.status,
     task: boundedText(task.task, 2_000),
@@ -122,12 +163,13 @@ export class SubagentTool {
   public constructor(
     private readonly database: AgentDatabase,
     private readonly getModelStatus?: () => ModelRuntimeStatus,
+    private readonly isRunActive?: (runId: string) => boolean,
   ) {}
 
   public getDefinitions(): ModelToolDefinition[] {
     return [
       {
-        description: "Start an independent one-shot Subagent for one bounded task. Optionally select a configured Agent or team member with agentId. The tool returns immediately; use wait_for_subagents only when the current work depends on its result. The Subagent becomes read-only after completion. Its concise result is delivered automatically, while the full conversation remains available through read_agent_conversation.",
+        description: "Start an independent reusable Subagent with one bounded first task. Give it a short name. Usually omit icon so the app generates a stable identity; only pass an exact value from the declared enum when a specific icon matters. An unsupported optional icon is ignored instead of blocking creation. You may also select a configured Agent or team member with agentId. The tool returns immediately; use wait_for_subagents only when the current work depends on its result. After a run completes, use send_agent_message with its childConversationId for follow-up work in the same context, or end_subagent when no follow-up is needed. Its concise completion receipt is delivered privately and automatically for the parent to synthesize; supporting detail remains in the child conversation. Do not list or read the child merely to retrieve a normal completion result.",
         name: SPAWN_SUBAGENT_TOOL_NAME,
         parameters: modelToolParameters(spawnArgumentsSchema),
       },
@@ -137,7 +179,7 @@ export class SubagentTool {
         parameters: modelToolParameters(emptyArgumentsSchema),
       },
       {
-        description: "List Subagent tasks created by this conversation and inspect their current status and final result.",
+        description: "List Subagents created by this conversation and inspect their lifecycle status: working, completed and reusable, or explicitly ended. Normal completion already delivers the final result automatically, so do not poll this tool merely to retrieve it.",
         name: LIST_SUBAGENTS_TOOL_NAME,
         parameters: modelToolParameters(emptyArgumentsSchema),
       },
@@ -145,6 +187,11 @@ export class SubagentTool {
         description: "Wait for any or all selected Subagent tasks. Use this only when their result blocks the current work. A timeout is not a failure; the Subagents continue in the background and completion will still reactivate this conversation.",
         name: WAIT_FOR_SUBAGENTS_TOOL_NAME,
         parameters: modelToolParameters(waitArgumentsSchema),
+      },
+      {
+        description: "End one completed Subagent after its work is accepted and no follow-up is needed. Ending makes that Subagent conversation read-only but does not delete its history or workspace files. A running Subagent cannot be ended; only the user can delete a Subagent from the UI.",
+        name: END_SUBAGENT_TOOL_NAME,
+        parameters: modelToolParameters(endArgumentsSchema),
       },
     ];
   }
@@ -156,6 +203,7 @@ export class SubagentTool {
         return { group: "read", kind: "parallel" };
       case SPAWN_SUBAGENT_TOOL_NAME:
       case WAIT_FOR_SUBAGENTS_TOOL_NAME:
+      case END_SUBAGENT_TOOL_NAME:
         return { kind: "serial" };
       default:
         throw new Error(`Unknown Subagent tool: ${toolName}`);
@@ -165,11 +213,13 @@ export class SubagentTool {
   public async execute(input: {
     arguments: string;
     conversationId: string;
+    end: (childConversationId: string) => SubagentTask;
     onResultMessagesRead?: (messageIds: readonly string[]) => void;
     signal: AbortSignal;
     spawn: (
       task: string,
-      title: string | undefined,
+      name: string | undefined,
+      icon: AgentAvatarIcon | undefined,
       agentId: string | undefined,
       modelSelection: ConversationModelSelection | undefined,
     ) => SubagentTask;
@@ -179,11 +229,12 @@ export class SubagentTool {
       const argumentsValue = parseToolArguments(input.arguments);
       switch (input.toolName) {
         case SPAWN_SUBAGENT_TOOL_NAME: {
-          const parsed = spawnArgumentsSchema.parse(argumentsValue);
+          const parsed = spawnArgumentsSchema.parse(omitUnsupportedSpawnIcon(argumentsValue));
           return success({
-            task: toToolTask(input.spawn(
+            task: toToolTask(this.database, input.spawn(
               parsed.task,
-              parsed.title,
+              parsed.name,
+              parsed.icon,
               parsed.agentId,
               parsed.providerId === undefined || parsed.modelId === undefined
                 ? undefined
@@ -199,7 +250,7 @@ export class SubagentTool {
           emptyArgumentsSchema.parse(argumentsValue);
           const status = this.getModelStatus?.();
           if (status === undefined) throw new Error("The model catalog is unavailable.");
-          const models = [...status.models].sort((left, right) => {
+          const models = status.models.filter(model => !isImageGenerationModel(model)).sort((left, right) => {
             const statusOrder = { healthy: 0, unknown: 1, error: 2 } as const;
             const byStatus = statusOrder[left.connectionStatus] - statusOrder[right.connectionStatus];
             if (byStatus !== 0) return byStatus;
@@ -226,7 +277,8 @@ export class SubagentTool {
         case LIST_SUBAGENTS_TOOL_NAME:
           emptyArgumentsSchema.parse(argumentsValue);
           return success({
-            tasks: this.database.listSubagentTasks(input.conversationId).slice(-50).map(toToolTask),
+            tasks: this.database.listSubagentTasks(input.conversationId).slice(-50)
+              .map((task) => toToolTask(this.database, task)),
           });
         case WAIT_FOR_SUBAGENTS_TOOL_NAME: {
           const parsed = waitArgumentsSchema.parse(argumentsValue);
@@ -238,8 +290,13 @@ export class SubagentTool {
           });
           return success({
             status: result.status,
-            tasks: result.tasks.map(toToolTask),
+            ...(result.reason === undefined ? {} : { reason: result.reason }),
+            tasks: result.tasks.map((task) => toToolTask(this.database, task, true)),
           });
+        }
+        case END_SUBAGENT_TOOL_NAME: {
+          const parsed = endArgumentsSchema.parse(argumentsValue);
+          return success({ task: toToolTask(this.database, input.end(parsed.conversationId)) });
         }
         default:
           throw new Error(`Unknown Subagent tool: ${input.toolName}`);
@@ -256,18 +313,12 @@ export class SubagentTool {
 
   public notifyTaskCompleted(task: SubagentTask): void {
     for (const waiter of [...this.waiters]) {
-      if (
-        waiter.parentConversationId !== task.parentConversationId
-        || !waiter.taskIds.includes(task.id)
-      ) {
-        continue;
-      }
-      const tasks = this.readTasks(waiter.parentConversationId, waiter.taskIds);
-      if (!this.isReady(tasks, waiter.waitFor)) continue;
-      this.waiters.delete(waiter);
-      this.markResultsRead(tasks, waiter.onResultMessagesRead);
-      waiter.resolve({ status: "ready", tasks });
+      if (waiter.parentConversationId === task.parentConversationId) waiter.check();
     }
+  }
+
+  public interruptWait(conversationId: string): void {
+    for (const waiter of [...this.waiters]) if (waiter.parentConversationId === conversationId) waiter.interrupt();
   }
 
   private async waitForTasks(input: {
@@ -275,10 +326,28 @@ export class SubagentTool {
     parentConversationId: string;
     signal: AbortSignal;
     taskIds: string[];
-    timeoutMs: number;
+    timeoutMs?: number | undefined;
     waitFor: "any" | "all";
-  }): Promise<{ status: "ready" | "timeout"; tasks: SubagentTask[] }> {
-    const initial = this.readTasks(input.parentConversationId, input.taskIds);
+  }): Promise<WaitResult> {
+    const initial = this.readTasks(input.parentConversationId, input.taskIds).map((task) => {
+      const run = this.database.getConversationRunOutcome(task.childConversationId);
+      const sameRun = run === null || run.runId === task.targetRunId;
+      return { ...task, targetRunId: run?.runId ?? task.targetRunId,
+        status: run?.status ?? task.status, error: run?.error ?? (sameRun ? task.error : null),
+        result: run?.result ?? (sameRun ? task.result : null),
+        resultMessageId: sameRun ? task.resultMessageId : null };
+    });
+    const read = () => {
+      const originals = new Map(this.database.listSubagentTasks(input.parentConversationId).map((task) => [task.id, task]));
+      return initial.map((snapshot) => {
+      if (!this.database.hasConversation(snapshot.childConversationId)) return { ...snapshot, status: "cancelled" as const, error: "子对话已删除。" };
+      const run = this.database.getConversationRunOutcome(snapshot.childConversationId, snapshot.targetRunId ?? undefined);
+      const original = originals.get(snapshot.id);
+      if (run === null) return { ...snapshot, status: "cancelled" as const, error: "对应执行已不存在。" };
+      return { ...snapshot, status: run.status, result: run.result ?? (original?.targetRunId === snapshot.targetRunId ? original.result : null),
+        error: run.error, resultMessageId: original?.targetRunId === snapshot.targetRunId ? original.resultMessageId : null };
+      });
+    };
     if (this.isReady(initial, input.waitFor)) {
       this.markResultsRead(initial, input.onResultMessagesRead);
       return { status: "ready", tasks: initial };
@@ -286,33 +355,60 @@ export class SubagentTool {
     if (input.signal.aborted) throw this.abortError(input.signal);
 
     return new Promise((resolve, reject) => {
+      let settled = false;
       const cleanup = (): void => {
-        clearTimeout(timeout);
+        if (timeout !== undefined) clearTimeout(timeout);
+        clearInterval(watchdog);
         input.signal.removeEventListener("abort", onAbort);
         this.waiters.delete(waiter);
       };
-      const finish = (value: { status: "ready" | "timeout"; tasks: SubagentTask[] }): void => {
+      const finish = (value: WaitResult): void => {
+        if (settled) return;
+        settled = true;
         cleanup();
-        resolve(value);
+        try {
+          this.markResultsRead(value.tasks, input.onResultMessagesRead);
+          resolve(value);
+        } catch (error) { reject(error instanceof Error ? error : new Error(String(error))); }
       };
       const onAbort = (): void => {
+        if (settled) return;
+        settled = true;
         cleanup();
         reject(this.abortError(input.signal));
       };
-      const waiter: TaskWaiter = {
-        onResultMessagesRead: input.onResultMessagesRead,
-        parentConversationId: input.parentConversationId,
-        resolve: finish,
-        taskIds: input.taskIds,
-        waitFor: input.waitFor,
+      const progress = new Map<string, { value: string; at: number }>();
+      const check = () => {
+        try {
+          const tasks = read();
+          if (this.isReady(tasks, input.waitFor)) { finish({ status: "ready", tasks }); return; }
+          for (const task of tasks.filter((task) => !isTerminal(task))) {
+            if (task.targetRunId === null) continue;
+            const run = this.database.getConversationRunOutcome(task.childConversationId, task.targetRunId);
+            if (run === null) continue;
+            const previous = progress.get(task.targetRunId);
+            if (previous === undefined || previous.value !== run.progress || run.awaitingApproval) {
+              progress.set(task.targetRunId, { value: run.progress, at: Date.now() });
+            }
+            const unavailable = this.isRunActive !== undefined && !this.isRunActive(task.targetRunId);
+            if (unavailable || (!run.awaitingApproval && previous?.value === run.progress && Date.now() - previous.at >= 300_000)) {
+              finish({ status: "interrupted", tasks, reason: unavailable ? "execution_unavailable" : "no_progress" }); return;
+            }
+          }
+        } catch (error) { cleanup(); reject(error instanceof Error ? error : new Error(String(error))); }
       };
-      const timeout = setTimeout(() => {
-        const tasks = this.readTasks(input.parentConversationId, input.taskIds);
-        this.markResultsRead(tasks, input.onResultMessagesRead);
-        finish({ status: "timeout", tasks });
-      }, input.timeoutMs);
+      const release = (status: "interrupted" | "timeout") => {
+        try { finish({ status, tasks: read(), ...(status === "interrupted" ? { reason: "new_input" as const } : {}) }); }
+        catch (error) { cleanup(); reject(error instanceof Error ? error : new Error(String(error))); }
+      };
+      const waiter: TaskWaiter = { parentConversationId: input.parentConversationId, check,
+        interrupt: () => release("interrupted") };
+      const timeout = input.timeoutMs === undefined ? undefined : setTimeout(() => release("timeout"), input.timeoutMs);
+      const watchdog = setInterval(check, 1_000);
+      watchdog.unref();
       this.waiters.add(waiter);
       input.signal.addEventListener("abort", onAbort, { once: true });
+      check();
     });
   }
 
@@ -334,9 +430,18 @@ export class SubagentTool {
     tasks: readonly SubagentTask[],
     onResultMessagesRead: ((messageIds: readonly string[]) => void) | undefined,
   ): void {
-    const messageIds = tasks.flatMap((task) => task.resultMessageId === null ? [] : [task.resultMessageId]);
-    this.database.markAgentMessagesRead(messageIds);
-    if (messageIds.length > 0) onResultMessagesRead?.(messageIds);
+    const finished = tasks.filter(isTerminal);
+    const parentId = finished[0]?.parentConversationId;
+    const receipts = parentId === undefined ? [] : this.database.listUnreadAgentMessages(parentId).filter((message) =>
+      (message.messageType === "task_result" || message.messageType === "agent_result")
+      && finished.some((task) => task.childConversationId === message.senderConversationId && task.targetRunId === message.runId));
+    const messageIds = [...new Set([...finished.flatMap((task) => task.resultMessageId === null ? [] : [task.resultMessageId]),
+      ...receipts.map((message) => message.id)])];
+    if (messageIds.length === 0) return;
+    if (onResultMessagesRead !== undefined) {
+      for (let offset = 0; offset < messageIds.length; offset += 50) onResultMessagesRead(messageIds.slice(offset, offset + 50));
+    }
+    else this.database.markAgentMessagesRead(messageIds);
   }
 
   private abortError(signal: AbortSignal): Error {

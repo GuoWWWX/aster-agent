@@ -1,265 +1,79 @@
-import { safeStorage } from "electron";
-import { randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
+import {
+  safeStorage,
+} from "electron";
+import {
+  randomUUID,
+} from "node:crypto";
+import {
+  existsSync,
+} from "node:fs";
 import {
   conversationModelSelectionSchema,
-  contextCompressionThresholdSchema,
+  DEFAULT_MODEL_CATALOG,
   isReasoningOptionEnabled,
   isReasoningOptionSupportedByApiFormat,
-  modelApiFormatSchema,
-  modelConnectionStatusSchema,
-  modelProviderIconSchema,
-  modelReasoningOptionSchema,
   modelReasoningOptionKey,
   modelRuntimeStatusSchema,
+  resolveModelContextWindow,
+  resolveModelReasoningOptions,
   type DiscoverModelsInput,
   type DiscoveredModel,
   type ConversationModelSelection,
-  type ModelApiFormat,
   type ModelConnectionStatus,
+  type ModelCatalog,
   type ModelProfile,
-  type ModelReasoningOption,
   type ModelRuntimeStatus,
   type SaveModelConfigurationInput,
-  type SetDefaultModelInput
+  type SetDefaultModelInput,
 } from "@agent/protocol";
-import { z } from "zod";
-
+import {
+  z,
+} from "zod";
+import {
+  isImageGenerationModel,
+} from "@agent/protocol";
 import {
   readJsonDocument,
   writeJsonDocument,
 } from "../settings/json-configuration-file.js";
-import { ModelAdapterRegistry } from "./model-adapter-registry.js";
-import type { ModelConfiguration } from "./model-contracts.js";
-import { ModelResponseError } from "./model-request-error.js";
+import {
+  SettingsJsoncFile,
+} from "../settings/settings-jsonc-file.js";
+import {
+  ModelAdapterRegistry,
+} from "./model-adapter-registry.js";
+import {
+  ModelGateway,
+} from "./model-gateway.js";
+import type {
+  ModelConfiguration,
+  ModelContextConfiguration,
+} from "./model-contracts.js";
+import {
+  ModelResponseError,
+} from "./model-request-error.js";
+import type { ChatGptPlanAuth } from "./chatgpt-plan-auth.js";
+import {
+  storedModelSchema,
+  storedProviderSchema,
+  storedConfigurationV6Schema,
+  type StoredConfiguration,
+  type StoredProvider,
+  type StoredModel,
+  settingsModelConfigurationSchema,
+  parseLegacyModelConfiguration,
+} from "./model-configuration-schema.js";
 
-export type { ModelConfiguration } from "./model-contracts.js";
+export type { ModelConfiguration, ModelContextConfiguration } from "./model-contracts.js";
 
-const storedModelBaseSchema = z
-  .object({
-    contextCompression: contextCompressionThresholdSchema.optional(),
-    contextWindow: z.number().int().min(0).max(10_000_000),
-    displayName: z.string().min(1).max(200).optional(),
-    modelId: z.string().min(1).max(200)
-  });
-
-const legacyStoredModelSchema = storedModelBaseSchema.extend({
-  configuredReasoningEffort: z
-    .enum(["low", "medium", "high", "xhigh"])
-    .nullable()
-    .optional()
-}).strict();
-
-const storedModelSchema = storedModelBaseSchema.extend({
-  connectionStatus: modelConnectionStatusSchema.optional(),
-  connectionStatusUpdatedAt: z.string().datetime().nullable().optional(),
-  lastSuccessfulAt: z.string().datetime().nullable().optional(),
-  reasoningOptions: z.array(modelReasoningOptionSchema).max(16)
-}).strict();
-
-const LEGACY_PROVIDER_ID = "00000000-0000-4000-8000-000000000001";
-
-const storedProviderV3Schema = z
-  .object({
-    baseUrl: z.string().url(),
-    encryptedApiKey: z.string().min(1),
-    id: z.string().uuid(),
-    models: z.array(legacyStoredModelSchema).min(1).max(100),
-    name: z.string().min(1).max(100)
-  })
-  .strict();
-
-const storedProviderV4Schema = storedProviderV3Schema.extend({
-  apiFormat: modelApiFormatSchema
-});
-
-const storedProviderSchema = z.object({
-  apiFormat: modelApiFormatSchema,
-  baseUrl: z.string().url(),
-  encryptedApiKey: z.string().min(1),
-  id: z.string().uuid(),
-  icon: modelProviderIconSchema.optional(),
-  models: z.array(storedModelSchema).min(1).max(100),
-  name: z.string().min(1).max(100),
-  note: z.string().max(500).optional(),
-  websiteUrl: z.string().url().optional()
-}).strict();
-
-const storedConfigurationV1Schema = z
-  .object({
-    baseUrl: z.string().url(),
-    encryptedApiKey: z.string().min(1),
-    modelId: z.string().min(1).max(200),
-    version: z.literal(1)
-  })
-  .strict();
-
-const storedConfigurationV2Schema = z
-  .object({
-    baseUrl: z.string().url(),
-    defaultModelId: z.string().min(1).max(200),
-    encryptedApiKey: z.string().min(1),
-    models: z.array(legacyStoredModelSchema).min(1).max(100),
-    version: z.literal(2)
-  })
-  .strict()
-  .superRefine((value, context) => {
-    if (!value.models.some((model) => model.modelId === value.defaultModelId)) {
-      context.addIssue({
-        code: "custom",
-        message: "The default model must be configured.",
-        path: ["defaultModelId"]
-      });
-    }
-  });
-
-const storedConfigurationV3Schema = z
-  .object({
-    defaultModelId: z.string().min(1).max(200),
-    defaultProviderId: z.string().uuid(),
-    providers: z.array(storedProviderV3Schema).min(1).max(100),
-    version: z.literal(3)
-  })
-  .strict()
-  .superRefine((value, context) => {
-    const defaultProvider = value.providers.find(
-      (provider) => provider.id === value.defaultProviderId
-    );
-    if (defaultProvider === undefined) {
-      context.addIssue({
-        code: "custom",
-        message: "The default provider must be configured.",
-        path: ["defaultProviderId"]
-      });
-      return;
-    }
-    if (!defaultProvider.models.some((model) => model.modelId === value.defaultModelId)) {
-      context.addIssue({
-        code: "custom",
-        message: "The default model must belong to the default provider.",
-        path: ["defaultModelId"]
-      });
-    }
-  });
-
-const storedConfigurationV4Schema = z
-  .object({
-    defaultModelId: z.string().min(1).max(200),
-    defaultProviderId: z.string().uuid(),
-    providers: z.array(storedProviderV4Schema).min(1).max(100),
-    version: z.literal(4)
-  })
-  .strict()
-  .superRefine((value, context) => {
-    const defaultProvider = value.providers.find(
-      (provider) => provider.id === value.defaultProviderId
-    );
-    if (defaultProvider === undefined) {
-      context.addIssue({
-        code: "custom",
-        message: "The default provider must be configured.",
-        path: ["defaultProviderId"]
-      });
-      return;
-    }
-    if (!defaultProvider.models.some((model) => model.modelId === value.defaultModelId)) {
-      context.addIssue({
-        code: "custom",
-        message: "The default model must belong to the default provider.",
-        path: ["defaultModelId"]
-      });
-    }
-  });
-
-const storedConfigurationV5Schema = z
-  .object({
-    defaultModelId: z.string().min(1).max(200),
-    defaultProviderId: z.string().uuid(),
-    providers: z.array(storedProviderSchema).min(1).max(100),
-    version: z.literal(5)
-  })
-  .strict()
-  .superRefine((value, context) => {
-    const defaultProvider = value.providers.find(
-      (provider) => provider.id === value.defaultProviderId
-    );
-    if (defaultProvider === undefined) {
-      context.addIssue({
-        code: "custom",
-        message: "The default provider must be configured.",
-        path: ["defaultProviderId"]
-      });
-      return;
-    }
-    if (!defaultProvider.models.some((model) => model.modelId === value.defaultModelId)) {
-      context.addIssue({
-        code: "custom",
-        message: "The default model must belong to the default provider.",
-        path: ["defaultModelId"]
-      });
-    }
-  });
-
-const storedRecentSelectionSchema = conversationModelSelectionSchema.extend({
-  updatedAt: z.string().datetime()
-}).strict();
-
-const storedConfigurationV6Schema = z
-  .object({
-    defaultModelId: z.string().min(1).max(200),
-    defaultProviderId: z.string().uuid(),
-    providers: z.array(storedProviderSchema).min(1).max(100),
-    recentSelection: storedRecentSelectionSchema.nullable(),
-    version: z.literal(6)
-  })
-  .strict()
-  .superRefine((value, context) => {
-    const defaultProvider = value.providers.find(
-      (provider) => provider.id === value.defaultProviderId
-    );
-    if (defaultProvider === undefined) {
-      context.addIssue({
-        code: "custom",
-        message: "The default provider must be configured.",
-        path: ["defaultProviderId"]
-      });
-      return;
-    }
-    if (!defaultProvider.models.some((model) => model.modelId === value.defaultModelId)) {
-      context.addIssue({
-        code: "custom",
-        message: "The default model must belong to the default provider.",
-        path: ["defaultModelId"]
-      });
-    }
-  });
-
-type StoredConfiguration = z.infer<typeof storedConfigurationV6Schema>;
+type SelectedStoredModel = {
+  model: StoredModel;
+  modelId: string;
+  provider: StoredProvider;
+};
 
 function normalizeBaseUrl(value: string): string {
   return new URL(value.trim()).toString().replace(/\/$/, "");
-}
-
-function migrateLegacyModel(
-  model: z.infer<typeof legacyStoredModelSchema>,
-  apiFormat: ModelApiFormat
-): z.infer<typeof storedModelSchema> {
-  const reasoningOption: ModelReasoningOption | undefined =
-    model.configuredReasoningEffort === null || model.configuredReasoningEffort === undefined
-      ? undefined
-      : { kind: "effort", value: model.configuredReasoningEffort };
-  return {
-    ...(model.contextCompression === undefined
-      ? {}
-      : { contextCompression: model.contextCompression }),
-    contextWindow: model.contextWindow,
-    ...(model.displayName === undefined ? {} : { displayName: model.displayName }),
-    modelId: model.modelId,
-    reasoningOptions: reasoningOption !== undefined &&
-      isReasoningOptionSupportedByApiFormat(apiFormat, reasoningOption, model.modelId)
-      ? [reasoningOption]
-      : []
-  };
 }
 
 function modelProfile(
@@ -267,6 +81,7 @@ function modelProfile(
   model: z.infer<typeof storedModelSchema>
 ): ModelProfile {
     return {
+      ...(model.modelType === undefined ? {} : { modelType: model.modelType }),
       ...(model.contextCompression === undefined
         ? {}
         : { contextCompression: model.contextCompression }),
@@ -277,6 +92,7 @@ function modelProfile(
       modelId: model.modelId,
       lastSuccessfulAt: model.lastSuccessfulAt ?? null,
     providerApiFormat: provider.apiFormat,
+    ...(provider.authentication === undefined ? {} : { providerAuthentication: provider.authentication }),
     providerBaseUrl: provider.baseUrl,
     providerId: provider.id,
     providerName: provider.name,
@@ -333,6 +149,7 @@ function openAiStyleModels(payload: unknown): DiscoveredModel[] {
     if (typeof id !== "string" || id.trim().length === 0) return [];
     return [{
       modelId: id.trim(),
+      ...((candidate as { type?: unknown }).type === "image" ? { modelType: "image" as const } : {}),
       ownedBy: typeof ownedBy === "string" && ownedBy.trim().length > 0
         ? ownedBy.trim()
         : null
@@ -373,20 +190,25 @@ function uniqueModels(models: readonly DiscoveredModel[]): DiscoveredModel[] {
 }
 
 export class ModelCredentialStore {
-  public constructor(private readonly configurationPath: string) {}
+  private readonly configurationPath: string | null;
+  private readonly legacyConfigurationPath: string | null;
+  private readonly settings: SettingsJsoncFile | null;
+
+  public constructor(configuration: string | SettingsJsoncFile, legacyConfigurationPath?: string,
+    private readonly chatGpt?: ChatGptPlanAuth) {
+    this.configurationPath = typeof configuration === "string" ? configuration : null;
+    this.legacyConfigurationPath = legacyConfigurationPath ?? null;
+    this.settings = typeof configuration === "string" ? null : configuration;
+  }
 
   public importFromEnvironment(): void {
-    if (existsSync(this.configurationPath)) {
-      return;
-    }
+    this.migrateLegacyConfiguration();
+    if (this.settings?.has("providers") || (this.configurationPath !== null && existsSync(this.configurationPath)) || this.hasConfigurationSection()) return;
     const baseUrl = process.env.AGENT_MODEL_BASE_URL?.trim();
     const apiKey = process.env.AGENT_MODEL_API_KEY?.trim();
     const modelId = process.env.AGENT_MODEL_ID?.trim();
     if (baseUrl === undefined || apiKey === undefined || modelId === undefined) {
       return;
-    }
-    if (!safeStorage.isEncryptionAvailable()) {
-      throw new Error("Operating-system credential encryption is unavailable.");
     }
     const providerId = randomUUID();
     const stored = storedConfigurationV6Schema.parse({
@@ -395,7 +217,7 @@ export class ModelCredentialStore {
       providers: [{
         apiFormat: "openai-chat-completions",
         baseUrl: normalizeBaseUrl(baseUrl),
-        encryptedApiKey: safeStorage.encryptString(apiKey).toString("base64"),
+        encryptedApiKey: this.encodeApiKey(apiKey),
         id: providerId,
         models: [{
           contextWindow: 0,
@@ -412,46 +234,76 @@ export class ModelCredentialStore {
   }
 
   public getConfiguration(providerId?: string, modelId?: string): ModelConfiguration {
-    const stored = this.readStoredConfiguration();
-    if (!safeStorage.isEncryptionAvailable()) {
-      throw new Error("Operating-system credential decryption is unavailable.");
-    }
-    const selectedProvider = this.getProvider(stored, providerId);
-    const selectedModelId = modelId ?? (
-      selectedProvider.id === stored.defaultProviderId
-        ? stored.defaultModelId
-        : selectedProvider.models[0]?.modelId
-    );
-    if (selectedModelId === undefined) {
-      throw new Error("The selected provider has no configured models.");
-    }
-    const selectedModel = selectedProvider.models.find(
-      (model) => model.modelId === selectedModelId
-    );
-    if (selectedModel === undefined) {
-      throw new Error("The selected model is not configured.");
+    const selected = this.getSelectedModel(providerId, modelId);
+    if (selected.provider.authentication === "chatgpt") {
+      if (selected.provider.baseUrl !== "https://api.openai.com/v1" || selected.provider.apiFormat !== "openai-responses") {
+        throw new Error("ChatGPT 套餐供应商配置无效。");
+      }
+      const auth = this.chatGpt;
+      if (auth === undefined) throw new Error("ChatGPT 授权服务不可用。");
+      return { ...this.toContextConfiguration(selected), apiKey: "chatgpt-plan",
+        authentication: { type: "chatgpt-plan", getAccessToken: () => auth.getAccessToken(selected.provider.id) } };
     }
     return {
-      apiKey: safeStorage.decryptString(
-        Buffer.from(selectedProvider.encryptedApiKey, "base64")
-      ),
-      apiFormat: selectedProvider.apiFormat,
-      baseUrl: selectedProvider.baseUrl,
-      ...(selectedModel.contextCompression === undefined
+      ...this.toContextConfiguration(selected),
+      apiKey: this.decodeApiKey(selected.provider.encryptedApiKey),
+      authentication: { type: "api-key" },
+    };
+  }
+
+  public getContextConfiguration(
+    providerId?: string,
+    modelId?: string,
+  ): ModelContextConfiguration {
+    return this.toContextConfiguration(this.getSelectedModel(providerId, modelId));
+  }
+
+  private getSelectedModel(providerId?: string, modelId?: string): SelectedStoredModel {
+    const stored = this.readStoredConfiguration();
+    const provider = this.getProvider(stored, providerId);
+    const selectedModelId = modelId ?? (
+      provider.id === stored.defaultProviderId
+        ? stored.defaultModelId
+        : provider.models[0]?.modelId
+    );
+    if (selectedModelId === undefined || selectedModelId === null) {
+      throw new Error("The selected provider has no configured models.");
+    }
+    const model = provider.models.find((candidate) => candidate.modelId === selectedModelId);
+    if (model === undefined) {
+      throw new Error("The selected model is not configured.");
+    }
+    return { model, modelId: selectedModelId, provider };
+  }
+
+  private toContextConfiguration(selected: SelectedStoredModel): ModelContextConfiguration {
+    const { model, modelId, provider } = selected;
+    return {
+      ...(model.modelType === undefined ? {} : { modelType: model.modelType }),
+      apiFormat: provider.apiFormat,
+      baseUrl: provider.baseUrl,
+      ...(model.contextCompression === undefined
         ? {}
-        : { contextCompression: selectedModel.contextCompression }),
-      contextWindow: selectedModel.contextWindow,
-      modelId: selectedModelId,
-      reasoningOptions: selectedModel.reasoningOptions.filter((option) =>
-        isReasoningOptionSupportedByApiFormat(selectedProvider.apiFormat, option, selectedModel.modelId)
+        : { contextCompression: model.contextCompression }),
+      contextWindow: model.contextWindow,
+      modelId,
+      reasoningOptions: model.reasoningOptions.filter((option) =>
+        isReasoningOptionSupportedByApiFormat(provider.apiFormat, option, model.modelId)
       )
     };
   }
 
   public getPreferredSelection(): ConversationModelSelection | null {
-    if (!existsSync(this.configurationPath)) return null;
+    this.migrateLegacyConfiguration();
+    if (!this.hasConfigurationSection()) return null;
     const stored = this.readStoredConfiguration();
-    return this.normalizeSelection(stored, stored.recentSelection ?? {
+    if (stored.defaultModelId === null || stored.defaultProviderId === null) return null;
+    const configuredDefault = this.settings === null
+      ? null
+      : conversationModelSelectionSchema.safeParse(
+          this.settings.readValue("defaultModelSelection"),
+        ).data ?? null;
+    return this.normalizeSelection(stored, stored.recentSelection ?? configuredDefault ?? {
       modelId: stored.defaultModelId,
       providerId: stored.defaultProviderId,
       reasoning: null,
@@ -487,13 +339,52 @@ export class ModelCredentialStore {
   }
 
   public getApiKey(providerId: string): string | null {
-    if (!existsSync(this.configurationPath)) return null;
-    if (!safeStorage.isEncryptionAvailable()) {
-      throw new Error("Operating-system credential decryption is unavailable.");
-    }
+    this.migrateLegacyConfiguration();
+    if (!this.hasConfigurationSection()) return null;
     const stored = this.readStoredConfiguration();
     const provider = this.getProvider(stored, providerId);
-    return safeStorage.decryptString(Buffer.from(provider.encryptedApiKey, "base64"));
+    return this.decodeApiKey(provider.encryptedApiKey);
+  }
+
+  public listChatGptConnections(): Array<{ providerId: string; label: string; email: string | null; signedIn: boolean; connected: boolean }> {
+    if (this.chatGpt === undefined) throw new Error("ChatGPT 授权服务不可用。");
+    return this.chatGpt.listConnections();
+  }
+
+  public async connectChatGpt(providerId?: string): Promise<{ providerId: string; email: string | null; planEnabled: boolean }> {
+    if (this.chatGpt === undefined) throw new Error("ChatGPT 授权服务不可用。");
+    return this.chatGpt.signIn(providerId);
+  }
+
+  public async disconnectChatGpt(providerId: string): Promise<boolean> {
+    if (this.chatGpt === undefined) throw new Error("ChatGPT 授权服务不可用。");
+    return this.chatGpt.signOut(providerId);
+  }
+
+  public async syncChatGptModels(providerId: string, catalog: ModelCatalog = DEFAULT_MODEL_CATALOG): Promise<ModelRuntimeStatus> {
+    if (this.chatGpt === undefined) throw new Error("ChatGPT 授权服务不可用。");
+    const connection = this.chatGpt.listConnections().find((item) => item.providerId === providerId);
+    if (connection === undefined || !connection.connected) throw new Error("ChatGPT 账号未连接，请先登录。");
+    const status = this.getStatus();
+    const currentModels = status.models.filter((model) => model.providerId === providerId);
+    if (currentModels.some((model) => model.providerAuthentication !== "chatgpt")) {
+      throw new Error("供应商标识冲突，无法同步 ChatGPT 模型。");
+    }
+    const remaining = 100 - status.models.length + currentModels.length;
+    if (remaining <= 0) throw new Error("模型配置已达到上限，请先删除不需要的模型。");
+    const discovered = await this.chatGpt.listModels(providerId);
+    const distinct = [...new Map(discovered.map((model) => [model.modelId, model])).values()].slice(0, remaining);
+    if (distinct.length === 0) throw new Error("此 ChatGPT 账号没有可用模型。");
+    return this.saveConfiguration({
+      apiFormat: "openai-responses", apiKey: "chatgpt-plan", baseUrl: "https://api.openai.com/v1",
+      providerId, providerIcon: "openai", providerName: connection.email === null ? connection.label : `${connection.label} · ${connection.email}`.slice(0, 100),
+      models: distinct.map((model) => {
+        const current = currentModels.find((item) => item.modelId === model.modelId);
+        return { ...model, contextWindow: current?.contextWindow ?? resolveModelContextWindow(catalog, model.modelId),
+          reasoningOptions: current?.reasoningOptions ?? resolveModelReasoningOptions(catalog, "openai-responses", model.modelId),
+          ...(current?.contextCompression === undefined ? {} : { contextCompression: current.contextCompression }) };
+      }),
+    }, "chatgpt");
   }
 
   public async discoverModels(
@@ -524,9 +415,18 @@ export class ModelCredentialStore {
   ): Promise<{ content: string; modelId: string }> {
     try {
       const configuration = this.getConfiguration(providerId, modelId);
-      const result = await new ModelAdapterRegistry().completeTurn({
+      if (isImageGenerationModel(configuration)) {
+        if (configuration.authentication !== undefined && configuration.authentication.type !== "api-key") {
+          throw new Error("当前账号授权暂不支持此生图接口，请选择 API Key 供应商。");
+        }
+        const models = await this.discoverModels({ apiKey: configuration.apiKey, apiFormat: configuration.apiFormat, baseUrl: configuration.baseUrl });
+        if (!models.some(model => model.modelId === modelId)) throw new Error("供应商未列出此生图模型。");
+        return { modelId, content: "已在供应商模型列表中找到此生图模型；未执行付费生成。请在对话中生成图片验证实际生图能力。" };
+      }
+      let receivedReasoning = false;
+      const result = await new ModelGateway(new ModelAdapterRegistry()).completeBackgroundTurn({
+        purpose: "connection_test",
         configuration,
-        maxOutputTokens: 64,
         messages: [{
           attachments: [],
           content: "hi!",
@@ -534,17 +434,21 @@ export class ModelCredentialStore {
           toolCallId: null,
           toolCalls: [],
         }],
+        onReasoningDelta: ({ delta }) => {
+          if (delta.trim().length > 0) receivedReasoning = true;
+        },
         onTextDelta: () => undefined,
-        reasoning: undefined,
         signal: AbortSignal.timeout(20_000),
-        tools: [],
       });
       const content = result.content.trim();
-      if (content.length === 0) {
+      if (content.length === 0 && !receivedReasoning) {
         throw new ModelResponseError("Model did not return a reply.");
       }
       this.setModelConnectionStatus(providerId, modelId, "healthy");
-      return { content: content.slice(0, 2_000), modelId };
+      return {
+        content: content.length === 0 ? "模型已返回有效推理响应。" : content.slice(0, 2_000),
+        modelId,
+      };
     } catch (error) {
       this.setModelConnectionStatus(providerId, modelId, "error");
       throw error;
@@ -579,16 +483,20 @@ export class ModelCredentialStore {
   }
 
   public saveConfiguration(
-    input: SaveModelConfigurationInput
+    input: SaveModelConfigurationInput,
+    authentication?: "chatgpt",
   ): ModelRuntimeStatus {
-    if (!safeStorage.isEncryptionAvailable()) {
-      throw new Error("Operating-system credential encryption is unavailable.");
-    }
     const providerId = input.providerId ?? randomUUID();
-    const existing = existsSync(this.configurationPath)
+    this.migrateLegacyConfiguration();
+    const existing = this.hasConfigurationSection()
       ? this.readStoredConfiguration()
       : null;
     const existingProvider = existing?.providers.find((provider) => provider.id === providerId);
+    const authMode = existingProvider?.authentication ?? authentication;
+    if (authMode === "chatgpt" && (input.apiFormat !== "openai-responses"
+      || normalizeBaseUrl(input.baseUrl) !== "https://api.openai.com/v1" || input.apiKey !== "chatgpt-plan")) {
+      throw new Error("ChatGPT 套餐只能使用官方 Responses API 和登录授权。");
+    }
     const existingStatuses = new Map(existingProvider?.models.map((model) => [
       model.modelId,
       {
@@ -598,9 +506,10 @@ export class ModelCredentialStore {
       },
     ]));
     const provider = storedProviderSchema.parse({
+      ...(authMode === undefined ? {} : { authentication: authMode }),
       apiFormat: input.apiFormat,
       baseUrl: normalizeBaseUrl(input.baseUrl),
-      encryptedApiKey: safeStorage.encryptString(input.apiKey).toString("base64"),
+      encryptedApiKey: this.encodeApiKey(input.apiKey),
       id: providerId,
       ...(input.providerIcon === undefined ? {} : { icon: input.providerIcon }),
       models: input.models.map((model) => ({
@@ -654,6 +563,28 @@ export class ModelCredentialStore {
     return this.getStatus();
   }
 
+  public deleteProvider(providerId: string): ModelRuntimeStatus {
+    this.migrateLegacyConfiguration();
+    if (!this.hasConfigurationSection()) return this.getStatus();
+    const stored = this.readStoredConfiguration();
+    if (stored.providers.find((provider) => provider.id === providerId)?.authentication === "chatgpt"
+      && this.chatGpt?.listConnections().some((connection) => connection.providerId === providerId && connection.connected)) {
+      throw new Error("请先在 ChatGPT 登录授权中断开账号，再删除供应商。");
+    }
+    const providers = stored.providers.filter((provider) => provider.id !== providerId);
+    const defaultProvider = providers.find((provider) => provider.id === stored.defaultProviderId) ?? providers[0];
+    this.writeStoredConfiguration(storedConfigurationV6Schema.parse({
+      ...stored,
+      defaultProviderId: defaultProvider?.id ?? null,
+      defaultModelId: defaultProvider?.id === stored.defaultProviderId && defaultProvider?.models.some((model) => model.modelId === stored.defaultModelId)
+        ? stored.defaultModelId
+        : defaultProvider?.models[0]?.modelId ?? null,
+      providers,
+      recentSelection: stored.recentSelection?.providerId === providerId ? null : stored.recentSelection,
+    }));
+    return this.getStatus();
+  }
+
   public setDefaultModel(input: SetDefaultModelInput): ModelRuntimeStatus {
     const existing = this.readStoredConfiguration();
     const provider = this.getProvider(existing, input.providerId);
@@ -670,7 +601,8 @@ export class ModelCredentialStore {
   }
 
   public getStatus(): ModelRuntimeStatus {
-    if (!existsSync(this.configurationPath)) {
+    this.migrateLegacyConfiguration();
+    if (!this.hasConfigurationSection()) {
       return modelRuntimeStatusSchema.parse({
         baseUrl: null,
         configured: false,
@@ -701,107 +633,31 @@ export class ModelCredentialStore {
   }
 
   private readStoredConfiguration(): StoredConfiguration {
-    if (!existsSync(this.configurationPath)) {
-      throw new Error("No model provider is configured.");
-    }
-    const parsed = readJsonDocument(this.configurationPath);
-    const current = storedConfigurationV6Schema.safeParse(parsed);
-    if (current.success) return current.data;
-
-    const previousV5 = storedConfigurationV5Schema.safeParse(parsed);
-    if (previousV5.success) return {
-      ...previousV5.data,
-      recentSelection: null,
-      version: 6,
-    };
-
-    const previousV4 = storedConfigurationV4Schema.safeParse(parsed);
-    if (previousV4.success) return this.migrateV4Configuration(previousV4.data);
-
-    const previousV3 = storedConfigurationV3Schema.safeParse(parsed);
-    if (previousV3.success) return this.migrateV3Configuration(previousV3.data);
-
-    const previousV2 = storedConfigurationV2Schema.safeParse(parsed);
-    if (previousV2.success) {
-      return this.legacyConfiguration({
-        baseUrl: previousV2.data.baseUrl,
-        encryptedApiKey: previousV2.data.encryptedApiKey,
-        modelId: previousV2.data.defaultModelId,
-        models: previousV2.data.models
+    if (this.settings !== null) {
+      const configuration = settingsModelConfigurationSchema.parse({
+        defaultModelSelection: this.settings.readValue("defaultModelSelection"),
+        providers: this.settings.readValue("providers"),
+        recentSelection: this.settings.readValue("recentSelection") ?? null,
+      });
+      return storedConfigurationV6Schema.parse({
+        defaultModelId: configuration.defaultModelSelection?.modelId ?? null,
+        defaultProviderId: configuration.defaultModelSelection?.providerId ?? null,
+        providers: configuration.providers.map(({ apiKey, ...provider }) => ({
+          ...provider,
+          encryptedApiKey: Buffer.from(apiKey, "utf8").toString("base64"),
+        })),
+        recentSelection: configuration.recentSelection,
+        version: 6,
       });
     }
-
-    const previous = storedConfigurationV1Schema.parse(parsed);
-    return this.legacyConfiguration({
-      baseUrl: previous.baseUrl,
-      encryptedApiKey: previous.encryptedApiKey,
-      modelId: previous.modelId,
-      models: [{
-        contextWindow: 0,
-        displayName: previous.modelId,
-        modelId: previous.modelId
-      }]
-    });
+    if (this.configurationPath === null || !existsSync(this.configurationPath)) {
+      throw new Error("No model provider is configured.");
+    }
+    return this.readLegacyStoredConfiguration(this.configurationPath);
   }
 
-  private legacyConfiguration({
-    baseUrl,
-    encryptedApiKey,
-    modelId,
-    models
-  }: {
-    baseUrl: string;
-    encryptedApiKey: string;
-    modelId: string;
-    models: z.infer<typeof legacyStoredModelSchema>[];
-  }): StoredConfiguration {
-    return {
-      defaultModelId: modelId,
-      defaultProviderId: LEGACY_PROVIDER_ID,
-      providers: [{
-        apiFormat: "openai-chat-completions",
-        baseUrl,
-        encryptedApiKey,
-        id: LEGACY_PROVIDER_ID,
-        models: models.map((model) => migrateLegacyModel(model, "openai-chat-completions")),
-        name: "默认供应商"
-      }],
-      recentSelection: null,
-      version: 6
-    };
-  }
-
-  private migrateV3Configuration(
-    configuration: z.infer<typeof storedConfigurationV3Schema>
-  ): StoredConfiguration {
-    return {
-      defaultModelId: configuration.defaultModelId,
-      defaultProviderId: configuration.defaultProviderId,
-      providers: configuration.providers.map((provider) => ({
-        ...provider,
-        apiFormat: "openai-chat-completions",
-        models: provider.models.map((model) =>
-          migrateLegacyModel(model, "openai-chat-completions")
-        )
-      })),
-      recentSelection: null,
-      version: 6
-    };
-  }
-
-  private migrateV4Configuration(
-    configuration: z.infer<typeof storedConfigurationV4Schema>
-  ): StoredConfiguration {
-    return {
-      defaultModelId: configuration.defaultModelId,
-      defaultProviderId: configuration.defaultProviderId,
-      providers: configuration.providers.map((provider) => ({
-        ...provider,
-        models: provider.models.map((model) => migrateLegacyModel(model, provider.apiFormat))
-      })),
-      recentSelection: null,
-      version: 6
-    };
+  private readLegacyStoredConfiguration(configurationPath: string): StoredConfiguration {
+    return parseLegacyModelConfiguration(readJsonDocument(configurationPath));
   }
 
   private getProvider(
@@ -820,7 +676,7 @@ export class ModelCredentialStore {
   ): ConversationModelSelection | null {
     const provider = stored.providers.find((candidate) => candidate.id === selection.providerId);
     const model = provider?.models.find((candidate) => candidate.modelId === selection.modelId);
-    if (model === undefined) return null;
+    if (model === undefined || isImageGenerationModel(model)) return null;
     if (selection.reasoning === null) return {
       modelId: selection.modelId,
       providerId: selection.providerId,
@@ -838,6 +694,91 @@ export class ModelCredentialStore {
   }
 
   private writeStoredConfiguration(stored: StoredConfiguration): void {
+    if (this.settings !== null) {
+      const previousDefault = conversationModelSelectionSchema.safeParse(
+        this.settings.readValue("defaultModelSelection"),
+      ).data;
+      const defaultReasoning = previousDefault?.providerId === stored.defaultProviderId
+        && previousDefault.modelId === stored.defaultModelId
+        ? previousDefault.reasoning
+        : null;
+      this.settings.writeValues([
+        {
+          key: "providers",
+          value: stored.providers.map(({ encryptedApiKey, ...provider }) => ({
+            ...provider,
+            apiKey: Buffer.from(encryptedApiKey, "base64").toString("utf8"),
+          })),
+        },
+        {
+          key: "defaultModelSelection",
+          value: stored.defaultProviderId === null ? null : {
+            modelId: stored.defaultModelId,
+            providerId: stored.defaultProviderId,
+            reasoning: defaultReasoning,
+          },
+        },
+        { key: "recentSelection", value: stored.recentSelection },
+      ]);
+      return;
+    }
+    if (this.configurationPath === null) throw new Error("Model configuration path is missing.");
     writeJsonDocument(this.configurationPath, stored);
+  }
+
+  private hasConfigurationSection(): boolean {
+    if (this.settings !== null) {
+      const providers = this.settings.readValue("providers");
+      return Array.isArray(providers) && providers.length > 0;
+    }
+    if (this.configurationPath === null || !existsSync(this.configurationPath)) return false;
+    const document = readJsonDocument(this.configurationPath);
+    return !(typeof document === "object" && document !== null && "providers" in document
+      && Array.isArray(document.providers) && document.providers.length === 0);
+  }
+
+  private migrateLegacyConfiguration(): void {
+    if (
+      this.settings === null
+      || this.settings.has("providers")
+      || this.legacyConfigurationPath === null
+      || !existsSync(this.legacyConfigurationPath)
+    ) return;
+    const legacy = this.readLegacyStoredConfiguration(this.legacyConfigurationPath);
+    const migrated = storedConfigurationV6Schema.parse({
+      ...legacy,
+      providers: legacy.providers.map((provider) => {
+        let apiKey = "";
+        try {
+          if (provider.encryptedApiKey.length > 0) apiKey = this.decodeLegacyApiKey(provider.encryptedApiKey);
+        } catch {
+          // Preserve the original ciphertext file; an unavailable old OS key
+          // must not prevent editing the new plaintext JSONC configuration.
+        }
+        return { ...provider, encryptedApiKey: Buffer.from(apiKey, "utf8").toString("base64") };
+      }),
+    });
+    this.writeStoredConfiguration(migrated);
+  }
+
+  private encodeApiKey(apiKey: string): string {
+    if (this.settings !== null) return Buffer.from(apiKey, "utf8").toString("base64");
+    if (!safeStorage.isEncryptionAvailable()) {
+      throw new Error("Operating-system credential encryption is unavailable.");
+    }
+    return safeStorage.encryptString(apiKey).toString("base64");
+  }
+
+  private decodeApiKey(encodedApiKey: string): string {
+    return this.settings === null
+      ? this.decodeLegacyApiKey(encodedApiKey)
+      : Buffer.from(encodedApiKey, "base64").toString("utf8");
+  }
+
+  private decodeLegacyApiKey(encodedApiKey: string): string {
+    if (!safeStorage.isEncryptionAvailable()) {
+      throw new Error("Operating-system credential decryption is unavailable.");
+    }
+    return safeStorage.decryptString(Buffer.from(encodedApiKey, "base64"));
   }
 }

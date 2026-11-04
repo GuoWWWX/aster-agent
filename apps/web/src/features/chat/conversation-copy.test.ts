@@ -40,6 +40,17 @@ function tool(name: string, options: Partial<ConversationToolItem> = {}): Conver
 }
 
 describe("formatConversationRunMarkdown", () => {
+  it("keeps command reads in the original command rather than copying duplicate logs", () => {
+    const result = formatConversationRunMarkdown([tool("read_command_output", { result: "DUPLICATE_READ_LOG" })], message("已完成"));
+    expect(result).not.toContain("DUPLICATE_READ_LOG");
+    expect(result).toContain("已完成");
+  });
+  it("omits legacy command waits from the copied reply", () => {
+    const result = formatConversationRunMarkdown([tool("wait_for_commands", { result: "DUPLICATE_WAIT_LOG" })], message("已完成"));
+    expect(result).not.toContain("DUPLICATE_WAIT_LOG");
+    expect(result).not.toContain("命令等待");
+    expect(result).toContain("已完成");
+  });
   it("keeps a plain assistant response compatible", () => {
     const result = formatConversationRunMarkdown([], message("# 已完成\n\n正文"));
     expect(result).toBe("## 模型回复\n\n# 已完成\n\n正文\n");
@@ -113,5 +124,16 @@ describe("formatConversationRunMarkdown", () => {
     const result = formatConversationRunMarkdown([failed], message("失败"));
     expect(result).toContain("错误：请求失败");
     expect(result).not.toContain("abc-123");
+  });
+
+  it("does not export runtime-only context compaction activity as a model tool", () => {
+    const compaction = tool("compact_context", {
+      result: JSON.stringify({ compressedMessageCount: 4, trigger: "automatic" }),
+    });
+
+    const result = formatConversationRunMarkdown([compaction], message("继续完成任务"));
+
+    expect(result).toBe("## 模型回复\n\n继续完成任务\n");
+    expect(result).not.toContain("compact_context");
   });
 });

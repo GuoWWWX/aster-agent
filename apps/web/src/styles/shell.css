@@ -1,3 +1,4 @@
+/* CSS triggers 2 and 3: Electron drag regions, tab states and shell variables. */
 .app-shell {
   display: flex;
   height: 100dvh;
@@ -12,11 +13,17 @@
   height: 36px;
   min-height: 36px;
   align-items: center;
-  border-bottom: 1px solid rgba(226, 232, 240, 0.82);
-  background: var(--app-titlebar);
+  background: transparent;
   color: var(--app-muted-foreground);
-  backdrop-filter: blur(18px);
   user-select: none;
+}
+
+/* CSS triggers #2/#3: the shared canvas carries project color beneath transparent shell chrome. */
+.app-shell[data-project-accent] {
+  background-image: radial-gradient(ellipse 620px 160px at 0 0,
+    color-mix(in srgb, var(--app-project-accent-start) 38%, transparent),
+    color-mix(in srgb, var(--app-project-accent-end) 24%, transparent) 42%,
+    transparent 100%);
 }
 
 .app-titlebar__brand {
@@ -25,23 +32,180 @@
   height: 100%;
   min-width: 48px;
   place-items: center;
-  color: #64748b;
+  color: var(--app-muted-foreground);
 }
 
 .app-titlebar__brand-icon {
-  color: #64748b;
+  color: var(--app-muted-foreground);
 }
 
 .app-titlebar__context {
   min-width: 0;
   flex: 1;
   overflow: hidden;
-  color: #94a3b8;
+  color: var(--app-subtle-foreground);
   font-size: var(--app-font-size-body);
   line-height: 36px;
   text-align: center;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* CSS triggers #2 and #3: Electron drag regions, scrollbar pseudo-elements,
+   and the runtime navigator-width variable need native CSS. */
+.app-titlebar__conversation-leading {
+  height: 100%;
+  flex: 0 0 var(--app-titlebar-conversation-leading-width, 26px);
+}
+
+.app-titlebar__conversation-surface {
+  display: flex;
+  min-width: 0;
+  height: 100%;
+  flex: 1;
+}
+
+.app-titlebar__conversation-tabs {
+  display: flex;
+  width: max-content;
+  max-width: 100%;
+  min-width: 0;
+  height: 100%;
+  flex: 0 1 auto;
+  align-items: center;
+  gap: 5px;
+  padding: 0 3px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-inline: contain;
+  scrollbar-width: none;
+  -webkit-app-region: no-drag;
+}
+
+.app-titlebar__conversation-tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.app-titlebar__conversation-tab {
+  display: flex;
+  height: calc(100% - 6px);
+  width: 220px;
+  min-width: 220px;
+  max-width: 220px;
+  flex: 0 0 220px;
+  align-items: center;
+  border: 1px solid transparent;
+  border-radius: var(--app-radius);
+  background: transparent;
+  color: var(--app-muted-foreground);
+}
+
+.app-titlebar__conversation-tab:hover {
+  background: var(--app-navigation-hover);
+  color: var(--app-foreground);
+}
+
+.app-titlebar__conversation-tab[data-active="true"] {
+  border-color: var(--app-chrome-selection-border);
+  background: var(--app-chrome-selection);
+  color: var(--app-selection-foreground);
+  box-shadow: var(--app-selection-shadow);
+}
+
+.app-titlebar__conversation-tab-select {
+  display: flex;
+  min-width: 0;
+  height: 100%;
+  flex: 1;
+  align-items: center;
+  gap: 6px;
+  padding: 0 4px 0 10px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: default;
+}
+
+.app-titlebar__conversation-tab-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.app-titlebar__conversation-tab-close {
+  display: grid;
+  width: 24px;
+  height: 24px;
+  margin-right: 3px;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: inherit;
+  cursor: default;
+  opacity: 0;
+}
+
+.app-titlebar__conversation-tab:hover .app-titlebar__conversation-tab-close,
+.app-titlebar__conversation-tab[data-active="true"] .app-titlebar__conversation-tab-close,
+.app-titlebar__conversation-tab-close:focus-visible {
+  opacity: 1;
+}
+
+.app-titlebar__conversation-tab-close:hover {
+  background: var(--app-selection);
+}
+
+.app-titlebar__conversation-context-menu-backdrop {
+  position: fixed;
+  z-index: 80;
+  inset: 0;
+  -webkit-app-region: no-drag;
+}
+
+.app-titlebar__conversation-context-menu {
+  position: fixed;
+  z-index: 81;
+  display: grid;
+  width: 168px;
+  overflow: hidden;
+  padding: 4px;
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius-large);
+  background: var(--app-panel);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.24);
+  -webkit-app-region: no-drag;
+}
+
+.app-titlebar__conversation-context-menu button {
+  display: flex;
+  height: 34px;
+  align-items: center;
+  gap: 9px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: var(--app-radius);
+  outline: none;
+  background: transparent;
+  color: var(--app-foreground);
+  font: inherit;
+  font-size: var(--app-font-size-control);
+  text-align: left;
+}
+
+.app-titlebar__conversation-context-menu button:hover:not(:disabled) {
+  background: var(--app-hover);
+}
+
+.app-titlebar__conversation-context-menu button:focus-visible:where(:root:not([data-input-modality="pointer"]) *) {
+  box-shadow: inset 0 0 0 2px var(--app-focus-ring);
+}
+
+.app-titlebar__conversation-context-menu button:disabled {
+  color: var(--app-muted-foreground);
+  opacity: 0.55;
 }
 
 .app-titlebar__panel-controls,
@@ -58,13 +222,14 @@
 
 .app-titlebar__window-controls {
   margin-left: 4px;
-  border-left: 1px solid rgba(226, 232, 240, 0.82);
+  border-left: 1px solid var(--app-border);
 }
 
 [data-app-drag-region="true"] {
   -webkit-app-region: drag;
 }
 
+[data-app-drag-region="false"],
 [data-slot="icon-button"] {
   -webkit-app-region: no-drag;
 }
@@ -75,27 +240,37 @@
   min-width: 0;
   flex: 1;
   gap: 5px;
-  padding: 5px;
+  padding: 2px 0 0;
 }
 
-.activity-bar,
 .workbench-panel,
 .workbench-main {
   min-width: 0;
   overflow: hidden;
   border: 1px solid var(--app-border);
-  border-radius: var(--app-radius);
+  border-radius: var(--app-radius) var(--app-radius) 0 0;
   background: var(--app-panel);
   box-shadow: none;
 }
 
 .activity-bar {
+  position: relative;
   display: flex;
-  width: 48px;
+  width: 44px;
+  flex-shrink: 0;
+  margin-top: -2px;
+  margin-bottom: 0;
+  margin-right: -5px;
+  overflow: visible;
   flex-direction: column;
   align-items: center;
-  padding: 8px 4px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  padding: 8px 2px;
 }
+
+
 
 .activity-bar__navigation,
 .activity-bar__footer {
@@ -106,6 +281,7 @@
 }
 
 .activity-bar__spacer {
+  width: 100%;
   min-height: 0;
   flex: 1;
 }
@@ -113,7 +289,7 @@
 .activity-bar__footer {
   width: 100%;
   padding-top: 8px;
-  border-top: 1px solid rgba(226, 232, 240, 0.8);
+  border-top: 1px solid var(--app-border);
 }
 
 .workbench-main {
@@ -124,7 +300,9 @@
   flex-direction: column;
 }
 
-.workbench-grid[data-active-activity="settings"] > .workbench-main {
+.workbench-grid[data-active-activity="settings"] > .workbench-main,
+.workbench-grid[data-active-activity="schedules"] > .workbench-main,
+.workbench-grid[data-active-activity="team"] > .workbench-main {
   overflow: visible;
   border: 0;
   border-radius: 0;
@@ -193,12 +371,6 @@
 }
 
 @media (max-width: 900px) {
-  .workbench-grid[data-file-open][data-project-navigator-open] {
-    grid-template-columns: 48px minmax(0, 1fr);
-  }
-
-  .workbench-grid > .workbench-resizable-divider--left,
-  .workbench-grid > .workbench-sidebar--left,
   .workbench-grid > .workbench-sidebar--right {
     display: none;
   }

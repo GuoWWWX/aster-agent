@@ -6,9 +6,20 @@ type ScrollPosition = {
   scrollTop: number;
 };
 
+type MutableScrollPosition = {
+  scrollHeight: number;
+  scrollLeft: number;
+  scrollTop: number;
+};
+
 export function isConversationScrolledToBottom(
   position: ScrollPosition,
   threshold = DEFAULT_BOTTOM_THRESHOLD_PX,
 ): boolean {
   return position.scrollHeight - position.clientHeight - position.scrollTop <= threshold;
+}
+
+export function scrollConversationToBottom(position: MutableScrollPosition): void {
+  position.scrollLeft = 0;
+  position.scrollTop = position.scrollHeight;
 }

@@ -1,3 +1,4 @@
+/* CSS trigger #2: feature scroll containers and interaction selectors. */
 /* Runtime-selected provider classes and the Radix picker need CSS selectors. */
 .provider-logo {
   display: inline-grid;
@@ -31,9 +32,15 @@
   font-size: 10px;
 }
 
-.provider-logo > svg {
+.provider-logo > svg,
+.provider-logo > img {
   width: 72%;
   height: 72%;
+}
+
+.provider-logo > img {
+  display: block;
+  object-fit: contain;
 }
 
 .provider-logo--auto {
@@ -42,44 +49,54 @@
   color: var(--app-accent);
 }
 
+[data-theme="dark"] .provider-logo--auto {
+  border-color: var(--app-border);
+  background: color-mix(
+    in srgb,
+    var(--app-muted-foreground) 8%,
+    var(--app-hover)
+  );
+  color: var(--app-muted-foreground);
+}
+
 .provider-logo--openai {
-  background: #111827;
-  color: #f8fafc;
+  background: #000000;
+  color: #ffffff;
 }
 
 .provider-logo--anthropic {
-  background: #f3e8d4;
-  color: #7c4a2d;
+  background: #faf9f5;
+  color: #141413;
 }
 
 .provider-logo--google {
-  background: #e8f0fe;
-  color: #2563eb;
+  background: #ffffff;
+  color: #4285f4;
 }
 
 .provider-logo--xai {
-  background: #111827;
-  color: #f8fafc;
+  background: #000000;
+  color: #ffffff;
 }
 
 .provider-logo--deepseek {
-  background: #dbeafe;
-  color: #1d4ed8;
+  background: #ffffff;
+  color: #4d6bfe;
 }
 
 .provider-logo--qwen {
-  background: #fef3c7;
-  color: #b45309;
+  background: #ffffff;
+  color: #615ced;
 }
 
 .provider-logo--moonshot {
-  background: #ede9fe;
-  color: #6d28d9;
+  background: #121212;
+  color: #ffffff;
 }
 
 .provider-logo--minimax {
-  background: #fef3c7;
-  color: #b45309;
+  background: #ffffff;
+  color: #e62176;
 }
 
 .provider-logo--baidu,
@@ -110,8 +127,8 @@
 }
 
 .provider-logo--zhipu {
-  background: #dbeafe;
-  color: #1e40af;
+  background: #ffffff;
+  color: #1f63ec;
 }
 
 .provider-logo--siliconflow {
@@ -120,8 +137,8 @@
 }
 
 .provider-logo--openrouter {
-  background: #ffedd5;
-  color: #c2410c;
+  background: #ffffff;
+  color: #000000;
 }
 
 .provider-logo--cloudflare {
@@ -130,8 +147,8 @@
 }
 
 .provider-logo--nvidia {
-  background: #dcfce7;
-  color: #15803d;
+  background: #ffffff;
+  color: #76b900;
 }
 
 .provider-logo--aihubmix {
@@ -143,72 +160,6 @@
 .provider-logo--one-api {
   background: #e0e7ff;
   color: #4338ca;
-}
-
-[data-theme="dark"] .provider-logo--openai,
-[data-theme="dark"] .provider-logo--xai {
-  background: #f8fafc;
-  color: #111827;
-}
-
-[data-theme="dark"] .provider-logo--anthropic {
-  background: #5a3d2b;
-  color: #f7e7d0;
-}
-
-[data-theme="dark"] .provider-logo--google {
-  background: #1e3a8a;
-  color: #bfdbfe;
-}
-
-[data-theme="dark"] .provider-logo--deepseek,
-[data-theme="dark"] .provider-logo--zhipu {
-  background: #1e3a8a;
-  color: #bfdbfe;
-}
-
-[data-theme="dark"] .provider-logo--qwen {
-  background: #78350f;
-  color: #fde68a;
-}
-
-[data-theme="dark"] .provider-logo--moonshot {
-  background: #4c1d95;
-  color: #ddd6fe;
-}
-
-[data-theme="dark"] .provider-logo--minimax,
-[data-theme="dark"] .provider-logo--huggingface {
-  background: #78350f;
-  color: #fde68a;
-}
-
-[data-theme="dark"] .provider-logo--baidu,
-[data-theme="dark"] .provider-logo--meta {
-  background: #1e3a8a;
-  color: #bfdbfe;
-}
-
-[data-theme="dark"] .provider-logo--mistral,
-[data-theme="dark"] .provider-logo--cloudflare {
-  background: #7c2d12;
-  color: #fed7aa;
-}
-
-[data-theme="dark"] .provider-logo--ollama {
-  background: #e5e7eb;
-  color: #111827;
-}
-
-[data-theme="dark"] .provider-logo--modelscope,
-[data-theme="dark"] .provider-logo--replicate {
-  background: #312e81;
-  color: #c7d2fe;
-}
-
-[data-theme="dark"] .provider-logo--nvidia {
-  background: #14532d;
-  color: #bbf7d0;
 }
 
 .provider-icon-picker__trigger {
@@ -230,8 +181,8 @@
 
 .provider-icon-picker__trigger:hover,
 .provider-icon-picker__trigger[aria-expanded="true"] {
-  border-color: color-mix(in srgb, var(--app-accent) 48%, var(--app-border));
-  background: color-mix(in srgb, var(--app-accent) 6%, var(--app-panel));
+  border-color: var(--app-border);
+  background: var(--app-hover);
 }
 
 .provider-icon-picker__trigger:focus-visible,
@@ -240,14 +191,14 @@
   outline-offset: 1px;
 }
 
-.provider-icon-picker__trigger > span {
+.provider-icon-picker__trigger > span:not(.provider-logo) {
   min-width: 0;
   flex: 1 1 auto;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: var(--app-font-size-control);
-  font-weight: 650;
+  font-weight: 500;
 }
 
 .provider-icon-picker__trigger > svg {
@@ -271,6 +222,7 @@
   gap: 3px;
   max-height: min(312px, var(--radix-popover-content-available-height));
   overflow-y: auto;
+  scrollbar-gutter: stable;
   padding: 1px;
 }
 
@@ -324,23 +276,19 @@
   }
 }
 
-[data-theme="dark"] .provider-logo--siliconflow {
-  background: #14532d;
-  color: #bbf7d0;
+[data-theme="dark"] .provider-icon-picker__option[data-selected="true"] {
+  border-color: color-mix(
+    in srgb,
+    var(--app-muted-foreground) 28%,
+    var(--app-border)
+  );
+  background: color-mix(
+    in srgb,
+    var(--app-muted-foreground) 10%,
+    var(--app-panel)
+  );
 }
 
-[data-theme="dark"] .provider-logo--openrouter {
-  background: #7c2d12;
-  color: #fed7aa;
-}
-
-[data-theme="dark"] .provider-logo--aihubmix {
-  background: #831843;
-  color: #fbcfe8;
-}
-
-[data-theme="dark"] .provider-logo--new-api,
-[data-theme="dark"] .provider-logo--one-api {
-  background: #312e81;
-  color: #c7d2fe;
+[data-theme="dark"] .provider-icon-picker__option > svg {
+  color: var(--app-muted-foreground);
 }

@@ -36,8 +36,12 @@ const MAX_JAVA_DECLARATION_BYTES = 128 * 1024;
 const MAX_PREVIEW_IMAGE_BYTES = 8 * 1024 * 1024;
 const REMOTE_IMAGE_SOURCE_PATTERN = /^(?:https?:|data:|blob:)/i;
 const PREVIEW_IMAGE_MIME_TYPES: Readonly<Record<string, string>> = {
+  apng: "image/apng",
+  avif: "image/avif",
   bmp: "image/bmp",
   gif: "image/gif",
+  ico: "image/x-icon",
+  jfif: "image/jpeg",
   jpeg: "image/jpeg",
   jpg: "image/jpeg",
   png: "image/png",
@@ -216,8 +220,12 @@ async function readJavaDeclarationKind(
 export class ProjectRegistry {
   private readonly projectsById = new Map<string, RegisteredProject>();
   private readonly conversationWorkspacesById = new Map<string, RegisteredProject>();
+  private readonly defaultConversationWorkspaceIds = new Set<string>();
 
-  public constructor(private readonly store?: ProjectStore) {
+  public constructor(
+    private readonly store?: ProjectStore,
+    private readonly defaultWorkspacesRootPath?: string,
+  ) {
     for (const project of store?.listProjects() ?? []) {
       this.projectsById.set(project.id, {
         ...project,
@@ -247,7 +255,8 @@ export class ProjectRegistry {
       id: randomUUID(),
       isPinned: false,
       name: path.basename(canonicalRoot) || canonicalRoot,
-      rootPath: canonicalRoot
+      rootPath: canonicalRoot,
+      showTeamsInNavigator: false
     };
 
     this.projectsById.set(project.id, project);
@@ -272,11 +281,46 @@ export class ProjectRegistry {
       rootPath: canonicalRoot
     };
     this.conversationWorkspacesById.set(conversationId, workspace);
+    this.defaultConversationWorkspaceIds.delete(conversationId);
     return this.toProjectSummary(workspace);
   }
 
   public unmountConversationWorkspace(conversationId: string): void {
     this.conversationWorkspacesById.delete(conversationId);
+    this.defaultConversationWorkspaceIds.delete(conversationId);
+  }
+
+  public hasDefaultConversationWorkspaceStorage(): boolean {
+    return this.defaultWorkspacesRootPath !== undefined;
+  }
+
+  public registerDefaultConversationWorkspace(conversationId: string): ProjectSummary {
+    const existing = this.conversationWorkspacesById.get(conversationId);
+    if (existing !== undefined) return this.toProjectSummary(existing);
+    if (this.defaultWorkspacesRootPath === undefined) {
+      throw new Error("Default conversation workspace storage is not configured.");
+    }
+    const rootPath = path.join(path.resolve(this.defaultWorkspacesRootPath), conversationId);
+    const workspace: RegisteredProject = {
+      canonicalRoot: rootPath,
+      id: conversationId,
+      name: "对话工作区",
+      rootPath,
+    };
+    this.conversationWorkspacesById.set(conversationId, workspace);
+    this.defaultConversationWorkspaceIds.add(conversationId);
+    return this.toProjectSummary(workspace);
+  }
+
+  public async ensureWorkspaceRoot(workspaceId: string): Promise<ProjectSummary> {
+    const workspace = this.getAuthorizedWorkspace(workspaceId);
+    if (workspace === undefined) {
+      throw new Error("Project is not registered for this application session.");
+    }
+    if (this.defaultConversationWorkspaceIds.has(workspaceId)) {
+      await mkdir(workspace.canonicalRoot, { recursive: true });
+    }
+    return this.toProjectSummary(workspace);
   }
 
   public inheritConversationWorkspace(
@@ -285,6 +329,10 @@ export class ProjectRegistry {
   ): void {
     const source = this.conversationWorkspacesById.get(sourceConversationId);
     if (source === undefined) return;
+    if (this.defaultConversationWorkspaceIds.has(sourceConversationId)) {
+      this.registerDefaultConversationWorkspace(targetConversationId);
+      return;
+    }
     this.conversationWorkspacesById.set(targetConversationId, {
       ...source,
       id: targetConversationId
@@ -322,6 +370,20 @@ export class ProjectRegistry {
       throw new Error("Project is not registered for this application session.");
     }
     project.isPinned = pinned;
+    const summary = this.toProjectSummary(project);
+    this.store?.saveProject(summary);
+    return summary;
+  }
+
+  public setProjectTeamsInNavigator(
+    projectId: string,
+    showTeamsInNavigator: boolean
+  ): ProjectSummary {
+    const project = this.projectsById.get(projectId);
+    if (project === undefined) {
+      throw new Error("Project is not registered for this application session.");
+    }
+    project.showTeamsInNavigator = showTeamsInNavigator;
     const summary = this.toProjectSummary(project);
     this.store?.saveProject(summary);
     return summary;
@@ -371,6 +433,7 @@ export class ProjectRegistry {
     if (project === undefined) {
       throw new Error("Project is not registered for this application session.");
     }
+    await this.ensureWorkspaceRoot(projectId);
     return resolveExistingPathWithinRoot(
       project.canonicalRoot,
       validatedPath,
@@ -394,6 +457,7 @@ export class ProjectRegistry {
     if (project === undefined) {
       throw new Error("Project is not registered for this application session.");
     }
+    await this.ensureWorkspaceRoot(projectId);
     return resolveWritablePathWithinRoot(
       project.canonicalRoot,
       validatedPath,
@@ -414,6 +478,7 @@ export class ProjectRegistry {
     if (project === undefined) {
       throw new Error("Project is not registered for this application session.");
     }
+    await this.ensureWorkspaceRoot(validatedInput.projectId);
 
     const directoryPath = this.resolveDirectoryPath(project, validatedInput.directoryPath);
     const canonicalDirectoryPath = path.resolve(await realpath(directoryPath));
@@ -537,6 +602,7 @@ export class ProjectRegistry {
     if (project === undefined) {
       throw new Error("Project is not registered for this application session.");
     }
+    await this.ensureWorkspaceRoot(validatedInput.projectId);
 
     const rawReference = validatedInput.path.split(/[?#]/)[0] ?? validatedInput.path;
     const resolvedReference = rawReference.startsWith("/")
@@ -597,7 +663,8 @@ export class ProjectRegistry {
       id: project.id,
       isPinned: project.isPinned ?? false,
       name: project.name,
-      rootPath: project.rootPath
+      rootPath: project.rootPath,
+      ...(project.showTeamsInNavigator === true ? { showTeamsInNavigator: true } : {})
     };
   }
 }

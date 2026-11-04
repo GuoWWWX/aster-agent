@@ -39,14 +39,19 @@ export type ProjectTreeController = {
     name: string,
   ): Promise<ProjectEntry | null>;
   refresh(): void;
+  ensureRootLoaded: () => void;
   reloadDirectory: (directoryPath: string) => void;
   locatePath(path: string, expandTarget?: boolean): void;
   removeProject(projectId: string): Promise<boolean>;
   reorderProjects(projectIds: string[]): Promise<boolean>;
   renameProject(projectId: string, name: string): Promise<boolean>;
   setProjectPinned(projectId: string, pinned: boolean): Promise<boolean>;
+  setProjectTeamsInNavigator(
+    projectId: string,
+    showTeamsInNavigator: boolean,
+  ): Promise<boolean>;
   selectPath(path: string): void;
-  selectProject(projectId: string): void;
+  selectProject: (projectId: string | null) => void;
   setQuery(query: string): void;
   toggleDirectory(directoryPath: string): void;
 };
@@ -189,7 +194,16 @@ export function useProjectTree(
     setLocatedPath(null);
     setQuery("");
     setSelectedPath(null);
-    void loadDirectory(activeProjectId, ROOT_DIRECTORY_PATH);
+  }, [activeProjectId, loadDirectory]);
+
+  // One demand-load per selected project; explicit refresh still bypasses this guard.
+  const ensureRootLoaded = useMemo(() => {
+    let started = false;
+    return (): void => {
+      if (activeProjectId === null || started) return;
+      started = true;
+      void loadDirectory(activeProjectId, ROOT_DIRECTORY_PATH);
+    };
   }, [activeProjectId, loadDirectory]);
 
   const addProject = useCallback(async (): Promise<ProjectSummary | null> => {
@@ -270,6 +284,26 @@ export function useProjectTree(
       return true;
     } catch {
       setOperationError("无法修改项目置顶状态");
+      return false;
+    }
+  }, [agentClient]);
+
+  const setProjectTeamsInNavigator = useCallback(async (
+    projectId: string,
+    showTeamsInNavigator: boolean,
+  ): Promise<boolean> => {
+    setOperationError(null);
+    try {
+      const project = await agentClient.setProjectTeamsInNavigator({
+        projectId,
+        showTeamsInNavigator,
+      });
+      setProjects((current) =>
+        current.map((candidate) => candidate.id === project.id ? project : candidate),
+      );
+      return true;
+    } catch {
+      setOperationError("无法修改项目团队显示设置");
       return false;
     }
   }, [agentClient]);
@@ -486,6 +520,7 @@ export function useProjectTree(
 
   return {
     activeProject,
+    ensureRootLoaded,
     addProject,
     allDirectoriesCollapsed: expandedDirectories.size === 0,
     canAddProjects,
@@ -514,6 +549,7 @@ export function useProjectTree(
     selectProject: setActiveProjectId,
     selectedPath,
     setProjectPinned,
+    setProjectTeamsInNavigator,
     setQuery,
     toggleDirectory,
   };

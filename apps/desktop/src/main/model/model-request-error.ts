@@ -5,7 +5,8 @@ const MAX_ERROR_DETAIL_LENGTH = 600;
 export class ModelRequestError extends Error {
   public constructor(
     public readonly status: number,
-    message: string
+    message: string,
+    public readonly retryable?: boolean,
   ) {
     super(message);
     this.name = "ModelRequestError";

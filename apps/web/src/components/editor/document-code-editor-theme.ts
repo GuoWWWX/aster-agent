@@ -8,7 +8,7 @@ const sharedTheme = EditorView.theme({
     height: "100%",
     backgroundColor: "transparent",
     color: "var(--app-foreground)",
-    fontSize: "11px",
+    fontSize: "var(--app-code-font-size)",
   },
   "&.cm-focused": { outline: "none" },
   ".cm-scroller": {
@@ -27,12 +27,18 @@ const sharedTheme = EditorView.theme({
     backgroundColor: "var(--app-panel-subtle)",
     color: "var(--app-muted-foreground)",
   },
-  ".cm-gutterElement": { padding: "0 7px 0 6px" },
+  ".cm-lineNumbers .cm-gutterElement": {
+    minWidth: "0",
+    padding: "0 3px 0 5px",
+    textAlign: "left",
+  },
   ".cm-foldGutter .cm-gutterElement": {
+    padding: "0 2px",
     cursor: "pointer",
     color: "var(--app-muted-foreground)",
   },
   ".document-code-editor__fold-marker": {
+    opacity: "0",
     position: "relative",
     display: "block",
     width: "12px",
@@ -40,6 +46,7 @@ const sharedTheme = EditorView.theme({
     margin: "0 auto",
     transformOrigin: "center",
   },
+  ".cm-gutters:hover .document-code-editor__fold-marker": { opacity: "1" },
   ".document-code-editor__fold-marker::before, .document-code-editor__fold-marker::after": {
     position: "absolute",
     top: "9px",
@@ -62,6 +69,15 @@ const sharedTheme = EditorView.theme({
   '.document-code-editor__fold-marker[data-open="false"]': {
     transform: "rotate(-90deg)",
   },
+  ".cm-foldPlaceholder": {
+    backgroundColor: "transparent",
+    border: "none",
+    borderRadius: "0",
+    padding: "0 2px",
+    color: "var(--app-muted-foreground)",
+    cursor: "pointer",
+  },
+  ".cm-foldPlaceholder:hover": { color: "var(--app-foreground)" },
   ".cm-activeLine, .cm-activeLineGutter": {
     backgroundColor: "color-mix(in srgb, var(--app-accent) 8%, transparent)",
   },
@@ -81,8 +97,12 @@ const lightTheme = EditorView.theme({
 }, { dark: false });
 
 const darkTheme = EditorView.theme({
+  "&.cm-editor .cm-gutters": {
+    backgroundColor: "var(--app-panel)",
+    color: "var(--app-subtle-foreground)",
+  },
   "&.cm-focused .cm-selectionBackground, .cm-selectionBackground, .cm-content ::selection": {
-    backgroundColor: "rgba(96, 165, 250, 0.26)",
+    backgroundColor: "var(--app-text-selection)",
   },
 }, { dark: true });
 
@@ -118,10 +138,14 @@ const darkHighlight = HighlightStyle.define([
   { tag: [tags.link, tags.url], color: "#93c5fd", textDecoration: "underline" },
 ], { themeType: "dark" });
 
+export function documentCodeHighlighting(isDark: boolean): Extension {
+  return syntaxHighlighting(isDark ? darkHighlight : lightHighlight);
+}
+
 export function documentCodeEditorTheme(isDark: boolean): Extension {
   return [
     sharedTheme,
     isDark ? darkTheme : lightTheme,
-    syntaxHighlighting(isDark ? darkHighlight : lightHighlight),
+    documentCodeHighlighting(isDark),
   ];
 }

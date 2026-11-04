@@ -1,125 +1,75 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   appendFileSync,
   closeSync,
   existsSync,
   fstatSync,
+  ftruncateSync,
   mkdirSync,
   openSync,
   readdirSync,
-  readFileSync,
   readSync,
   renameSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
+import { rm, rmdir } from "node:fs/promises";
 import path from "node:path";
+import { setImmediate } from "node:timers/promises";
 
 import { z } from "zod";
 
-import type { ModelProviderState, ModelToolCall } from "../model/model-contracts.js";
+import type { ModelProviderState } from "../model/model-contracts.js";
 
-const threadLogEventTypeSchema = z.enum([
- "agent_message",
-  "agent_message_read",
- "assistant_message",
-  "conversation_created",
-  "context_checkpoint",
-  "legacy_snapshot_imported",
-  "pending_message_cancelled",
-  "pending_messages_updated",
-  "run_queued",
-  "run_created",
-  "run_replaced",
-  "run_terminal",
- "run_started",
- "run_finished",
- "run_superseded",
-  "subagent_task_completed",
- "subagent_task_created",
-  "task_list_updated",
-  "tool_approval_decided",
-  "tool_approval_requested",
-  "tool_call_requested",
-  "tool_execution_prepared",
-  "tool_result",
-  "user_message",
-  "user_message_replaced",
-]);
+const THREAD_LOG_READ_CHUNK_BYTES = 256 * 1_024;
+const THREAD_LOG_CONTEXT_CACHE_LIMIT = 4;
+const THREAD_LOG_CONTEXT_CACHE_BYTES = 16 * 1_024 * 1_024;
+const THREAD_LOG_METADATA_CACHE_LIMIT = 64;
 
-const threadLogPayloadSchema = z.record(z.string(), z.unknown());
+import {
+  threadLogHeaderSchema, threadLogEventSchema,
+  type ThreadLogEvent, type ThreadLogEventInput, type ThreadLogRead,
+  type ThreadLogSourceSignature, type ThreadLogRecordLocation, type ThreadLogScanCursor,
+  type ThreadLogContextMessage, type ThreadLogContext,
+} from "./thread-log-contracts.js";
+import { applyContextEvent, contextMessageForEvent, readQueuedAgentContext, readLegacyContextMessages } from "./thread-log-context-projection.js";
 
-export const threadLogHeaderSchema = z.object({
-  conversationId: z.string().uuid(),
-  createdAt: z.string().datetime(),
-  type: z.literal("thread_header"),
-  version: z.literal(1),
-}).strict();
+export {
+  threadLogHeaderSchema, threadLogEventSchema,
+  type ThreadLogEvent, type ThreadLogEventInput, type ThreadLogRead,
+  type ThreadLogSourceSignature, type ThreadLogRecordLocation, type ThreadLogScanCursor,
+  type ThreadLogContextMessage, type ThreadLogContextCheckpoint, type ThreadLogContext,
+} from "./thread-log-contracts.js";
 
-export const threadLogEventSchema = z.object({
-  conversationId: z.string().uuid(),
-  createdAt: z.string().datetime(),
-  eventId: z.string().uuid(),
-  payload: threadLogPayloadSchema,
-  sequence: z.number().int().positive(),
-  type: threadLogEventTypeSchema,
-  version: z.literal(1),
-}).strict();
 
-export type ThreadLogEvent = z.infer<typeof threadLogEventSchema>;
-export type ThreadLogEventInput = {
-  payload: Record<string, unknown>;
-  type: z.infer<typeof threadLogEventTypeSchema>;
-};
-export type ThreadLogRead = {
-  events: ThreadLogEvent[];
-  header: z.infer<typeof threadLogHeaderSchema>;
-};
-
-/** A model-visible message reconstructed from the canonical ThreadLog. */
-export type ThreadLogContextMessage = {
-  attachmentIds: string[];
-  content: string;
-  providerState?: ModelProviderState;
-  role: "assistant" | "tool" | "user";
-  runId: string | null;
-  sequence: number;
-  toolCallId: string | null;
-  toolCalls: ModelToolCall[];
-};
-
-export type ThreadLogContextCheckpoint = {
-  coveredThroughSequence: number;
-  createdAt: string;
-  summary: string;
-  updatedAt: string;
-};
-
-export type ThreadLogContext = {
-  checkpoint: ThreadLogContextCheckpoint | null;
-  messages: ThreadLogContextMessage[];
-};
+import { applyContextIndexEvent, createContextIndex, type ThreadLogContextIndex as ContextIndex, type ThreadLogSkillSnapshot } from "./thread-log-context-index.js";
+export { skillSnapshotFromResult, type ThreadLogSkillSnapshot } from "./thread-log-context-index.js";
 
 /**
- * A per-conversation append-only JSONL file. During the migration SQLite still
- * owns normal business writes, while ThreadLog owns model-context replay and
- * supplies recovery data for a missing SQLite projection.
+ * The append-only durable source for one Conversation. SQLite TEMP tables may
+ * index this file while the app is running, but db.sqlite does not own or
+ * persist Conversation state after the one-time legacy import.
  */
 export class ThreadLog {
+  private readonly observedSources = new Map<string, { signature: string; generation: number }>();
   private readonly lastSequenceByConversation = new Map<string, number>();
 
-  /**
-   * Context compilation is much more frequent than durable-log reads. Keep
-   * the parsed append-only log in memory for this process; `read()` remains
-   * a fresh disk read for repair and diagnostics.
-   */
-  private readonly contextReadCache = new Map<string, ThreadLogRead>();
+  private readonly uniqueEventCache = new Map<string, {
+    cursor: ThreadLogScanCursor | null; values: Set<string>;
+  }>();
 
   private readonly contextSnapshotCache = new Map<string, ThreadLogContext>();
+  private readonly contextSnapshotBytes = new WeakMap<ThreadLogContext, number>();
+  private readonly contextIndexes = new Map<string, ContextIndex>();
 
-  public constructor(private readonly conversationsRootPath: string) {}
+  public constructor(private readonly conversationsRootPath: string, private readonly options: { readOnly?: boolean } = {}) {
+    if (!options.readOnly) this.migrateLegacyLayout();
+  }
 
   public append(conversationId: string, input: ThreadLogEventInput): ThreadLogEvent {
+    if (this.options.readOnly) throw new Error("Read-only ThreadLog cannot append events.");
     const parsedConversationId = z.string().uuid().parse(conversationId);
+    this.observeSource(parsedConversationId);
     const lastSequence = this.getLastSequence(parsedConversationId);
     const event = threadLogEventSchema.parse({
       conversationId: parsedConversationId,
@@ -133,9 +83,11 @@ export class ThreadLog {
     const logPath = this.getPath(parsedConversationId);
     const prefix = this.endsWithNewline(logPath) ? "" : "\n";
     appendFileSync(logPath, `${prefix}${JSON.stringify(event)}\n`, "utf8");
+    const observed = this.observedSources.get(parsedConversationId);
+    this.observedSources.set(parsedConversationId, {
+      signature: this.sourceKey(parsedConversationId), generation: observed?.generation ?? 0,
+    });
     this.lastSequenceByConversation.set(parsedConversationId, event.sequence);
-    const cached = this.contextReadCache.get(parsedConversationId);
-    if (cached !== undefined) cached.events.push(event);
     const context = this.contextSnapshotCache.get(parsedConversationId);
     if (context !== undefined) {
       if (event.type === "legacy_snapshot_imported") {
@@ -144,7 +96,16 @@ export class ThreadLog {
         // once is preferable to maintaining a separate mutation algorithm.
         this.contextSnapshotCache.delete(parsedConversationId);
       } else {
+        const previousLength = context.messages.length;
+        const previousCheckpointBytes = context.checkpoint === null ? 0 : retainedValueBytes(context.checkpoint);
         applyContextEvent(context, event);
+        const bytes = event.type === "run_replaced" || event.type === "run_superseded"
+          ? retainedContextBytes(context)
+          : (this.contextSnapshotBytes.get(context) ?? 0)
+            + context.messages.slice(previousLength).reduce((sum, message) => sum + retainedValueBytes(message), 0)
+            - previousCheckpointBytes + (context.checkpoint === null ? 0 : retainedValueBytes(context.checkpoint));
+        this.contextSnapshotBytes.set(context, bytes);
+        this.trimContextCache();
       }
     }
     return event;
@@ -164,22 +125,72 @@ export class ThreadLog {
     if (typeof uniqueValue !== "string" || uniqueValue.length === 0) {
       throw new Error(`ThreadLog unique payload field ${uniquePayloadField} must be a non-empty string.`);
     }
-    const existing = this.readForContext(z.string().uuid().parse(conversationId));
-    if (existing?.events.some((event) =>
-      event.type === input.type && event.payload[uniquePayloadField] === uniqueValue,
-    ) === true) {
-      return null;
-    }
+    const key = `${z.string().uuid().parse(conversationId)}/${input.type}/${uniquePayloadField}`;
+    const cached = this.uniqueEventCache.get(key);
+    const after = cached?.cursor != null && this.canContinueScan(conversationId, cached.cursor)
+      ? cached.cursor : undefined;
+    const values = after === undefined ? new Set<string>() : cached!.values;
+    const cursor = this.scan(conversationId, (event) => {
+      const value = event.payload[uniquePayloadField];
+      if (event.type === input.type && typeof value === "string") values.add(value);
+    }, after);
+    setBoundedCacheEntry(this.uniqueEventCache, key, { cursor, values }, THREAD_LOG_METADATA_CACHE_LIMIT);
+    if (values.has(uniqueValue)) return null;
     return this.append(conversationId, input);
   }
 
   public getPath(conversationId: string): string {
     const parsedConversationId = z.string().uuid().parse(conversationId);
-    return path.join(this.conversationsRootPath, `${parsedConversationId}.jsonl`);
+    return path.join(
+      this.conversationsRootPath,
+      parsedConversationId,
+      "conversation.jsonl",
+    );
   }
 
   public hasConversation(conversationId: string): boolean {
     return existsSync(this.getPath(conversationId));
+  }
+
+  public getSourceSignature(conversationId: string): ThreadLogSourceSignature | null {
+    const logPath = this.getPath(conversationId);
+    try {
+      const metadata = statSync(logPath);
+      return {
+        modifiedAtMs: metadata.mtimeMs,
+        sizeBytes: metadata.size,
+      };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+      throw error;
+    }
+  }
+
+  public async deleteConversations(conversationIds: readonly string[]): Promise<void> {
+    if (this.options.readOnly) throw new Error("Read-only ThreadLog cannot delete conversations.");
+    for (const conversationId of conversationIds) {
+      const parsedConversationId = z.string().uuid().parse(conversationId);
+      const logPath = this.getPath(parsedConversationId);
+      const conversationDirectory = path.dirname(logPath);
+      if (existsSync(conversationDirectory)) {
+        for (const entry of readdirSync(conversationDirectory, { withFileTypes: true })) {
+          if (!entry.isFile() || !isOwnedThreadLogFile(entry.name)) continue;
+          await rm(path.join(conversationDirectory, entry.name), { force: true });
+        }
+        await rmdir(conversationDirectory).catch((error: NodeJS.ErrnoException) => {
+          if (error.code !== "ENOENT" && error.code !== "ENOTEMPTY" && error.code !== "EEXIST") {
+            throw error;
+          }
+        });
+      }
+      this.lastSequenceByConversation.delete(parsedConversationId);
+      this.observeSource(parsedConversationId);
+      for (const key of this.uniqueEventCache.keys()) {
+        if (key.startsWith(`${parsedConversationId}/`)) this.uniqueEventCache.delete(key);
+      }
+      this.contextSnapshotCache.delete(parsedConversationId);
+      this.contextIndexes.delete(parsedConversationId);
+    }
   }
 
   /**
@@ -188,13 +199,14 @@ export class ThreadLog {
    * in place: a non-terminal malformed line has no trustworthy replay point.
    */
   public quarantine(conversationId: string): string | null {
+    if (this.options.readOnly) throw new Error("Read-only ThreadLog cannot quarantine conversations.");
     const parsedConversationId = z.string().uuid().parse(conversationId);
     const logPath = this.getPath(parsedConversationId);
     if (!existsSync(logPath)) return null;
     const quarantinedPath = `${logPath}.corrupt-${Date.now()}-${randomUUID()}`;
     renameSync(logPath, quarantinedPath);
     this.lastSequenceByConversation.delete(parsedConversationId);
-    this.contextReadCache.delete(parsedConversationId);
+    this.observeSource(parsedConversationId);
     this.contextSnapshotCache.delete(parsedConversationId);
     return quarantinedPath;
   }
@@ -202,9 +214,8 @@ export class ThreadLog {
   public listConversationIds(): string[] {
     if (!existsSync(this.conversationsRootPath)) return [];
     return readdirSync(this.conversationsRootPath, { withFileTypes: true }).flatMap((entry) => {
-      if (!entry.isFile() || !entry.name.endsWith(".jsonl")) return [];
-      const conversationId = entry.name.slice(0, -".jsonl".length);
-      return z.string().uuid().safeParse(conversationId).success ? [conversationId] : [];
+      if (!entry.isDirectory() || !z.string().uuid().safeParse(entry.name).success) return [];
+      return existsSync(this.getPath(entry.name)) ? [entry.name] : [];
     });
   }
 
@@ -220,6 +231,141 @@ export class ThreadLog {
     return log;
   }
 
+  public readFirstEvent(conversationId: string, type?: ThreadLogEvent["type"]): ThreadLogEvent | null {
+    const id = z.string().uuid().parse(conversationId);
+    if (!existsSync(this.getPath(id))) return null;
+    let first: ThreadLogEvent | null = null;
+    this.readExisting(id, this.getPath(id), (event) => {
+      if (type !== undefined && event.type !== type) return;
+      first = event;
+      return false;
+    });
+    return first;
+  }
+
+  /** Find a complete startup checkpoint in a bounded tail; older logs use normal replay. */
+  public readLatestStateCheckpoint(conversationId: string): { event: ThreadLogEvent; cursor: ThreadLogScanCursor } | null {
+    const logPath = this.getPath(conversationId);
+    if (!existsSync(logPath)) return null;
+    const generation = this.observeSource(conversationId);
+    const { header } = this.readExisting(conversationId, logPath, () => false);
+    const descriptor = openSync(logPath, "r");
+    try {
+      const size = fstatSync(descriptor).size;
+      const minimum = Math.max(0, size - 8 * 1_024 * 1_024);
+      let position = size;
+      let pending: Buffer = Buffer.alloc(0);
+      while (position > minimum) {
+        const length = Math.min(THREAD_LOG_READ_CHUNK_BYTES, position - minimum);
+        position -= length;
+        const chunk = Buffer.allocUnsafe(length);
+        let consumed = 0;
+        while (consumed < length) {
+          const count = readSync(descriptor, chunk, consumed, length - consumed, position + consumed);
+          if (count === 0) throw new Error("ThreadLog checkpoint is no longer available.");
+          consumed += count;
+        }
+        const bytes = Buffer.concat([chunk, pending]);
+        let end = bytes.length;
+        for (let newline = bytes.lastIndexOf(0x0a); newline >= 0; newline = bytes.lastIndexOf(0x0a, newline - 1)) {
+          const line = bytes.subarray(newline + 1, end);
+          if (line.includes('"state_checkpoint"') && position + end < size) {
+            const event = threadLogEventSchema.parse(JSON.parse(line.toString("utf8")));
+            if (event.conversationId !== conversationId) throw new Error("ThreadLog checkpoint belongs to another conversation.");
+            if (event.type === "state_checkpoint") return { event, cursor: {
+              header, offset: position + end + 1, sequence: event.sequence, generation,
+            } };
+          }
+          end = newline;
+          if (newline === 0) break;
+        }
+        pending = Buffer.from(bytes.subarray(0, end));
+      }
+      return null;
+    } finally { closeSync(descriptor); }
+  }
+
+  /** Visit records without retaining their payloads after the callback returns. */
+  public scan(
+    conversationId: string,
+    visit: (event: ThreadLogEvent, location: ThreadLogRecordLocation) => void,
+    after?: ThreadLogScanCursor,
+    maxRecords = Infinity,
+  ): ThreadLogScanCursor | null {
+    const id = z.string().uuid().parse(conversationId);
+    const logPath = this.getPath(id);
+    if (!existsSync(logPath)) return null;
+    const generation = this.observeSource(id);
+    if (after !== undefined && after.generation !== generation) {
+      throw new Error("ThreadLog changed outside the append stream; rebuild its index.");
+    }
+    let sequence = after?.sequence ?? 0;
+    let count = 0;
+    let offset = after?.offset ?? 0;
+    const result = this.readExisting(id, logPath, (event, location) => {
+      sequence = event.sequence;
+      offset = location.offset + location.length + 1;
+      visit(event, location);
+      if (++count >= maxRecords) return false;
+    }, after);
+    if (offset >= statSync(logPath).size) this.lastSequenceByConversation.set(id, sequence);
+    return this.endsWithNewline(logPath)
+      ? { header: result.header, offset: count === 0 && after === undefined ? statSync(logPath).size : offset, sequence, generation }
+      : null;
+  }
+
+  public canContinueScan(conversationId: string, cursor: ThreadLogScanCursor): boolean {
+    return cursor.generation === this.observeSource(conversationId);
+  }
+
+  private sourceKey(conversationId: string): string {
+    const source = this.getSourceSignature(conversationId);
+    return `${source?.sizeBytes}:${source?.modifiedAtMs}`;
+  }
+
+  private observeSource(conversationId: string): number {
+    const signature = this.sourceKey(conversationId);
+    const previous = this.observedSources.get(conversationId);
+    const generation = (previous?.generation ?? 0) + Number(previous !== undefined && previous.signature !== signature);
+    if (previous !== undefined && previous.signature !== signature) {
+      this.lastSequenceByConversation.delete(conversationId);
+      this.contextSnapshotCache.delete(conversationId);
+    }
+    this.observedSources.set(conversationId, { signature, generation });
+    return generation;
+  }
+
+  public readRecord(conversationId: string, location: ThreadLogRecordLocation): ThreadLogEvent {
+    return this.withRecordReader(conversationId, read => read(location));
+  }
+
+  /** A page shares one read-only handle; neither success nor failure retains it. */
+  public withRecordReader<T>(conversationId: string, visit: (read: (location: ThreadLogRecordLocation) => ThreadLogEvent) => T): T {
+    const descriptor = openSync(this.getPath(conversationId), "r");
+    try {
+      return visit(location => this.readRecordFromDescriptor(descriptor, conversationId, location));
+    } finally {
+      closeSync(descriptor);
+    }
+  }
+
+  private readRecordFromDescriptor(descriptor: number, conversationId: string, location: ThreadLogRecordLocation): ThreadLogEvent {
+    if (!Number.isSafeInteger(location.offset) || location.offset < 0
+      || !Number.isSafeInteger(location.length) || location.length <= 0) {
+      throw new Error("Invalid ThreadLog record location.");
+    }
+    const bytes = Buffer.allocUnsafe(location.length);
+    let consumed = 0;
+    while (consumed < bytes.length) {
+      const count = readSync(descriptor, bytes, consumed, bytes.length - consumed, location.offset + consumed);
+      if (count === 0) throw new Error("ThreadLog record is no longer available.");
+      consumed += count;
+    }
+    const event = threadLogEventSchema.parse(JSON.parse(bytes.toString("utf8")));
+    if (event.conversationId !== conversationId) throw new Error("ThreadLog record belongs to another conversation.");
+    return event;
+  }
+
   /**
    * Reconstructs only the model-visible history from the JSONL event stream.
    * The result is cached until this process appends another event. SQLite is
@@ -227,34 +373,206 @@ export class ThreadLog {
    */
   public readContext(conversationId: string): ThreadLogContext | null {
     const parsedConversationId = z.string().uuid().parse(conversationId);
+    this.observeSource(parsedConversationId);
     const cachedSnapshot = this.contextSnapshotCache.get(parsedConversationId);
-    if (cachedSnapshot !== undefined) return cachedSnapshot;
-    const log = this.readForContext(parsedConversationId);
-    if (log === null) return null;
-    const context = reconstructContext(log.events);
-    this.contextSnapshotCache.set(parsedConversationId, context);
+    if (cachedSnapshot !== undefined) {
+      touchCacheEntry(this.contextSnapshotCache, parsedConversationId, cachedSnapshot);
+      return cachedSnapshot;
+    }
+    if (!this.hasConversation(parsedConversationId)) return null;
+    const context: ThreadLogContext = { checkpoint: null, messages: [] };
+    this.scan(parsedConversationId, (event) => applyContextEvent(context, event));
+    this.contextSnapshotBytes.set(context, retainedContextBytes(context));
+    setBoundedCacheEntry(
+      this.contextSnapshotCache,
+      parsedConversationId,
+      context,
+      THREAD_LOG_CONTEXT_CACHE_LIMIT,
+    );
+    this.trimContextCache();
     return context;
+  }
+
+  /** Compilation needs only the uncompressed suffix; historical bodies stay on disk. */
+  public readUncoveredContext(conversationId: string): (ThreadLogContext & { totalMessageCount: number }) | null {
+    const index = this.contextIndex(conversationId);
+    if (index === null) return null;
+    const covered = index.context.checkpoint?.coveredThroughSequence ?? 0;
+    return {
+      totalMessageCount: index.context.messages.length,
+      checkpoint: index.context.checkpoint === null ? null : { ...index.context.checkpoint },
+      messages: [...this.readContextLocations(conversationId, index,
+        index.context.messages.flatMap((message, position) => message.sequence > covered ? [position] : []))],
+    };
+  }
+
+  /** Read one execution by file offsets, without materializing other runs' bodies. */
+  public readRunContext(conversationId: string, runId: string): ThreadLogContextMessage[] {
+    z.string().uuid().parse(runId);
+    const index = this.contextIndex(conversationId);
+    if (index === null) return [];
+    return [...this.readContextLocations(conversationId, index,
+      index.context.messages.flatMap((message, position) => message.runId === runId ? [position] : []))];
+  }
+
+  /** Usage excludes opaque provider payloads and never materializes message bodies. */
+  public readProviderUsageStates(conversationId: string): ModelProviderState[] | null {
+    const index = this.contextIndex(conversationId);
+    return index === null ? null : structuredClone(index.context.messages.flatMap((message) =>
+      message.providerState === undefined ? [] : [message.providerState]));
+  }
+
+  /** Reuse the existing incremental JSONL index; retain hashes, never Skill bodies or another history copy. */
+  public readSkillSnapshots(conversationId: string): ThreadLogSkillSnapshot[] {
+    return [...(this.contextIndex(conversationId)?.skills.values() ?? [])].map(({ id, version, contentHash }) => ({ id, version, contentHash }));
+  }
+
+  /** Older request usage no longer describes the input after a successful compaction. */
+  public readUncompactedProviderState(conversationId: string): ModelProviderState | null {
+    const index = this.contextIndex(conversationId);
+    if (index === null) return null;
+    const position = index.context.messages.findLastIndex(message => message.providerState?.usage !== undefined);
+    if (position < 0 || index.locations[position]!.record.offset <= index.checkpointOffset) return null;
+    return structuredClone(index.context.messages[position]!.providerState ?? null);
+  }
+
+  public searchCoveredContext(conversationId: string, query: string): ThreadLogContextMessage[] {
+    const words = query.toLowerCase().match(/[\p{L}\p{N}_./-]{2,}/gu) ?? [];
+    const terms = [...new Set(words.flatMap((word) => /^[\p{Script=Han}]+$/u.test(word)
+      ? [word, ...Array.from({ length: Math.max(0, word.length - 1) }, (_, offset) => word.slice(offset, offset + 2))]
+      : [word]))].slice(0, 24);
+    if (terms.length === 0) return [];
+    const index = this.contextIndex(conversationId);
+    if (index === null) return [];
+    const covered = index.context.checkpoint?.coveredThroughSequence ?? 0;
+    const positions: number[] = [];
+    const fingerprint = createHash("sha256").update(JSON.stringify([terms, covered]));
+    for (let position = index.context.messages.length - 1; position >= 0 && positions.length < 1_000; position -= 1) {
+      const message = index.context.messages[position]!;
+      if (message.sequence > covered || message.role === "tool") continue;
+      positions.push(position);
+      const location = index.locations[position]!;
+      fingerprint.update(JSON.stringify([position, message.sequence, location.record.offset, location.record.length, location.legacyIndex]));
+    }
+    const key = fingerprint.digest("hex");
+    const previous = index.coveredSearch;
+    if (previous?.key === key) {
+      return [...this.readContextLocations(conversationId, index, previous.hits.map(hit => hit.position))]
+        .map((message, offset) => coveredContextExcerpt(message, previous.hits[offset]!.start)).reverse();
+    }
+    const matches: ThreadLogContextMessage[] = [];
+    const hits: { position: number; start: number }[] = [];
+    let candidate = 0;
+    for (const message of this.readContextLocations(conversationId, index, positions)) {
+      const position = positions[candidate++]!;
+      const text = message.content.toLowerCase();
+      const hit = terms.map((term) => text.indexOf(term)).find((offset) => offset >= 0) ?? -1;
+      if (hit >= 0) {
+        const start = Math.max(0, hit - 1_000);
+        hits.push({ position, start });
+        matches.push(coveredContextExcerpt(message, start));
+        if (matches.length === 24) break;
+      }
+    }
+    index.coveredSearch = { key, hits };
+    return matches.reverse();
+  }
+
+  public hasContextIndex(conversationId: string): boolean {
+    const cursor = this.contextIndexes.get(conversationId)?.cursor;
+    return cursor != null && this.canContinueScan(conversationId, cursor);
+  }
+
+  public restoreContextIndex(conversationId: string, index: ContextIndex): void {
+    if (index.cursor !== null) {
+      index.cursor = this.rebaseReadCursor(conversationId, index.cursor);
+      this.lastSequenceByConversation.set(conversationId, index.cursor.sequence);
+    }
+    setBoundedCacheEntry(this.contextIndexes, conversationId, index, THREAD_LOG_METADATA_CACHE_LIMIT);
+  }
+
+  public rebaseReadCursor(conversationId: string, cursor: ThreadLogScanCursor): ThreadLogScanCursor {
+    if (cursor.header.conversationId !== conversationId) throw new Error("ThreadLog cursor belongs to another conversation.");
+    return { ...cursor, generation: this.observeSource(conversationId) };
+  }
+
+  /** Cooperative fallback for a source changed while its worker was reading it. */
+  public async warmContext(conversationId: string): Promise<void> {
+    for (;;) {
+      const index = this.contextIndex(conversationId, 32);
+      if (index?.cursor == null || index.cursor.offset >= (this.getSourceSignature(conversationId)?.sizeBytes ?? 0)) return;
+      await setImmediate();
+    }
+  }
+
+  private contextIndex(conversationId: string, maxRecords = Infinity): ContextIndex | null {
+    const id = z.string().uuid().parse(conversationId);
+    if (!this.hasConversation(id)) return null;
+    let index = this.contextIndexes.get(id);
+    if (index === undefined || index.cursor === null || !this.canContinueScan(id, index.cursor)) {
+      index = createContextIndex();
+    }
+    const target = index;
+    try {
+      target.cursor = this.scan(id, (event, record) => applyContextIndexEvent(target, event, record), target.cursor ?? undefined, maxRecords);
+    } catch (error) {
+      // A failed incremental scan must not retain partially applied events.
+      this.contextIndexes.delete(id);
+      throw error;
+    }
+    setBoundedCacheEntry(this.contextIndexes, id, target, THREAD_LOG_METADATA_CACHE_LIMIT);
+    return target;
+  }
+
+  private *readContextLocations(conversationId: string, index: ContextIndex, positions: readonly number[]): IterableIterator<ThreadLogContextMessage> {
+    if (positions.length === 0) return;
+    const descriptor = openSync(this.getPath(conversationId), "r");
+    let previousOffset = -1;
+    let recordMessages: ThreadLogContextMessage[] = [];
+    try {
+      for (const position of positions) {
+        const location = index.locations[position]!;
+        if (location.record.offset !== previousOffset) {
+          const event = this.readRecordFromDescriptor(descriptor, conversationId, location.record);
+          const message = contextMessageForEvent(event, 1);
+          recordMessages = event.type === "legacy_snapshot_imported" ? readLegacyContextMessages(event.payload)
+            : event.type === "agent_messages_consumed" ? readQueuedAgentContext(event)
+            : message === null ? [] : [message];
+          previousOffset = location.record.offset;
+        }
+        const message = recordMessages[location.legacyIndex];
+        if (message === undefined) throw new Error("ThreadLog context location is no longer available.");
+        yield { ...message, sequence: index.context.messages[position]!.sequence };
+      }
+    } finally {
+      closeSync(descriptor);
+    }
+  }
+
+  private trimContextCache(): void {
+    let bytes = [...this.contextSnapshotCache.values()]
+      .reduce((sum, context) => sum + (this.contextSnapshotBytes.get(context) ?? 0), 0);
+    for (const [id, context] of this.contextSnapshotCache) {
+      if (bytes <= THREAD_LOG_CONTEXT_CACHE_BYTES) break;
+      bytes -= this.contextSnapshotBytes.get(context) ?? 0;
+      this.contextSnapshotCache.delete(id);
+    }
   }
 
   private getLastSequence(conversationId: string): number {
     const cached = this.lastSequenceByConversation.get(conversationId);
     if (cached !== undefined) return cached;
-    return this.readOrCreate(conversationId).events.at(-1)?.sequence ?? 0;
-  }
-
-  private readForContext(conversationId: string): ThreadLogRead | null {
-    const cached = this.contextReadCache.get(conversationId);
-    if (cached !== undefined) return cached;
-    const log = this.read(conversationId);
-    if (log !== null) this.contextReadCache.set(conversationId, log);
-    return log;
+    if (!this.hasConversation(conversationId)) return this.readOrCreate(conversationId).events.length;
+    let sequence = 0;
+    this.scan(conversationId, (event) => { sequence = event.sequence; });
+    return sequence;
   }
 
   private readOrCreate(conversationId: string): ThreadLogRead {
     const existing = this.read(conversationId);
     if (existing !== null) return existing;
 
-    mkdirSync(this.conversationsRootPath, { recursive: true, mode: 0o700 });
+    mkdirSync(path.dirname(this.getPath(conversationId)), { recursive: true, mode: 0o700 });
     const header = threadLogHeaderSchema.parse({
       conversationId,
       createdAt: new Date().toISOString(),
@@ -266,44 +584,90 @@ export class ThreadLog {
     return { events: [], header };
   }
 
-  private readExisting(conversationId: string, logPath: string): ThreadLogRead {
-    const content = readFileSync(logPath, "utf8");
-    const lines = content.split("\n");
-    const nonTerminalLines = content.endsWith("\n") ? lines.slice(0, -1) : lines;
-    if (nonTerminalLines.length === 0 || nonTerminalLines[0] === "") {
-      throw new Error(`ThreadLog has no valid header: ${logPath}`);
-    }
-
-    let header: z.infer<typeof threadLogHeaderSchema> | undefined;
+  private readExisting(
+    conversationId: string,
+    logPath: string,
+    visit?: (event: ThreadLogEvent, location: ThreadLogRecordLocation) => void | false,
+    after?: ThreadLogScanCursor,
+  ): ThreadLogRead {
+    let header = after?.header;
     const events: ThreadLogEvent[] = [];
-    let lastValidLineIndex = -1;
-    for (const [index, rawLine] of nonTerminalLines.entries()) {
+    let lineIndex = after === undefined ? 0 : 1;
+    let completedByteCount = after?.offset ?? 0;
+    let lastSequence = after?.sequence ?? 0;
+    const descriptor = openSync(logPath, this.options.readOnly ? "r" : "r+");
+    const parseLine = (rawLine: string, recoverableFinalLine: boolean): boolean => {
+      let value: unknown;
       try {
-        if (index === 0) {
-          header = threadLogHeaderSchema.parse(JSON.parse(rawLine));
-          if (header.conversationId !== conversationId) {
-            throw new Error("ThreadLog header conversationId does not match its filename.");
-          }
-        } else {
-          const event = threadLogEventSchema.parse(JSON.parse(rawLine));
-          if (event.conversationId !== conversationId) {
-            throw new Error("ThreadLog event conversationId does not match its filename.");
-          }
-          const expectedSequence = (events.at(-1)?.sequence ?? 0) + 1;
-          if (event.sequence !== expectedSequence) {
-            throw new Error(`ThreadLog event sequence must be ${expectedSequence}.`);
-          }
-          events.push(event);
-        }
-        lastValidLineIndex = index;
+        value = JSON.parse(rawLine);
       } catch (error) {
-        if (index !== nonTerminalLines.length - 1) throw error;
-        const recoveredContent = nonTerminalLines
-          .slice(0, lastValidLineIndex + 1)
-          .join("\n");
-        writeFileSync(logPath, recoveredContent.length === 0 ? "" : `${recoveredContent}\n`, "utf8");
-        break;
+        if (recoverableFinalLine && this.options.readOnly) throw new Error("THREAD_LOG_READER_INCOMPLETE", { cause: error });
+        if (!recoverableFinalLine) throw error;
+        ftruncateSync(descriptor, completedByteCount);
+        return false;
       }
+      if (lineIndex === 0) {
+        header = threadLogHeaderSchema.parse(value);
+        if (header.conversationId !== conversationId) {
+          throw new Error("ThreadLog header conversationId does not match its filename.");
+        }
+      } else {
+        const event = threadLogEventSchema.parse(value);
+        if (event.conversationId !== conversationId) {
+          throw new Error("ThreadLog event conversationId does not match its filename.");
+        }
+        const expectedSequence = lastSequence + 1;
+        if (event.sequence !== expectedSequence) {
+          throw new Error(`ThreadLog event sequence must be ${expectedSequence}.`);
+        }
+        lastSequence = event.sequence;
+        if (visit === undefined) events.push(event);
+        else if (visit(event, { offset: completedByteCount, length: Buffer.byteLength(rawLine, "utf8") }) === false) return false;
+      }
+      lineIndex += 1;
+      return true;
+    };
+
+    try {
+      const chunk = Buffer.allocUnsafe(THREAD_LOG_READ_CHUNK_BYTES);
+      let pendingChunks: Buffer[] = [];
+      let pendingByteCount = 0;
+      let byteCount: number;
+      let readPosition = after?.offset ?? 0;
+      do {
+        byteCount = readSync(descriptor, chunk, 0, chunk.length, readPosition);
+        readPosition += byteCount;
+        if (byteCount === 0) break;
+        const next = Buffer.from(chunk.subarray(0, byteCount));
+        let lineStart = 0;
+        let newlineIndex = next.indexOf(0x0a, lineStart);
+        while (newlineIndex >= 0) {
+          const tail = next.subarray(lineStart, newlineIndex);
+          const lineByteCount = pendingByteCount + tail.length;
+          const rawLine = pendingChunks.length === 0
+            ? tail.toString("utf8")
+            : Buffer.concat([...pendingChunks, tail], lineByteCount).toString("utf8");
+          if (!parseLine(rawLine, false)) {
+            if (header === undefined) throw new Error("ThreadLog has no valid header.");
+            return { events, header };
+          }
+          completedByteCount += lineByteCount + 1;
+          pendingChunks = [];
+          pendingByteCount = 0;
+          lineStart = newlineIndex + 1;
+          newlineIndex = next.indexOf(0x0a, lineStart);
+        }
+        if (lineStart < next.length) {
+          const tail = Buffer.from(next.subarray(lineStart));
+          pendingChunks.push(tail);
+          pendingByteCount += tail.length;
+        }
+      } while (byteCount > 0);
+      if (pendingByteCount > 0) {
+        parseLine(Buffer.concat(pendingChunks, pendingByteCount).toString("utf8"), true);
+      }
+    } finally {
+      closeSync(descriptor);
     }
     if (header === undefined) throw new Error(`ThreadLog has no valid header: ${logPath}`);
     return { events, header };
@@ -321,273 +685,63 @@ export class ThreadLog {
       closeSync(descriptor);
     }
   }
-}
 
-function reconstructContext(events: readonly ThreadLogEvent[]): ThreadLogContext {
-  const context: ThreadLogContext = { checkpoint: null, messages: [] };
-  for (const event of events) {
-    applyContextEvent(context, event);
-  }
-  return context;
-}
-
-function applyContextEvent(context: ThreadLogContext, event: ThreadLogEvent): void {
-  if (event.type === "legacy_snapshot_imported") {
-    const legacyMessages = readLegacyContextMessages(event.payload);
-    const sequenceOffset = context.messages.length;
-    for (const [index, message] of legacyMessages.entries()) {
-      context.messages.push({ ...message, sequence: sequenceOffset + index + 1 });
-    }
-    const legacyCheckpoint = readLegacyCheckpoint(event.payload, event.createdAt);
-    if (legacyCheckpoint !== null) {
-      context.checkpoint = {
-        ...legacyCheckpoint,
-        coveredThroughSequence: Math.min(
-          context.messages.length,
-          sequenceOffset + legacyMessages.filter(
-            (message) => message.sequence <= legacyCheckpoint.coveredThroughSequence,
-          ).length,
-        ),
-      };
-    }
-    return;
-  }
-
-  if (event.type === "run_superseded") {
-    const supersededRunId = event.payload.runId;
-    if (typeof supersededRunId !== "string" || supersededRunId.length === 0) return;
-    const beforeCount = context.messages.length;
-    context.messages = context.messages.filter((message) => message.runId !== supersededRunId);
-    if (context.messages.length !== beforeCount) {
-      // A checkpoint may summarize the superseded branch. Retaining it would
-      // reintroduce edited-away content into the next model request.
-      context.checkpoint = null;
-    }
-    return;
-  }
-
-  if (event.type === "run_replaced") {
-    const supersededRunId = event.payload.previousRunId;
-    if (typeof supersededRunId === "string" && supersededRunId.length > 0) {
-      const beforeCount = context.messages.length;
-      context.messages = context.messages.filter((message) => message.runId !== supersededRunId);
-      if (context.messages.length !== beforeCount) context.checkpoint = null;
-    }
-    const replacement = contextMessageForEvent(event, context.messages.length + 1);
-    if (replacement !== null) context.messages.push(replacement);
-    return;
-  }
-
-  const message = contextMessageForEvent(event, context.messages.length + 1);
-  if (message !== null) {
-    context.messages.push(message);
-    return;
-  }
-
-  if (event.type === "context_checkpoint") {
-    const summary = event.payload.summary;
-    if (typeof summary === "string" && summary.trim().length > 0) {
-      context.checkpoint = {
-        coveredThroughSequence: context.messages.at(-1)?.sequence ?? 0,
-        createdAt: event.createdAt,
-        summary,
-        updatedAt: event.createdAt,
-      };
+  private migrateLegacyLayout(): void {
+    if (!existsSync(this.conversationsRootPath)) return;
+    for (const entry of readdirSync(this.conversationsRootPath, { withFileTypes: true })) {
+      if (!entry.isFile() || !entry.name.endsWith(".jsonl")) continue;
+      const conversationId = entry.name.slice(0, -".jsonl".length);
+      if (!z.string().uuid().safeParse(conversationId).success) continue;
+      const legacyPath = path.join(this.conversationsRootPath, entry.name);
+      const targetPath = this.getPath(conversationId);
+      mkdirSync(path.dirname(targetPath), { recursive: true, mode: 0o700 });
+      if (existsSync(targetPath)) {
+        renameSync(legacyPath, `${targetPath}.legacy-${Date.now()}-${randomUUID()}`);
+      } else {
+        renameSync(legacyPath, targetPath);
+      }
     }
   }
 }
 
-function contextMessageForEvent(
-  event: ThreadLogEvent,
-  sequence: number,
-): ThreadLogContextMessage | null {
-  if (event.type === "agent_message") {
-    const content = typeof event.payload.modelContent === "string"
-      ? event.payload.modelContent
-      : event.payload.content;
-    if (typeof content !== "string") return null;
-    return {
-      attachmentIds: [],
-      content,
-      role: "user",
-      runId: readNullableString(event.payload.runId),
-      sequence,
-      toolCallId: null,
-      toolCalls: [],
-    };
-  }
-
-  if (
-    event.type === "run_queued"
-    || event.type === "run_replaced"
-    || event.type === "user_message"
-    || event.type === "user_message_replaced"
-  ) {
-    const content = typeof event.payload.modelContent === "string"
-      ? event.payload.modelContent
-      : event.payload.content;
-    if (typeof content !== "string") return null;
-    return {
-      attachmentIds: readStringArray(event.payload.attachmentIds),
-      content,
-      role: "user",
-      runId: readNullableString(event.payload.runId),
-      sequence,
-      toolCallId: null,
-      toolCalls: [],
-    };
-  }
-
-  if (event.type === "assistant_message") {
-    const content = event.payload.content;
-    if (typeof content !== "string") return null;
-    const providerState = readProviderState(event.payload.providerState);
-    return {
-      attachmentIds: [],
-      content,
-      ...(providerState === undefined ? {} : { providerState }),
-      role: "assistant",
-      runId: readNullableString(event.payload.runId),
-      sequence,
-      toolCallId: null,
-      toolCalls: readToolCalls(event.payload.toolCalls),
-    };
-  }
-
-  if (event.type === "run_terminal") {
-    const assistantKind = event.payload.assistantKind;
-    if (assistantKind !== "turn" && assistantKind !== "cancelled") return null;
-    const content = event.payload.content;
-    if (typeof content !== "string") return null;
-    const providerState = readProviderState(event.payload.providerState);
-    return {
-      attachmentIds: [],
-      content,
-      ...(providerState === undefined ? {} : { providerState }),
-      role: "assistant",
-      runId: readNullableString(event.payload.runId),
-      sequence,
-      toolCallId: null,
-      toolCalls: [],
-    };
-  }
-
-  if (event.type === "tool_result") {
-    const content = event.payload.content;
-    const toolCallId = event.payload.toolCallId;
-    if (typeof content !== "string" || typeof toolCallId !== "string" || toolCallId.length === 0) {
-      return null;
-    }
-    return {
-      attachmentIds: [],
-      content,
-      role: "tool",
-      runId: readNullableString(event.payload.runId),
-      sequence,
-      toolCallId,
-      toolCalls: [],
-    };
-  }
-
-  return null;
+function coveredContextExcerpt(message: ThreadLogContextMessage, start: number): ThreadLogContextMessage {
+  const match = { ...message, content: `${start > 0 ? "…" : ""}${message.content.slice(start, start + 4_000)}${start + 4_000 < message.content.length ? "…" : ""}`, toolCalls: [] };
+  delete match.providerState;
+  return match;
 }
 
-function readLegacyContextMessages(payload: Record<string, unknown>): ThreadLogContextMessage[] {
-  if (!Array.isArray(payload.modelMessages)) return [];
-  const messages: ThreadLogContextMessage[] = [];
-  for (const value of payload.modelMessages) {
-    if (!isRecord(value)) continue;
-    const role = value.role;
-    const content = value.content;
-    const sequence = value.sequence;
-    if (
-      (role !== "assistant" && role !== "tool" && role !== "user")
-      || typeof content !== "string"
-      || typeof sequence !== "number"
-      || !Number.isSafeInteger(sequence)
-      || sequence <= 0
-    ) {
-      continue;
-    }
-    const toolCallId = role === "tool" ? readNullableString(value.toolCallId) : null;
-    const providerState = role === "assistant" ? readProviderState(value.providerState) : undefined;
-    messages.push({
-      attachmentIds: readStringArray(value.attachmentIds),
-      content,
-      ...(providerState === undefined ? {} : { providerState }),
-      role,
-      runId: readNullableString(value.runId),
-      sequence,
-      toolCallId,
-      toolCalls: role === "assistant" ? readToolCalls(value.toolCalls) : [],
-    });
+function touchCacheEntry<K, V>(cache: Map<K, V>, key: K, value: V): void {
+  cache.delete(key);
+  cache.set(key, value);
+}
+
+function setBoundedCacheEntry<K, V>(
+  cache: Map<K, V>,
+  key: K,
+  value: V,
+  limit: number,
+): void {
+  touchCacheEntry(cache, key, value);
+  while (cache.size > limit) {
+    const oldestKey = cache.keys().next().value;
+    if (oldestKey === undefined) return;
+    cache.delete(oldestKey);
   }
-  return messages;
 }
 
-function readLegacyCheckpoint(
-  payload: Record<string, unknown>,
-  fallbackTimestamp: string,
-): ThreadLogContextCheckpoint | null {
-  if (!isRecord(payload.checkpoint)) return null;
-  const coveredThroughSequence = payload.checkpoint.coveredThroughSequence;
-  const summary = payload.checkpoint.summary;
-  if (
-    typeof coveredThroughSequence !== "number"
-    || !Number.isSafeInteger(coveredThroughSequence)
-    || typeof summary !== "string"
-    || summary.trim().length === 0
-  ) {
-    return null;
-  }
-  return {
-    coveredThroughSequence,
-    createdAt: typeof payload.checkpoint.createdAt === "string"
-      ? payload.checkpoint.createdAt
-      : fallbackTimestamp,
-    summary,
-    updatedAt: typeof payload.checkpoint.updatedAt === "string"
-      ? payload.checkpoint.updatedAt
-      : fallbackTimestamp,
-  };
+function isOwnedThreadLogFile(fileName: string): boolean {
+  return fileName === "conversation.jsonl"
+    || fileName.startsWith("conversation.jsonl.corrupt-")
+    || fileName.startsWith("conversation.jsonl.legacy-");
 }
 
-function readToolCalls(value: unknown): ModelToolCall[] {
-  if (!Array.isArray(value)) return [];
-  return value.flatMap((entry) => {
-    if (!isRecord(entry)) return [];
-    const argumentsValue = entry.arguments;
-    const id = entry.id;
-    const name = entry.name;
-    return typeof argumentsValue === "string" && typeof id === "string" && typeof name === "string"
-      ? [{ arguments: argumentsValue, id, name }]
-      : [];
-  });
+// Conservative UTF-16 payload estimate, including per-object/array overhead.
+// This bounds retained cache data, not the caller's live request allocation.
+function retainedValueBytes(value: unknown): number {
+  return JSON.stringify(value).length * 2 + 256;
 }
 
-function readProviderState(value: unknown): ModelProviderState | undefined {
-  if (!isRecord(value)) return undefined;
-  if (
-    typeof value.apiFormat !== "string"
-    || typeof value.baseUrl !== "string"
-    || typeof value.modelId !== "string"
-    || !("payload" in value)
-  ) {
-    return undefined;
-  }
-  return value as ModelProviderState;
-}
-
-function readNullableString(value: unknown): string | null {
-  return typeof value === "string" ? value : null;
-}
-
-function readStringArray(value: unknown): string[] {
-  return Array.isArray(value)
-    ? value.filter((entry): entry is string => typeof entry === "string")
-    : [];
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
+function retainedContextBytes(context: ThreadLogContext): number {
+  return context.messages.reduce((sum, message) => sum + retainedValueBytes(message), 0)
+    + (context.checkpoint === null ? 0 : retainedValueBytes(context.checkpoint));
 }

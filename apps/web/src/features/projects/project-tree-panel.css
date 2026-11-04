@@ -1,3 +1,4 @@
+/* CSS trigger #2: file-tree state, descendant, focus and scroll selectors. */
 .project-tree-panel {
   position: relative;
   display: flex;
@@ -141,7 +142,7 @@
 
 body:has(.app-shell[data-theme="dark"]) .project-tree-panel__sort-menu {
   border-color: #3f3f46;
-  background: #202020;
+  background: var(--app-panel);
   color: #e5e7eb;
   box-shadow: 0 10px 28px rgba(0, 0, 0, 0.42);
 }
@@ -172,6 +173,7 @@ body:has(.app-shell[data-theme="dark"]) .project-tree-panel__sort-menu button:fo
   min-height: 0;
   flex: 1;
   overflow: auto;
+  scrollbar-gutter: stable;
   padding: 4px 0;
 }
 
@@ -205,7 +207,7 @@ body:has(.app-shell[data-theme="dark"]) .project-tree-panel__sort-menu button:fo
   z-index: 2;
   right: 6px;
   left: 6px;
-  border-top: 1px dashed #94a3b8;
+  border-top: 2px solid var(--app-accent);
   content: "";
   pointer-events: none;
 }
@@ -232,8 +234,9 @@ body:has(.app-shell[data-theme="dark"]) .project-tree-panel__sort-menu button:fo
 }
 
 .project-tree__row[data-selected="true"] {
-  background: rgba(191, 219, 254, 0.55);
-  color: #16395f;
+  background: var(--app-selection);
+  color: var(--app-selection-foreground);
+  box-shadow: inset 0 0 0 1px var(--app-selection-border), var(--app-selection-shadow);
 }
 
 .project-tree__row[data-located="true"]:not([data-selected="true"]) {
@@ -254,7 +257,7 @@ body:has(.app-shell[data-theme="dark"]) .project-tree-panel__sort-menu button:fo
   border-radius: var(--app-radius);
   outline: none;
   background: transparent;
-  color: #64748b;
+  color: var(--app-muted-foreground);
   padding: 0;
 }
 
@@ -289,7 +292,7 @@ body:has(.app-shell[data-theme="dark"]) .project-tree-panel__sort-menu button:fo
 
 .project-tree__entry svg {
   flex: 0 0 auto;
-  color: #64748b;
+  color: var(--app-muted-foreground);
 }
 
 .project-tree__row[data-selected="true"] .project-tree__entry svg {
@@ -336,14 +339,9 @@ body:has(.app-shell[data-theme="dark"]) .project-tree-panel__sort-menu button:fo
   place-content: center;
   justify-items: center;
   gap: 8px;
-  color: #64748b;
+  color: var(--app-muted-foreground);
   padding: 24px;
   text-align: center;
-}
-
-.project-tree-panel__empty[data-loading="true"] svg,
-.project-tree-panel__spin {
-  animation: project-tree-spin 1s linear infinite;
 }
 
 .project-tree-panel__empty p {
@@ -366,7 +364,7 @@ body:has(.app-shell[data-theme="dark"]) .project-tree-panel__sort-menu button:fo
   flex: 0 0 auto;
   overflow: hidden;
   border-top: 1px solid var(--app-border);
-  color: #94a3b8;
+  color: var(--app-subtle-foreground);
   font-size: var(--app-font-size-control);
   padding: 6px 8px;
   text-overflow: ellipsis;
@@ -427,8 +425,7 @@ body:has(.app-shell[data-theme="dark"]) .project-tree-panel__sort-menu button:fo
 }
 
 .project-tree-panel__dialog input:focus {
-  border-color: rgba(37, 99, 235, 0.5);
-  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.14);
+  border-color: var(--app-focus-ring);
 }
 
 .project-tree-panel__dialog-error {
@@ -462,12 +459,6 @@ body:has(.app-shell[data-theme="dark"]) .project-tree-panel__sort-menu button:fo
   opacity: 0.5;
 }
 
-@keyframes project-tree-spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-
 [data-theme="dark"] .project-tree-panel__heading-row h2,
 [data-theme="dark"] .project-tree__row {
   color: #e5e7eb;
@@ -484,13 +475,18 @@ body:has(.app-shell[data-theme="dark"]) .project-tree-panel__sort-menu button:fo
 }
 
 [data-theme="dark"] .project-tree__row[data-selected="true"] {
-  background: rgba(59, 130, 246, 0.28);
-  color: #f8fafc;
+  background: var(--app-selection);
+  color: var(--app-selection-foreground);
+}
+
+[data-theme="dark"] .project-tree__row[data-selected="true"] .project-tree__entry:hover,
+[data-theme="dark"] .project-tree__row[data-selected="true"] .project-tree__toggle:hover {
+  background: color-mix(in srgb, var(--app-muted-foreground) 10%, var(--app-selection));
 }
 
 [data-theme="dark"] .project-tree-panel__header[data-located="true"],
 [data-theme="dark"] .project-tree__row[data-located="true"]:not([data-selected="true"]) {
-  background: rgba(59, 130, 246, 0.14);
+  background: color-mix(in srgb, var(--app-muted-foreground) 20%, var(--app-panel));
 }
 
 [data-theme="dark"] .project-tree-panel__notice {

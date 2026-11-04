@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { DEFAULT_APPLICATION_SETTINGS, type ApplicationSettings } from "@agent/protocol";
 
 import { ApplicationSettingsStore } from "./application-settings-store.js";
+import { SettingsJsoncFile } from "./settings-jsonc-file.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -18,6 +19,105 @@ afterEach(async () => {
 });
 
 describe("ApplicationSettingsStore", () => {
+  it("defaults legacy settings to tray and persists a remembered close choice", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "aster-close-behavior-"));
+    temporaryDirectories.push(directory);
+    const configurationPath = path.join(directory, "settings.jsonc");
+    const legacyGeneral = { ...DEFAULT_APPLICATION_SETTINGS.general, sendShortcut: "ctrl_enter" };
+    Reflect.deleteProperty(legacyGeneral, "closeBehavior");
+    await writeFile(configurationPath, JSON.stringify({ general: legacyGeneral, version: 1 }), "utf8");
+    const store = new ApplicationSettingsStore(new SettingsJsoncFile(configurationPath));
+    store.ensureFile();
+    const current = store.getConfiguration();
+    expect(current.general).toMatchObject({ closeBehavior: "hide", sendShortcut: "ctrl_enter" });
+    store.saveConfiguration({ ...current, general: { ...current.general, closeBehavior: "quit" } });
+    const reopened = new ApplicationSettingsStore(new SettingsJsoncFile(configurationPath));
+    expect(reopened.getConfiguration().general).toMatchObject({ closeBehavior: "quit", sendShortcut: "ctrl_enter" });
+  });
+
+  it("persists Mermaid appearance, type overrides and named combinations across a fresh store", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "aster-mermaid-themes-"));
+    temporaryDirectories.push(directory);
+    const configurationPath = path.join(directory, "settings.jsonc");
+    const store = new ApplicationSettingsStore(new SettingsJsoncFile(configurationPath));
+    store.ensureFile();
+    const current = store.getConfiguration();
+    const mermaidThemes: ApplicationSettings["appearance"]["mermaidThemes"] = { light: "forest", dark: "neo-dark", diagrams: { sequence: { light: "neutral" } }, presets: [{ name: "工作", light: "redux", dark: "redux-dark", diagrams: {} }] };
+    store.saveConfiguration({ ...current, appearance: { ...current.appearance, mermaidThemes } });
+    const reopened = new ApplicationSettingsStore(new SettingsJsoncFile(configurationPath));
+    expect(reopened.getConfiguration().appearance.mermaidThemes).toEqual(mermaidThemes);
+    expect(reopened.getConfiguration().general).toEqual(current.general);
+  });
+  it("persists character presets alongside existing icons and uploaded avatars", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "aster-agent-avatars-"));
+    temporaryDirectories.push(directory);
+    const configurationPath = path.join(directory, "settings.jsonc");
+    const store = new ApplicationSettingsStore(new SettingsJsoncFile(configurationPath));
+    store.ensureFile();
+    const current = store.getConfiguration();
+    const agents = current.agentDirectory.agents.map((agent, index) => index === 0
+      ? { ...agent, avatar: { kind: "preset" as const, preset: "fox" as const } }
+      : index === 1 ? { ...agent, avatar: { kind: "image" as const, dataUrl: "data:image/png;base64,fixture", fileName: "mine.png" } }
+      : agent);
+    store.saveConfiguration({ ...current, agentDirectory: { ...current.agentDirectory, agents } });
+    const reopened = new ApplicationSettingsStore(new SettingsJsoncFile(configurationPath));
+    expect(reopened.getConfiguration().agentDirectory.agents).toEqual(agents);
+    expect(reopened.getConfiguration().appearance).toEqual(current.appearance);
+  });
+  it("persists typography through a fresh JSONC store without changing other preferences", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "aster-typography-"));
+    temporaryDirectories.push(directory);
+    const configurationPath = path.join(directory, "settings.jsonc");
+    const store = new ApplicationSettingsStore(new SettingsJsoncFile(configurationPath));
+    store.ensureFile();
+    const current = store.getConfiguration();
+    const customized = {
+      ...current,
+      appearance: { ...current.appearance, uiFontSize: 16, chatFontSize: 18, codeFontSize: 15 },
+    };
+    store.saveConfiguration(customized);
+    const reopened = new ApplicationSettingsStore(new SettingsJsoncFile(configurationPath));
+    expect(reopened.getConfiguration()).toEqual(customized);
+  });
+
+  it("preserves legacy appearance choices while defaulting the settings menu width", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "aster-settings-width-"));
+    temporaryDirectories.push(directory);
+    const configurationPath = path.join(directory, "settings.jsonc");
+    const appearance = { ...DEFAULT_APPLICATION_SETTINGS.appearance, themeMode: "dark" };
+    Reflect.deleteProperty(appearance, "settingsNavigationWidth");
+    await writeFile(configurationPath, JSON.stringify({ appearance, version: 1 }), "utf8");
+    const store = new ApplicationSettingsStore(new SettingsJsoncFile(configurationPath));
+    store.ensureFile();
+    expect(store.getConfiguration().appearance).toEqual({
+      ...appearance, settingsNavigationWidth: 240,
+    });
+  });
+
+  it("fills missing JSONC sections without replacing existing customized sections", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "aster-app-settings-jsonc-"));
+    temporaryDirectories.push(directory);
+    const configurationPath = path.join(directory, "settings.jsonc");
+    const customizedAgents = structuredClone(DEFAULT_APPLICATION_SETTINGS.agentDirectory.agents);
+    const firstAgent = customizedAgents[0];
+    if (firstAgent === undefined) throw new Error("Agent fixture is unavailable.");
+    firstAgent.name = "用户自定义名称";
+    await writeFile(configurationPath, `{
+  // 此处的用户配置和备注都必须保留。
+  "version": 1,
+  "agents": ${JSON.stringify(customizedAgents)},
+}
+`, "utf8");
+    const store = new ApplicationSettingsStore(new SettingsJsoncFile(configurationPath));
+
+    store.ensureFile();
+
+    expect(store.getConfiguration().agentDirectory.agents[0]?.name).toBe("用户自定义名称");
+    await expect(readFile(configurationPath, "utf8")).resolves.toContain(
+      "// 此处的用户配置和备注都必须保留。",
+    );
+  });
+
   it("creates and reads the reusable application defaults", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "agent-app-settings-"));
     temporaryDirectories.push(directory);
@@ -42,6 +142,7 @@ describe("ApplicationSettingsStore", () => {
       appearance: {
         ...DEFAULT_APPLICATION_SETTINGS.appearance,
         themeMode: "dark" as const,
+        settingsNavigationWidth: 310,
       },
       general: {
         ...DEFAULT_APPLICATION_SETTINGS.general,
@@ -55,6 +156,7 @@ describe("ApplicationSettingsStore", () => {
 
     expect(store.saveConfiguration(configuration)).toEqual(configuration);
     expect(store.getConfiguration()).toEqual(configuration);
+    expect(new ApplicationSettingsStore(configurationPath).getConfiguration().appearance.settingsNavigationWidth).toBe(310);
     expect(JSON.parse(await readFile(configurationPath, "utf8"))).toEqual(configuration);
   });
 
@@ -92,5 +194,90 @@ describe("ApplicationSettingsStore", () => {
     expect(store.getConfiguration().general).toEqual(
       DEFAULT_APPLICATION_SETTINGS.general,
     );
+  });
+
+  it("upgrades only the untouched legacy default development team", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "agent-app-settings-"));
+    temporaryDirectories.push(directory);
+    const configurationPath = path.join(directory, "application-settings.json");
+    const store = new ApplicationSettingsStore(configurationPath);
+    const legacy = structuredClone(DEFAULT_APPLICATION_SETTINGS);
+    legacy.appearance.themeMode = "dark";
+    legacy.agentDirectory.agents = legacy.agentDirectory.agents.filter((agent) =>
+      ![
+        "requirements-analyst",
+        "solution-architect",
+        "frontend-engineer",
+        "backend-engineer",
+        "qa-engineer",
+      ].includes(agent.id)
+    );
+    legacy.agentDirectory.teams[0] = {
+      description: "面向所有项目的默认开发团队，按任务需要启动少量成员。",
+      enabled: true,
+      id: "default-team",
+      instructions: "围绕当前工作项协作；Team Lead 保持主任务所有权，成员只处理明确分配的边界，并返回可验证结果。",
+      leadAgentId: "team-lead",
+      maxWorkers: 5,
+      memberConfigurations: {
+        explorer: {
+          instructions: "优先核对当前项目的代码和配置事实，结论需要带准确文件位置。",
+          role: "项目事实调查",
+        },
+        reviewer: {
+          instructions: "等待实现完成后再开始复核，优先报告行为回归和缺失验证。",
+          role: "独立质量复核",
+        },
+      },
+      memberIds: ["team-lead", "explorer", "implementer", "reviewer"],
+      name: "默认团队",
+      projectScope: "selected",
+    };
+    const legacyLead = legacy.agentDirectory.agents.find((agent) => agent.id === "team-lead");
+    if (legacyLead === undefined) throw new Error("Team Lead fixture is unavailable.");
+    legacyLead.instructions = "保持主对话所有权；简单任务直接完成，只有可独立验收或可并行的工作才委派。";
+    await writeFile(configurationPath, JSON.stringify(legacy), "utf8");
+
+    store.ensureFile();
+
+    const upgraded = store.getConfiguration();
+    expect(upgraded.appearance.themeMode).toBe("dark");
+    expect(upgraded.agentDirectory.teams.find((team) => team.id === "default-team"))
+      .toMatchObject({
+        memberIds: DEFAULT_APPLICATION_SETTINGS.agentDirectory.teams.find(
+          (team) => team.id === "default-team",
+        )?.memberIds,
+        maxWorkers: 5,
+        projectScope: "selected",
+      });
+    expect(upgraded.agentDirectory.agents.map((agent) => agent.id)).toEqual(
+      expect.arrayContaining([
+        "requirements-analyst",
+        "solution-architect",
+        "frontend-engineer",
+        "backend-engineer",
+        "qa-engineer",
+      ]),
+    );
+    expect(upgraded.agentDirectory.agents.find((agent) => agent.id === "team-lead")?.instructions)
+      .toContain("每个团队工作项至少交给一位持久专业成员");
+  });
+
+  it("preserves a customized default team instead of replacing it", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "agent-app-settings-"));
+    temporaryDirectories.push(directory);
+    const configurationPath = path.join(directory, "application-settings.json");
+    const store = new ApplicationSettingsStore(configurationPath);
+    const customized = structuredClone(DEFAULT_APPLICATION_SETTINGS);
+    const defaultTeam = customized.agentDirectory.teams.find((team) => team.id === "default-team");
+    if (defaultTeam === undefined) throw new Error("Default Team fixture is unavailable.");
+    defaultTeam.instructions = "保留用户自己的团队规则。";
+    await writeFile(configurationPath, JSON.stringify(customized), "utf8");
+
+    store.ensureFile();
+
+    expect(store.getConfiguration().agentDirectory.teams.find(
+      (team) => team.id === "default-team",
+    )?.instructions).toBe("保留用户自己的团队规则。");
   });
 });

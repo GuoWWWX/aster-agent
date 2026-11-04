@@ -1,25 +1,52 @@
+import { CalendarClock, PanelsTopLeft, Settings, UsersRound } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 
-import type { ApplicationSettings } from "@agent/protocol";
+import type {
+  ApplicationSettings,
+  ConversationSearchResult,
+  CreateTeamInstanceInput,
+  TeamInstanceView,
+  TeamWorkItemView,
+} from "@agent/protocol";
 
 import { AppShell } from "../components/layout/app-shell.js";
+import type { AppTitlebarConversationTab } from "../components/layout/app-titlebar.js";
+import { useNavigationHistory } from "../components/layout/use-navigation-history.js";
+import { moveTabId } from "../components/ui/tab-order.js";
 import { MediaPreviewDialogHost } from "../components/media/image-viewer.js";
-import { WorkspaceContent } from "../features/chat/workspace-content.js";
+import { GlobalConversationSearchDialog } from "../features/chat/global-conversation-search-dialog.js";
+import {
+  WorkspaceContent,
+} from "../features/chat/workspace-content.js";
+import {
+  closeConversationTab,
+} from "../features/chat/conversation-tabs.js";
+import { FUNCTION_TABS, isFunctionTab, teamChatTabId, teamChatInstanceId, reconcileWorkbenchTabs, type WorkbenchTabs } from "../features/chat/workbench-tabs.js";
+import { ConversationActivity } from "../features/chat/conversation-activity.js";
+import { ConversationWorkProvider } from "../features/chat/conversation-work-state.js";
 import {
   ProjectNavigator,
   type ProjectNavigatorLocateRequest,
 } from "../features/projects/project-navigator.js";
 import { useProjectSessions } from "../features/projects/use-project-sessions.js";
 import { useProjectTree } from "../features/projects/use-project-tree.js";
+import { conversationIdentity, ConversationIdentityIcon } from "../features/chat/conversation-identity.js";
 import {
   RightSidebarWorkspace,
+  type GitReviewOpenRequest,
   type ProjectFileOpenRequest,
+  type TeamMemberOpenRequest,
 } from "../features/workspace/right-sidebar-workspace.js";
+import {
+  isProjectSessionRunning,
+  type ProjectSession,
+} from "../features/projects/project-session-model.js";
 import { useWorkbenchUiStore } from "../stores/workbench-ui-store.js";
 import { useAgentDirectoryStore } from "../stores/agent-directory-store.js";
 import { useApplicationSettingsStore } from "../stores/application-settings-store.js";
 import {
   createAgentClientForCurrentHost,
+  getUserErrorMessage,
   type AgentClient,
 } from "../runtime/index.js";
 
@@ -34,13 +61,20 @@ function applicationSettingsSnapshot(): ApplicationSettings {
       teams: structuredClone(directory.teams),
     },
     appearance: {
+      mermaidThemes: structuredClone(workbench.mermaidThemes),
+      uiFontSize: workbench.uiFontSize,
+      chatFontSize: workbench.chatFontSize,
+      codeFontSize: workbench.codeFontSize,
       filePanelOpen: workbench.isFilePanelOpen,
       filePanelWidth: workbench.filePanelWidth,
       projectNavigatorOpen: workbench.isProjectNavigatorOpen,
       projectNavigatorWidth: workbench.projectNavigatorWidth,
+      settingsNavigationWidth: workbench.settingsNavigationWidth,
       themeMode: workbench.themeMode,
     },
     general: {
+      approvalReviewer: applicationSettings.approvalReviewer,
+      closeBehavior: applicationSettings.closeBehavior,
       defaultPermissionMode: applicationSettings.defaultPermissionMode,
       defaultMessageDeliveryMode: applicationSettings.defaultMessageDeliveryMode,
       sendShortcut: applicationSettings.sendShortcut,
@@ -51,6 +85,29 @@ function applicationSettingsSnapshot(): ApplicationSettings {
   };
 }
 
+function sourceConversationIdForMember(
+  member: ProjectSession,
+  sessions: readonly ProjectSession[],
+): string | null {
+  const sessionsById = new Map(sessions.map((session) => [session.id, session]));
+  const visited = new Set<string>();
+  let current = member;
+  while (current.parentConversationId !== null) {
+    if (visited.has(current.id)) return null;
+    visited.add(current.id);
+    const parent = sessionsById.get(current.parentConversationId);
+    // A fresh team-run event can reach the board before the navigator has
+    // refreshed its recursive session cache. A Team Lead is always attached
+    // directly to its source root, so its persisted parent is enough to open
+    // the source conversation and then its read-only side tab.
+    if (parent === undefined) {
+      return current.threadKind === "team_lead" ? current.parentConversationId : null;
+    }
+    current = parent;
+  }
+  return current.threadKind === "agent" ? current.id : null;
+}
+
 export function App(): ReactElement {
   const agentClient = useMemo<AgentClient>(
     () => createAgentClientForCurrentHost(),
@@ -59,20 +116,289 @@ export function App(): ReactElement {
   const setTerminalConfiguration = useWorkbenchUiStore(
     (state) => state.setTerminalConfiguration,
   );
-  const setFilePanelOpen = useWorkbenchUiStore((state) => state.setFilePanelOpen);
+  const setFilePanelOpenForConversation = useWorkbenchUiStore(
+    (state) => state.setFilePanelOpenForConversation,
+  );
+  const setActiveActivity = useWorkbenchUiStore((state) => state.setActiveActivity);
+  const activeActivity = useWorkbenchUiStore((state) => state.activeActivity);
+  const teamChatTarget = useWorkbenchUiStore((state) => state.teamChatTarget);
+  const settingsSection = useWorkbenchUiStore((state) => state.settingsSection);
+  const agents = useAgentDirectoryStore((state) => state.agents);
+  const teams = useAgentDirectoryStore((state) => state.teams);
+  const [teamInstances, setTeamInstances] = useState<TeamInstanceView[]>([]);
+  const [teamNavigatorWorkItems, setTeamNavigatorWorkItems] = useState<TeamWorkItemView[]>([]);
+  const [teamInstanceError, setTeamInstanceError] = useState<string | null>(null);
   const projectTree = useProjectTree(agentClient);
+  const selectProject = projectTree.selectProject;
   const projectSessions = useProjectSessions(
     agentClient,
     projectTree.activeProject?.id ?? null,
   );
+  const [tabState, setTabState] = useState<WorkbenchTabs>({ ids: [], previewId: null });
+  const openConversationIds = tabState.ids.filter((id) => !isFunctionTab(id) && teamChatInstanceId(id) === null);
+  const openTeamChatInstanceIds = useMemo(() => tabState.ids.flatMap(id => { const instanceId = teamChatInstanceId(id); return instanceId === null ? [] : [instanceId]; }), [tabState.ids]);
+  const activeTeamChat = activeActivity === "conversations"
+    ? teamInstances.find(instance => !instance.isArchived && instance.id === teamChatTarget?.instanceId) ?? null : null;
+  const sidebarSession = activeTeamChat === null ? projectSessions.activeSession
+    : projectSessions.sessions.find(session => session.id === (activeTeamChat.sourceConversationId ?? activeTeamChat.rootConversationId)) ?? null;
+  const sidebarBaseProject = activeTeamChat === null ? projectTree.activeProject
+    : projectTree.projects.find(project => project.id === activeTeamChat.projectId) ?? null;
+  const activeTabId = activeActivity === "settings" ? "page:settings"
+    : activeActivity === "schedules" ? "page:schedules"
+    : activeActivity === "team" || activeActivity === "tasks" ? "page:team"
+    : teamChatTarget !== null ? teamChatTabId(teamChatTarget.instanceId) : projectSessions.activeSessionId;
+  const navigation = useNavigationHistory({
+    activity: activeActivity, settingsSection,
+    projectId: projectTree.activeProject?.id ?? null,
+    conversationId: teamChatTarget === null ? projectSessions.activeSessionId : null,
+    teamChatId: teamChatTarget?.instanceId ?? null,
+  }, (entry) => JSON.stringify(entry), (entry) => {
+    setActiveActivity(entry.activity);
+    useWorkbenchUiStore.getState().setSettingsSection(entry.settingsSection);
+    projectTree.selectProject(entry.projectId);
+    if (entry.activity === "conversations" && entry.teamChatId !== null) { useWorkbenchUiStore.getState().openTeamChat({ instanceId: entry.teamChatId }); return; }
+    useWorkbenchUiStore.getState().closeTeamChat();
+    if (entry.conversationId === null) projectSessions.clearSessionSelection();
+    else {
+      projectSessions.selectSession(entry.conversationId);
+    }
+  }, (entry) => (entry.teamChatId === null || teamInstances.some(instance => instance.id === entry.teamChatId && !instance.isArchived))
+    && (entry.projectId === null || projectTree.projects.some((project) => project.id === entry.projectId))
+    && (entry.conversationId === null || projectSessions.sessions.some(
+    (session) => session.id === entry.conversationId && !session.isArchived,
+  )));
+  const [previousTabSource, setPreviousTabSource] = useState<string | null>(null);
+  const availableConversationIds = [...projectSessions.sessions.filter((session) => !session.isArchived).map((session) => session.id),
+    ...teamInstances.filter(instance => !instance.isArchived).map(instance => teamChatTabId(instance.id))];
+  const tabSource = `${activeTabId ?? ""}:${availableConversationIds.join(",")}`;
+  // Reconcile only selection/membership changes, before committing child panes.
+  // Model deltas and status updates do not schedule a second effect render.
+  if (previousTabSource !== tabSource) {
+    setPreviousTabSource(tabSource);
+    const next = reconcileWorkbenchTabs(tabState, availableConversationIds, activeTabId);
+    if (next !== tabState) setTabState(next);
+  }
   const [navigatorLocateRequest, setNavigatorLocateRequest] =
     useState<ProjectNavigatorLocateRequest | null>(null);
   const [fileOpenRequest, setFileOpenRequest] = useState<ProjectFileOpenRequest | null>(null);
+  const groupFileConversation = activeTeamChat === null || activeTeamChat.projectId !== null ? undefined : projectSessions.sessions.find(session =>
+    session.id === fileOpenRequest?.projectId && (session.id === activeTeamChat.rootConversationId || session.parentConversationId === activeTeamChat.rootConversationId));
+  const sidebarProject = sidebarBaseProject ?? (groupFileConversation === undefined ? null : {
+    id: groupFileConversation.id, name: `${groupFileConversation.title} 工作区`, rootPath: groupFileConversation.workspaceRootPath ?? "", isPinned: false,
+  });
+  const [gitReviewOpenRequest, setGitReviewOpenRequest] = useState<GitReviewOpenRequest | null>(null);
+  const [teamMemberOpenRequest, setTeamMemberOpenRequest] =
+    useState<TeamMemberOpenRequest | null>(null);
+  const [isGlobalSearchOpen, setGlobalSearchOpen] = useState(false);
+  const [conversationLocateRequest, setConversationLocateRequest] = useState<{
+    conversationId: string;
+    id: string;
+    requestId: number;
+  } | null>(null);
   const requestOpenProjectFile = useCallback((projectId: string, path: string): void => {
     setFileOpenRequest({ path, projectId });
-    setFilePanelOpen(true);
-  }, [setFilePanelOpen]);
+    const group = useWorkbenchUiStore.getState().teamChatTarget;
+    const conversationId = group === null ? projectSessions.activeSessionId : teamChatTabId(group.instanceId);
+    if (conversationId !== null) setFilePanelOpenForConversation(conversationId, true);
+  }, [projectSessions.activeSessionId, setFilePanelOpenForConversation]);
+  const requestOpenGitReview = useCallback((projectId: string, path?: string): void => {
+    setGitReviewOpenRequest((current) => ({
+      path: path ?? null,
+      projectId,
+      requestId: (current?.requestId ?? 0) + 1,
+    }));
+    const conversationId = projectSessions.activeSessionId;
+    if (conversationId !== null) setFilePanelOpenForConversation(conversationId, true);
+  }, [projectSessions.activeSessionId, setFilePanelOpenForConversation]);
   const applicationSettingsSaveQueueRef = useRef<Promise<void>>(Promise.resolve());
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (!(event.ctrlKey || event.metaKey) || !event.shiftKey || event.altKey) return;
+      if (event.key.toLocaleLowerCase() !== "f") return;
+      event.preventDefault();
+      setGlobalSearchOpen(true);
+    };
+    const disposeBrowserEvents = agentClient.onManagedBrowserEvent((event) => {
+      if (event.type === "openGlobalSearch") setGlobalSearchOpen(true);
+    });
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => {
+      disposeBrowserEvents();
+      window.removeEventListener("keydown", onKeyDown, true);
+    };
+  }, [agentClient]);
+
+  const conversationTabs = useMemo(() => {
+    return tabState.ids.flatMap<AppTitlebarConversationTab>((id) => {
+      if (isFunctionTab(id)) return [{ id, isRunning: false, title: FUNCTION_TABS[id],
+        icon: id === "page:schedules" ? <CalendarClock size={14} /> : id === "page:team" ? <PanelsTopLeft size={14} /> : <Settings size={14} />,
+        kind: "page" as const, isPreview: false }];
+      const chatInstanceId = teamChatInstanceId(id);
+      if (chatInstanceId !== null) {
+        const instance = teamInstances.find(candidate => candidate.id === chatInstanceId);
+        return instance === undefined || instance.isArchived ? [] : [{ id, isRunning: false, title: `${instance.name} · 群聊`,
+          icon: <UsersRound size={14} />, kind: "conversation", isPreview: tabState.previewId === id }];
+      }
+      const session = projectSessions.sessions.find((candidate) => candidate.id === id);
+      if (session === undefined || session.isArchived) return [];
+
+      const isRunning = isProjectSessionRunning(session);
+      const identity = conversationIdentity(session, agents, teamInstances, projectSessions.sessions);
+      const icon = <ConversationIdentityIcon session={session} identity={identity} />;
+
+      return [{
+        id: session.id,
+        icon,
+        isRunning,
+        activeRunId: session.activeRunId,
+        title: identity.title,
+        kind: "conversation" as const,
+        isPreview: tabState.previewId === session.id,
+      }];
+    });
+  }, [agents, tabState, projectSessions.sessions, teamInstances]);
+
+  useEffect(() => {
+    let disposed = false;
+    let refreshTimer: number | undefined;
+
+    async function refreshTeamNavigation(): Promise<void> {
+      try {
+        const [instances, items] = await Promise.all([
+          agentClient.listTeamInstances({ includeArchived: false }),
+          Promise.all(
+            teams.map((team) => agentClient.listTeamWorkItems({ teamId: team.id })),
+          ).then((groups) => groups.flat()),
+        ]);
+        if (!disposed) {
+          setTeamInstances(instances);
+          setTeamNavigatorWorkItems(items);
+        }
+      } catch {
+        // The conversation tree remains usable when Team history is unavailable.
+      }
+    }
+
+    void refreshTeamNavigation();
+    const unsubscribe = agentClient.onConversationRunEvent((event) => {
+      if (event.type === "conversation.open_requested") {
+        setActiveActivity("conversations");
+        selectProject(event.conversation.projectId);
+        return;
+      }
+      if (
+        event.type !== "conversation.updated"
+        && event.type !== "run.started"
+        && event.type !== "run.finished"
+        && event.type !== "task_list.updated"
+        && event.type !== "tool.completed"
+      ) return;
+      if (refreshTimer !== undefined) window.clearTimeout(refreshTimer);
+      refreshTimer = window.setTimeout(() => void refreshTeamNavigation(), 120);
+    });
+
+    return () => {
+      disposed = true;
+      unsubscribe();
+      if (refreshTimer !== undefined) window.clearTimeout(refreshTimer);
+    };
+  }, [agentClient, teams, selectProject, setActiveActivity]);
+
+  const refreshTeamState = useCallback(async (): Promise<void> => {
+    const [instances, items] = await Promise.all([
+      agentClient.listTeamInstances({ includeArchived: false }),
+      Promise.all(
+        teams.map((team) => agentClient.listTeamWorkItems({ teamId: team.id })),
+      ).then((groups) => groups.flat()),
+    ]);
+    setTeamInstances(instances);
+    setTeamNavigatorWorkItems(items);
+    await projectSessions.refreshSessions();
+  }, [agentClient, projectSessions, teams]);
+
+  const createTeamInstance = useCallback(async (
+    input: CreateTeamInstanceInput,
+  ): Promise<boolean> => {
+    setTeamInstanceError(null);
+    try {
+      await agentClient.createTeamInstance(input);
+      if (input.projectId !== undefined) await projectTree.setProjectTeamsInNavigator(input.projectId, true);
+      await refreshTeamState();
+      return true;
+    } catch (error) {
+      setTeamInstanceError(getUserErrorMessage(error, "无法创建团队"));
+      return false;
+    }
+  }, [agentClient, projectTree, refreshTeamState]);
+
+  const renameTeamInstance = useCallback(async (
+    teamInstanceId: string,
+    name: string,
+    projectId?: string | null,
+  ): Promise<boolean> => {
+    setTeamInstanceError(null);
+    try {
+      const renamed = await agentClient.renameTeamInstance({
+        name,
+        teamInstanceId,
+        ...(projectId === undefined ? {} : { projectId }),
+      });
+      if (renamed.projectId !== null && renamed.projectId !== teamInstances.find(instance => instance.id === teamInstanceId)?.projectId) {
+        await projectTree.setProjectTeamsInNavigator(renamed.projectId, true);
+      }
+      await refreshTeamState();
+      return true;
+    } catch (error) {
+      setTeamInstanceError(getUserErrorMessage(error, "无法编辑团队"));
+      return false;
+    }
+  }, [agentClient, projectTree, refreshTeamState, teamInstances]);
+
+  const reorderTeamInstances = useCallback(async (
+    teamInstanceIds: string[],
+  ): Promise<boolean> => {
+    setTeamInstanceError(null);
+    try {
+      setTeamInstances(await agentClient.reorderTeamInstances({ teamInstanceIds }));
+      return true;
+    } catch (error) {
+      setTeamInstanceError(getUserErrorMessage(error, "无法调整团队顺序"));
+      return false;
+    }
+  }, [agentClient]);
+
+  const setTeamInstanceArchived = useCallback(async (
+    teamInstanceId: string,
+    archived: boolean,
+  ): Promise<boolean> => {
+    setTeamInstanceError(null);
+    try {
+      await agentClient.setTeamInstanceArchived({ archived, teamInstanceId });
+      await refreshTeamState();
+      return true;
+    } catch (error) {
+      setTeamInstanceError(getUserErrorMessage(
+        error,
+        archived ? "无法归档团队" : "无法恢复团队",
+      ));
+      return false;
+    }
+  }, [agentClient, refreshTeamState]);
+
+  const deleteTeamInstance = useCallback(async (
+    teamInstanceId: string,
+  ): Promise<boolean> => {
+    setTeamInstanceError(null);
+    try {
+      await agentClient.deleteTeamInstance({ teamInstanceId });
+      await refreshTeamState();
+      return true;
+    } catch (error) {
+      setTeamInstanceError(getUserErrorMessage(error, "无法删除团队"));
+      return false;
+    }
+  }, [agentClient, refreshTeamState]);
 
   useEffect(() => {
     let disposed = false;
@@ -94,6 +420,7 @@ export function App(): ReactElement {
     let initialized = false;
     let saveTimer: number | undefined;
     let lastSavedSnapshot = "";
+    let lastSavedCloseBehavior: ApplicationSettings["general"]["closeBehavior"] | undefined;
     let applyingRemoteSettings = false;
     const unsubscribe: (() => void)[] = [];
 
@@ -109,6 +436,7 @@ export function App(): ReactElement {
           settings.permissionPolicies,
         );
         lastSavedSnapshot = JSON.stringify(settings);
+        lastSavedCloseBehavior = settings.general.closeBehavior;
       } finally {
         applyingRemoteSettings = false;
       }
@@ -119,6 +447,7 @@ export function App(): ReactElement {
       const snapshot = applicationSettingsSnapshot();
       if (JSON.stringify(snapshot) === lastSavedSnapshot) return;
       if (saveTimer !== undefined) window.clearTimeout(saveTimer);
+      const delay = snapshot.general.closeBehavior === lastSavedCloseBehavior ? 450 : 0;
       saveTimer = window.setTimeout(() => {
         saveTimer = undefined;
         const pendingSnapshot = applicationSettingsSnapshot();
@@ -130,11 +459,12 @@ export function App(): ReactElement {
           .then(async () => {
             const saved = await agentClient.saveApplicationSettings(pendingSnapshot);
             lastSavedSnapshot = JSON.stringify(saved);
+            lastSavedCloseBehavior = saved.general.closeBehavior;
             if (!disposed && JSON.stringify(applicationSettingsSnapshot()) !== lastSavedSnapshot) {
               scheduleSave();
             }
           });
-      }, 450);
+      }, delay);
     }
 
     function subscribeToApplicationSettings(): void {
@@ -159,6 +489,7 @@ export function App(): ReactElement {
         if (disposed) return;
         initialized = true;
         lastSavedSnapshot = JSON.stringify(applicationSettingsSnapshot());
+        lastSavedCloseBehavior = applicationSettingsSnapshot().general.closeBehavior;
         subscribeToApplicationSettings();
       },
     );
@@ -181,18 +512,92 @@ export function App(): ReactElement {
     return () => window.clearTimeout(timeout);
   }, [navigatorLocateRequest]);
 
-  function selectProject(projectId: string): void {
-    projectTree.selectProject(projectId);
-  }
+
+  const openTeamMemberSession = useCallback((
+    member: ProjectSession,
+    requestedSourceConversationId?: string,
+  ): void => {
+    useWorkbenchUiStore.getState().closeTeamChat();
+    const sourceConversationId = requestedSourceConversationId
+      ?? sourceConversationIdForMember(member, projectSessions.sessions);
+    if (sourceConversationId === null) {
+      if (member.projectId !== null) projectTree.selectProject(member.projectId);
+      projectSessions.selectSession(member.id);
+      setActiveActivity("conversations");
+      return;
+    }
+    if (member.projectId !== null) projectTree.selectProject(member.projectId);
+    projectSessions.selectSession(sourceConversationId);
+    setFilePanelOpenForConversation(sourceConversationId, true);
+    setActiveActivity("conversations");
+    setTeamMemberOpenRequest((current) => ({
+      conversation: member,
+      requestId: (current?.requestId ?? 0) + 1,
+      sourceConversationId,
+      timelineItemId: null,
+    }));
+    setNavigatorLocateRequest((current) => ({
+      id: sourceConversationId,
+      kind: "session",
+      requestId: (current?.requestId ?? 0) + 1,
+    }));
+  }, [projectSessions, projectTree, setActiveActivity, setFilePanelOpenForConversation]);
 
   function selectSession(sessionId: string): void {
+    const chatInstanceId = teamChatInstanceId(sessionId);
+    if (chatInstanceId !== null) { useWorkbenchUiStore.getState().openTeamChat({ instanceId: chatInstanceId }); return; }
+    useWorkbenchUiStore.getState().closeTeamChat();
+    if (isFunctionTab(sessionId)) {
+      setActiveActivity(sessionId === "page:team" ? "team" : sessionId === "page:schedules" ? "schedules" : "settings");
+      return;
+    }
+    setActiveActivity("conversations");
     const session = projectSessions.sessions.find(
       (candidate) => candidate.id === sessionId,
     );
+    if (session?.teamWorkItemId !== null && session?.teamWorkItemId !== undefined) {
+      openTeamMemberSession(session);
+      return;
+    }
     if (session?.projectId !== null && session?.projectId !== undefined) {
       projectTree.selectProject(session.projectId);
     }
     projectSessions.selectSession(sessionId);
+  }
+
+  useEffect(() => agentClient.onConversationRunEvent((event) => {
+    if (event.type === "notification.activated") selectSession(event.conversationId);
+  }));
+
+  function closeConversationTitlebarTab(conversationId: string): void {
+    const result = closeConversationTab(
+      tabState.ids,
+      conversationId,
+      activeTabId,
+    );
+    setTabState({ ids: result.openIds, previewId: tabState.previewId === conversationId ? null : tabState.previewId });
+    if (result.nextActiveId === null) {
+      useWorkbenchUiStore.getState().closeTeamChat();
+      setActiveActivity("conversations");
+      projectSessions.clearSessionSelection();
+    } else if (result.nextActiveId !== activeTabId) {
+      selectSession(result.nextActiveId);
+    }
+  }
+
+  function closeOtherConversationTitlebarTabs(conversationId: string): void {
+    if (!tabState.ids.includes(conversationId)) return;
+    setTabState({ ids: [conversationId], previewId: tabState.previewId === conversationId ? conversationId : null });
+    if (activeTabId !== conversationId) {
+      selectSession(conversationId);
+    }
+  }
+
+  function closeAllConversationTitlebarTabs(): void {
+    useWorkbenchUiStore.getState().closeTeamChat();
+    setTabState({ ids: [], previewId: null });
+    setActiveActivity("conversations");
+    projectSessions.clearSessionSelection();
   }
 
   function locateInProjectNavigator(kind: "project" | "session", id: string): void {
@@ -207,6 +612,7 @@ export function App(): ReactElement {
     conversationId: string,
     throughMessageId: string,
   ): Promise<void> => {
+    useWorkbenchUiStore.getState().closeTeamChat();
     const conversation = await agentClient.forkConversation({
       conversationId,
       throughMessageId,
@@ -219,27 +625,149 @@ export function App(): ReactElement {
     projectSessions.selectSession(conversation.id);
   }, [agentClient, projectSessions, projectTree]);
 
+  const openTeamConversation = useCallback((
+    conversation: ProjectSession,
+    sourceConversationId?: string,
+    timelineItemId?: string,
+  ): void => {
+    setActiveActivity("conversations");
+    const ownerConversationId = sourceConversationId
+      ?? sourceConversationIdForMember(conversation, projectSessions.sessions)
+      ?? conversation.id;
+    if (teamChatInstanceId(ownerConversationId) === null) {
+      useWorkbenchUiStore.getState().closeTeamChat();
+      if (conversation.projectId !== null) projectTree.selectProject(conversation.projectId);
+      projectSessions.selectSession(ownerConversationId);
+    }
+    setFilePanelOpenForConversation(ownerConversationId, true);
+    setTeamMemberOpenRequest((current) => ({
+      conversation,
+      requestId: (current?.requestId ?? 0) + 1,
+      sourceConversationId: ownerConversationId,
+      timelineItemId: timelineItemId ?? null,
+    }));
+  }, [projectSessions, projectTree, setFilePanelOpenForConversation, setActiveActivity]);
+
+  const navigateToTeamConversation = useCallback((conversationId: string): void => {
+    useWorkbenchUiStore.getState().closeTeamChat();
+    const session = projectSessions.sessions.find((candidate) => candidate.id === conversationId);
+    if (session?.projectId !== null && session?.projectId !== undefined) {
+      projectTree.selectProject(session.projectId);
+    }
+    setNavigatorLocateRequest(null);
+    projectSessions.selectSession(conversationId);
+    setActiveActivity("conversations");
+  }, [projectSessions, projectTree, setActiveActivity]);
+
+  const selectGlobalSearchResult = useCallback((result: ConversationSearchResult): void => {
+    const session = projectSessions.sessions.find((candidate) => candidate.id === result.conversationId);
+    if (session === undefined) return;
+    setGlobalSearchOpen(false);
+    setActiveActivity("conversations");
+    if (result.parentConversationId !== null && result.threadKind !== "subagent") {
+      openTeamConversation(session, undefined, result.itemId);
+      return;
+    }
+    if (result.projectId !== null) projectTree.selectProject(result.projectId);
+    projectSessions.selectSession(result.conversationId);
+    setConversationLocateRequest((current) => ({
+      conversationId: result.conversationId,
+      id: result.itemId,
+      requestId: (current?.requestId ?? 0) + 1,
+    }));
+  }, [openTeamConversation, projectSessions, projectTree, setActiveActivity]);
+
+  const locateConversationItem = (conversationId: string, itemId: string): void => {
+    const target = projectSessions.sessions.find((candidate) => candidate.id === conversationId);
+    if (target === undefined) return;
+    if (target.parentConversationId !== null && target.threadKind !== "subagent") {
+      openTeamConversation(target, undefined, itemId);
+      return;
+    }
+    if (target.projectId !== null) projectTree.selectProject(target.projectId);
+    selectSession(conversationId);
+    setConversationLocateRequest((current) => ({
+      conversationId, id: itemId, requestId: (current?.requestId ?? 0) + 1,
+    }));
+  };
+
   return (
-    <>
+    <ConversationWorkProvider agentClient={agentClient}>
       <AppShell
-      agentClient={agentClient}
-      projectNavigator={
+        activeProject={projectTree.projects.find((project) => project.id === projectSessions.activeSession?.projectId) ?? null}
+        projects={projectTree.projects}
+        onOpenGlobalSearch={() => setGlobalSearchOpen(true)}
+        navigation={navigation}
+        activeConversationId={teamChatTarget === null ? projectSessions.activeSessionId : teamChatTabId(teamChatTarget.instanceId)}
+        activeTabId={activeTabId}
+        titlebarActivity={<ConversationActivity agentClient={agentClient} sessions={projectSessions.sessions}
+          projects={projectTree.projects} teamInstances={teamInstances} onSelect={(id, timelineItemId, ownerConversationId) => {
+            const sideSession = ownerConversationId === undefined ? undefined
+              : projectSessions.sessions.find((candidate) => candidate.id === id);
+            if (sideSession !== undefined) {
+              setActiveActivity("conversations");
+              openTeamConversation(sideSession, ownerConversationId);
+              projectSessions.markSessionResultViewed(id, true);
+              return;
+            }
+            selectSession(id);
+            if (timelineItemId !== undefined) setConversationLocateRequest((current) => ({
+              conversationId: id,
+              id: timelineItemId,
+              requestId: (current?.requestId ?? 0) + 1,
+            }));
+          }} />}
+        agentClient={agentClient}
+        conversationTabs={conversationTabs}
+        onCloseAllConversationTabs={closeAllConversationTitlebarTabs}
+        onCloseConversationTab={closeConversationTitlebarTab}
+        onCloseOtherConversationTabs={closeOtherConversationTitlebarTabs}
+        onSelectConversationTab={selectSession}
+        onKeepConversationTab={(id) => setTabState((current) => current.previewId === id ? { ...current, previewId: null } : current)}
+        onMoveConversationTab={(source, target, side) => {
+          setTabState((current) => ({ ...current, ids: moveTabId(current.ids, source, target, side) }));
+        }}
+        projectNavigator={
         <ProjectNavigator
-          activeSessionId={projectSessions.activeSessionId}
+          onOpenGlobalSearch={() => setGlobalSearchOpen(true)}
+          onCopyText={(text) => agentClient.writeClipboardText(text)}
+          onOpenProjectDirectory={(projectId) => agentClient.openProjectDirectory({ projectId })}
+          activeSessionId={teamChatTarget === null ? projectSessions.activeSessionId : null}
+          agents={agents}
           isCreatingSession={projectSessions.isCreatingSession}
           isLoadingSessions={projectSessions.isLoadingSessions}
           locateRequest={navigatorLocateRequest}
-          operationError={projectSessions.operationError}
+          operationError={teamInstanceError ?? projectSessions.operationError}
           sessions={projectSessions.sessions}
+          teamInstances={teamInstances}
+          teams={teams}
+          teamWorkItems={teamNavigatorWorkItems}
           tree={projectTree}
-          onClearOperationError={() => projectSessions.clearOperationError()}
+          onClearOperationError={() => {
+            setTeamInstanceError(null);
+            projectSessions.clearOperationError();
+          }}
           onCreateProjectSession={(projectId) => {
+            useWorkbenchUiStore.getState().closeTeamChat();
+            setActiveActivity("conversations");
             setNavigatorLocateRequest(null);
             projectTree.selectProject(projectId);
             void projectSessions.createProjectSession(projectId);
           }}
-          onCreateTemporarySession={() => void projectSessions.createTemporarySession()}
+          onCreateTemporarySession={() => { useWorkbenchUiStore.getState().closeTeamChat(); setActiveActivity("conversations"); void projectSessions.createTemporarySession(); }}
+          onCreateTeamInstance={createTeamInstance}
           onDeleteSession={(sessionId) => projectSessions.deleteSession(sessionId)}
+          onDeleteTeamInstance={deleteTeamInstance}
+          onOpenTeamMember={(teamInstanceId, agentId, session) => {
+            if (session !== null) { openTeamMemberSession(session); return; }
+            void projectSessions.ensureTeamInstanceMemberSession(
+              teamInstanceId,
+              agentId,
+            ).then((ensured) => {
+              const member = ensured ?? session;
+              if (member !== null) openTeamMemberSession(member);
+            });
+          }}
           onRemoveProject={async (projectId) => {
             const removed = await projectTree.removeProject(projectId);
             if (removed) projectSessions.discardProjectSessions(projectId);
@@ -249,21 +777,28 @@ export function App(): ReactElement {
           onRenameSession={(sessionId, title) =>
             projectSessions.renameSession(sessionId, title)
           }
+          onRenameTeamInstance={renameTeamInstance}
           onReorderSessions={(sessionIds) => projectSessions.reorderSessions(sessionIds)}
-          onSelectProject={(projectId) => {
-            setNavigatorLocateRequest(null);
-            selectProject(projectId);
+          onSetSessionProject={async (sessionId, projectId) => {
+            const moved = await projectSessions.setSessionProject(sessionId, projectId);
+            if (moved && projectSessions.activeSessionId === sessionId) {
+              projectTree.selectProject(projectId);
+            }
+            return moved;
           }}
+          onReorderTeamInstances={reorderTeamInstances}
           onSelectSession={(sessionId) => {
             setNavigatorLocateRequest(null);
             selectSession(sessionId);
           }}
+          onKeepSession={(id) => setTabState((current) => current.previewId === id ? { ...current, previewId: null } : current)}
           onSetSessionArchived={(sessionId, archived) =>
             projectSessions.setSessionArchived(sessionId, archived)
           }
           onSetSessionPinned={(sessionId, pinned) =>
             projectSessions.setSessionPinned(sessionId, pinned)
           }
+          onSetTeamInstanceArchived={setTeamInstanceArchived}
         />
       }
       mainContent={
@@ -275,39 +810,65 @@ export function App(): ReactElement {
           isAddingProject={projectTree.isAddingProject}
           isCreatingSession={projectSessions.isCreatingSession}
           projects={projectTree.projects}
+          protectedSessionIds={openConversationIds}
+          openTeamChatInstanceIds={openTeamChatInstanceIds}
+          sessions={projectSessions.sessions}
+          locateTimelineItem={conversationLocateRequest}
+          teamInstances={teamInstances}
           onAddProject={() => projectTree.addProject()}
           onCreateProjectSession={(projectId) => {
+            useWorkbenchUiStore.getState().closeTeamChat();
             setNavigatorLocateRequest(null);
             projectTree.selectProject(projectId);
             void projectSessions.createProjectSession(projectId);
           }}
-          onCreateTemporarySession={() => void projectSessions.createTemporarySession()}
+          onCreateTemporarySession={() => { useWorkbenchUiStore.getState().closeTeamChat(); void projectSessions.createTemporarySession(); }}
           onForkConversation={forkConversationFromMessage}
           onLocateProject={(projectId) => locateInProjectNavigator("project", projectId)}
           onLocateSession={(sessionId) => locateInProjectNavigator("session", sessionId)}
+          onLocateConversationItem={locateConversationItem}
           onOpenProjectFile={requestOpenProjectFile}
+          onOpenGitReview={requestOpenGitReview}
+          onOpenTeamConversation={openTeamConversation}
+          onNavigateToTeamConversation={navigateToTeamConversation}
           onProjectSelected={(projectId) => projectTree.selectProject(projectId)}
+          onRefreshSessions={() => projectSessions.refreshSessions()}
           onSessionSelected={(sessionId) => {
             setNavigatorLocateRequest(null);
             selectSession(sessionId);
           }}
           onSessionUpdated={(conversation) => projectSessions.updateSession(conversation)}
+          onSessionViewed={(sessionId) => projectSessions.markSessionResultViewed(sessionId, true)}
         />
       }
       filePanel={
         <RightSidebarWorkspace
-          activeProject={projectTree.activeProject}
-          activeSession={projectSessions.activeSession}
+          activeProject={sidebarProject}
+          activeSession={sidebarSession}
+          teamChat={activeTeamChat}
+          sessions={projectSessions.sessions}
+          teamInstances={teamInstances}
           agentClient={agentClient}
           fileOpenRequest={fileOpenRequest}
+          gitReviewOpenRequest={gitReviewOpenRequest}
+          teamMemberOpenRequest={teamMemberOpenRequest}
+          onRenameTeamInstance={renameTeamInstance}
           onLocateProject={(projectId) => locateInProjectNavigator("project", projectId)}
           onLocateSession={(sessionId) => locateInProjectNavigator("session", sessionId)}
+          onLocateConversationItem={locateConversationItem}
+          onSessionViewed={(sessionId) => projectSessions.markSessionResultViewed(sessionId, true)}
           onSessionUpdated={(conversation) => projectSessions.updateSession(conversation)}
           tree={projectTree}
         />
       }
       />
+      <GlobalConversationSearchDialog
+        agentClient={agentClient}
+        open={isGlobalSearchOpen}
+        onOpenChange={setGlobalSearchOpen}
+        onSelect={selectGlobalSearchResult}
+      />
       <MediaPreviewDialogHost />
-    </>
+    </ConversationWorkProvider>
   );
 }

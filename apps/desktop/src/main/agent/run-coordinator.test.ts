@@ -47,6 +47,24 @@ describe("RunCoordinator", () => {
     expect(coordinator.complete("run-1").wasReplacing).toBe(true);
   });
 
+  it("cancels every active Run and waits for each execution to finish", async () => {
+    const coordinator = new RunCoordinator();
+    const first = new AbortController();
+    const second = new AbortController();
+    coordinator.register("one", first, "conversation-one");
+    coordinator.register("two", second, "conversation-two");
+    let completed = false;
+    const stopped = coordinator.cancelAll().then(() => { completed = true; });
+    expect(first.signal.aborted).toBe(true);
+    expect(second.signal.aborted).toBe(true);
+    coordinator.complete("one");
+    await Promise.resolve();
+    expect(completed).toBe(false);
+    coordinator.complete("two");
+    await stopped;
+    expect(completed).toBe(true);
+  });
+
   it("enforces one in-memory active Run per Conversation", () => {
     const coordinator = new RunCoordinator();
     const first = coordinator.register("run-1", new AbortController(), "conversation-1");

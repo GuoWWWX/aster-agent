@@ -1,0 +1,142 @@
+/* Styling triggers: @container tracks the resizable workspace, and ::before paints the unified left review card. */
+.git-review-workspace {
+  container-type: inline-size;
+}
+
+.git-review-branch-trigger {
+  flex: 0 1 clamp(140px, 28cqw, 260px);
+  width: clamp(140px, 28cqw, 260px);
+}
+
+.git-review-toolbar-overflow {
+  display: none;
+}
+
+.git-review-main {
+  display: flex;
+  min-width: 0;
+}
+
+.git-review-diff-pane {
+  display: none;
+}
+
+@container (min-width: 760px) {
+  .git-review-workspace .git-review-content {
+    display: grid;
+    min-width: 0;
+    position: relative;
+    grid-template-columns: clamp(260px, 42%, 400px) minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) 5px auto;
+    gap: 0 5px;
+    overflow: hidden;
+    padding: 5px;
+  }
+
+  .git-review-workspace .git-review-main {
+    display: contents;
+  }
+
+  .git-review-workspace .git-review-content::before {
+    content: "";
+    grid-column: 1;
+    grid-row: 1 / 4;
+    pointer-events: none;
+    z-index: 0;
+    border: 1px solid var(--app-border);
+    border-radius: var(--app-radius);
+    background: var(--app-panel);
+  }
+
+  .git-review-workspace .git-review-change-pane {
+    grid-column: 1;
+    grid-row: 1;
+    min-width: 0;
+    min-height: 0;
+    position: relative;
+    z-index: 1;
+  }
+
+  .git-review-workspace .git-review-diff-pane {
+    grid-column: 2;
+    grid-row: 1 / 4;
+    display: flex;
+    min-width: 0;
+    min-height: 0;
+    flex-direction: column;
+    overflow: hidden;
+    border: 1px solid var(--app-border);
+    border-radius: var(--app-radius);
+    background: var(--app-panel);
+  }
+
+  .git-review-content .git-review-commit-resizer {
+    grid-column: 1;
+    grid-row: 2;
+    position: relative;
+    z-index: 1;
+    margin: 0 5px;
+  }
+
+  .git-review-content .git-review-commit-panel {
+    grid-column: 1;
+    grid-row: 3;
+    min-width: 0;
+    position: relative;
+    z-index: 1;
+    margin: 0 5px 5px;
+  }
+
+  .git-review-workspace .git-review-inline-diff {
+    display: none;
+  }
+
+  .git-review-workspace .git-review-diff-viewer--pane {
+    display: flex;
+    min-height: 0;
+    flex: 1 1 0;
+    border-top: 0;
+  }
+
+  .git-review-workspace .git-review-diff-viewer--pane .tool-diff-view {
+    max-height: none;
+    flex: 1 1 0;
+  }
+}
+
+@container (max-width: 500px) {
+  .git-review-branch-trigger {
+    flex-basis: clamp(140px, 42cqw, 210px);
+    width: clamp(140px, 42cqw, 210px);
+  }
+
+  .git-review-change-directory {
+    display: none;
+  }
+
+  .git-review-commit-panel button {
+    flex: 1 1 0;
+  }
+}
+
+@container (max-width: 390px) {
+  .git-review-toolbar-action--optional {
+    display: none;
+  }
+
+  .git-review-toolbar-overflow {
+    display: inline-flex;
+  }
+}
+
+@container (max-width: 360px) {
+  .git-review-toolbar-action--narrow {
+    display: none;
+  }
+}
+
+@container (max-width: 440px) {
+  .git-review-change-status {
+    display: none;
+  }
+}

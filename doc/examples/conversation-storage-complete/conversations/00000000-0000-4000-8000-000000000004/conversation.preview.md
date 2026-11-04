@@ -1,0 +1,410 @@
+# 新建侧边派生对话
+
+> v2 新格式样例，非当前应用可导入文件。以下仅为展开阅读；真实 JSONL 每条记录独占一行。所有结果均为虚构示例，不代表执行过命令或模型请求。
+
+[原始 JSONL](./conversation.jsonl) · [格式说明](../../../../23-JSONL完整事件格式与全场景样例.md)
+
+```json
+{
+  "type": "thread_header",
+  "version": 2,
+  "conversationId": "00000000-0000-4000-8000-000000000004",
+  "createdAt": "2026-09-07T02:00:33.000Z"
+}
+
+{
+  "type": "conversation_created",
+  "version": 2,
+  "conversationId": "00000000-0000-4000-8000-000000000004",
+  "eventId": "00000000-0000-4000-8000-000000000419",
+  "sequence": 1,
+  "createdAt": "2026-09-07T02:00:34.000Z",
+  "payload": {
+    "properties": {
+      "parentConversationId": "00000000-0000-4000-8000-000000000001",
+      "mode": "persistent",
+      "title": "解释检查结果",
+      "agentId": "00000000-0000-4000-8000-00000000012d",
+      "avatarIcon": null,
+      "projectId": "00000000-0000-4000-8000-000000000065",
+      "modelSelection": {
+        "providerId": "00000000-0000-4000-8000-0000000000c9",
+        "modelId": "demo-chat",
+        "reasoning": {
+          "kind": "effort",
+          "value": "medium"
+        }
+      },
+      "permissionMode": "ask_before_changes",
+      "archivedAt": null,
+      "pinOrder": null
+    },
+    "origin": {
+      "kind": "side",
+      "sourceConversationId": "00000000-0000-4000-8000-000000000001",
+      "sourceMessageId": "00000000-0000-4000-8000-00000000040f",
+      "teamInstanceId": null
+    }
+  }
+}
+
+{
+  "type": "attachment_imported",
+  "version": 2,
+  "conversationId": "00000000-0000-4000-8000-000000000004",
+  "eventId": "00000000-0000-4000-8000-00000000041b",
+  "sequence": 2,
+  "createdAt": "2026-09-07T02:00:35.000Z",
+  "payload": {
+    "attachmentId": "00000000-0000-4000-8000-00000000041a",
+    "fileName": "说明.txt",
+    "relativePath": "attachments/00000000-0000-4000-8000-00000000041a.txt",
+    "mimeType": "text/plain",
+    "sizeBytes": 95,
+    "importMethod": "copy"
+  }
+}
+
+{
+  "type": "context_seeded",
+  "version": 2,
+  "conversationId": "00000000-0000-4000-8000-000000000004",
+  "eventId": "00000000-0000-4000-8000-00000000041c",
+  "sequence": 3,
+  "createdAt": "2026-09-07T02:00:36.000Z",
+  "payload": {
+    "sourceConversationId": "00000000-0000-4000-8000-000000000001",
+    "sourceThroughEventId": "00000000-0000-4000-8000-000000000415",
+    "sourceThroughSequence": 30,
+    "sourceCheckpointId": "00000000-0000-4000-8000-000000000416",
+    "visibility": "context_only",
+    "snapshot": {
+      "summary": {
+        "goals": [
+          "检查演示项目"
+        ],
+        "constraints": [
+          "副作用需审批",
+          "保留原始历史"
+        ],
+        "decisions": [
+          "后续只复核已有结果"
+        ],
+        "facts": [
+          "已读说明.txt",
+          "检查 1/1 通过，退出码 0"
+        ],
+        "pendingWork": [],
+        "attachmentIds": [
+          "00000000-0000-4000-8000-00000000041a"
+        ],
+        "sourceConversationIds": []
+      },
+      "messages": [],
+      "attachmentIdMap": {
+        "00000000-0000-4000-8000-0000000003e9": "00000000-0000-4000-8000-00000000041a"
+      }
+    }
+  }
+}
+
+{
+  "type": "user_message",
+  "version": 2,
+  "conversationId": "00000000-0000-4000-8000-000000000004",
+  "eventId": "00000000-0000-4000-8000-00000000041e",
+  "sequence": 4,
+  "createdAt": "2026-09-07T02:00:37.000Z",
+  "payload": {
+    "messageId": "00000000-0000-4000-8000-00000000041d",
+    "content": "这里的退出码 0 是什么意思？",
+    "attachmentIds": []
+  }
+}
+
+{
+  "type": "run_started",
+  "version": 2,
+  "conversationId": "00000000-0000-4000-8000-000000000004",
+  "eventId": "00000000-0000-4000-8000-000000000420",
+  "sequence": 5,
+  "createdAt": "2026-09-07T02:00:38.000Z",
+  "payload": {
+    "runId": "00000000-0000-4000-8000-00000000041f",
+    "triggerMessageIds": [
+      "00000000-0000-4000-8000-00000000041d"
+    ],
+    "contextCheckpointId": null,
+    "executionSnapshot": {
+      "agentId": "00000000-0000-4000-8000-00000000012d",
+      "agentSnapshot": {
+        "id": "00000000-0000-4000-8000-00000000012d",
+        "name": "开发助手",
+        "instructions": "根据用户请求工作；先核实证据，未经授权不执行副作用。",
+        "skillIds": [],
+        "plugins": []
+      },
+      "modelSelection": {
+        "providerId": "00000000-0000-4000-8000-0000000000c9",
+        "modelId": "demo-chat",
+        "reasoning": {
+          "kind": "effort",
+          "value": "medium"
+        }
+      },
+      "modelProfile": {
+        "providerName": "供应商 A",
+        "apiFormat": "openai-chat-completions",
+        "baseUrl": "https://example.invalid/v1",
+        "contextWindow": 32000
+      },
+      "permissionMode": "ask_before_changes",
+      "projectId": "00000000-0000-4000-8000-000000000065",
+      "projectName": "演示项目",
+      "projectRootPath": "D:/demo/project",
+      "workspaceRootPath": "D:/demo/project",
+      "toolManifest": [
+        {
+          "name": "read_attachment",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "attachment_id": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "offset": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "limit": {
+                "type": "integer",
+                "minimum": 1
+              }
+            },
+            "required": [
+              "attachment_id",
+              "offset",
+              "limit"
+            ],
+            "additionalProperties": false
+          },
+          "definitionVersion": "example-1",
+          "description": "样例合同：记录参数结构，不包含实际执行器。"
+        },
+        {
+          "name": "run_command",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "command": {
+                "type": "string"
+              },
+              "execution_mode": {
+                "type": "string",
+                "enum": [
+                  "batch",
+                  "service"
+                ]
+              }
+            },
+            "required": [
+              "command",
+              "execution_mode"
+            ],
+            "additionalProperties": false
+          },
+          "definitionVersion": "example-1",
+          "description": "样例合同：记录参数结构，不包含实际执行器。"
+        },
+        {
+          "name": "spawn_subagent",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "task": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "name",
+              "task"
+            ],
+            "additionalProperties": false
+          },
+          "definitionVersion": "example-1",
+          "description": "样例合同：记录参数结构，不包含实际执行器。"
+        },
+        {
+          "name": "send_agent_message",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "target_conversation_id": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "message": {
+                "type": "string"
+              },
+              "expect_reply": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "target_conversation_id",
+              "message",
+              "expect_reply"
+            ],
+            "additionalProperties": false
+          },
+          "definitionVersion": "example-1",
+          "description": "样例合同：记录参数结构，不包含实际执行器。"
+        },
+        {
+          "name": "end_subagent",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "conversation_id": {
+                "type": "string",
+                "format": "uuid"
+              }
+            },
+            "required": [
+              "conversation_id"
+            ],
+            "additionalProperties": false
+          },
+          "definitionVersion": "example-1",
+          "description": "样例合同：记录参数结构，不包含实际执行器。"
+        }
+      ],
+      "contextPolicy": {
+        "historyMode": "checkpoint_then_tail",
+        "preserveRawHistory": true
+      },
+      "teamBinding": null
+    }
+  }
+}
+
+{
+  "type": "model_call_started",
+  "version": 2,
+  "conversationId": "00000000-0000-4000-8000-000000000004",
+  "eventId": "00000000-0000-4000-8000-000000000423",
+  "sequence": 6,
+  "createdAt": "2026-09-07T02:00:39.000Z",
+  "payload": {
+    "runId": "00000000-0000-4000-8000-00000000041f",
+    "modelCallId": "00000000-0000-4000-8000-000000000421",
+    "attemptId": "00000000-0000-4000-8000-000000000422",
+    "modelSelection": {
+      "providerId": "00000000-0000-4000-8000-0000000000c9",
+      "modelId": "demo-chat",
+      "reasoning": {
+        "kind": "effort",
+        "value": "medium"
+      }
+    }
+  }
+}
+
+{
+  "type": "assistant_message_started",
+  "version": 2,
+  "conversationId": "00000000-0000-4000-8000-000000000004",
+  "eventId": "00000000-0000-4000-8000-000000000425",
+  "sequence": 7,
+  "createdAt": "2026-09-07T02:00:40.000Z",
+  "payload": {
+    "messageId": "00000000-0000-4000-8000-000000000424",
+    "runId": "00000000-0000-4000-8000-00000000041f",
+    "modelCallId": "00000000-0000-4000-8000-000000000421",
+    "channel": "final"
+  }
+}
+
+{
+  "type": "assistant_message_delta",
+  "version": 2,
+  "conversationId": "00000000-0000-4000-8000-000000000004",
+  "eventId": "00000000-0000-4000-8000-000000000426",
+  "sequence": 8,
+  "createdAt": "2026-09-07T02:00:41.000Z",
+  "payload": {
+    "messageId": "00000000-0000-4000-8000-000000000424",
+    "partIndex": 0,
+    "text": "在这次检查中，退出码 0 表示命令正常结"
+  }
+}
+
+{
+  "type": "assistant_message_delta",
+  "version": 2,
+  "conversationId": "00000000-0000-4000-8000-000000000004",
+  "eventId": "00000000-0000-4000-8000-000000000427",
+  "sequence": 9,
+  "createdAt": "2026-09-07T02:00:42.000Z",
+  "payload": {
+    "messageId": "00000000-0000-4000-8000-000000000424",
+    "partIndex": 1,
+    "text": "束；不能据此推断未执行的其他检查也已通过。"
+  }
+}
+
+{
+  "type": "assistant_message_finished",
+  "version": 2,
+  "conversationId": "00000000-0000-4000-8000-000000000004",
+  "eventId": "00000000-0000-4000-8000-000000000428",
+  "sequence": 10,
+  "createdAt": "2026-09-07T02:00:43.000Z",
+  "payload": {
+    "messageId": "00000000-0000-4000-8000-000000000424",
+    "status": "completed",
+    "artifactIds": []
+  }
+}
+
+{
+  "type": "model_call_finished",
+  "version": 2,
+  "conversationId": "00000000-0000-4000-8000-000000000004",
+  "eventId": "00000000-0000-4000-8000-000000000429",
+  "sequence": 11,
+  "createdAt": "2026-09-07T02:00:44.000Z",
+  "payload": {
+    "runId": "00000000-0000-4000-8000-00000000041f",
+    "modelCallId": "00000000-0000-4000-8000-000000000421",
+    "finishReason": "stop",
+    "usage": {
+      "inputTokens": 120,
+      "outputTokens": 24,
+      "cacheReadTokens": null,
+      "cacheWriteTokens": null
+    },
+    "providerState": null
+  }
+}
+
+{
+  "type": "run_terminal",
+  "version": 2,
+  "conversationId": "00000000-0000-4000-8000-000000000004",
+  "eventId": "00000000-0000-4000-8000-00000000042a",
+  "sequence": 12,
+  "createdAt": "2026-09-07T02:00:45.000Z",
+  "payload": {
+    "runId": "00000000-0000-4000-8000-00000000041f",
+    "status": "completed",
+    "finalMessageId": "00000000-0000-4000-8000-000000000424",
+    "error": null,
+    "pendingDeliveries": []
+  }
+}
+```

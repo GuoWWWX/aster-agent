@@ -1,49 +1,142 @@
-import { useState, type CSSProperties, type ReactElement, type ReactNode } from "react";
+import { useEffect, useRef, useState, type CSSProperties, type ReactElement, type ReactNode } from "react";
 
 import type { AgentClient } from "../../runtime/index.js";
+import type { ProjectSummary } from "@agent/protocol";
+import { ActivityBar } from "./activity-bar.js";
+import { projectAccent } from "./project-accent.js";
 import {
   FILE_PANEL_WIDTH_RANGE,
   PROJECT_NAVIGATOR_WIDTH_RANGE,
+  resolveActiveSettingsWorkspaceTarget,
   useWorkbenchUiStore,
 } from "../../stores/workbench-ui-store.js";
-import { ActivityBar } from "./activity-bar.js";
 import { AppTitlebar } from "./app-titlebar.js";
+import type { AppTitlebarConversationTab } from "./app-titlebar.js";
 import { ResizableDivider } from "./resizable-divider.js";
+import { WorkbenchLayout } from "./workbench-layout.js";
 
 const TITLEBAR_CONTEXT = {
   conversations: "从左侧项目打开会话，或新建一个",
   settings: "Agent、团队、模型、工具与工作区偏好",
   tasks: "持续接收、规划和跟踪任务",
   team: "查看团队进度、Agent 状态与协作动态",
+  schedules: "配置定时任务，查看执行记录",
 } as const;
 
+const TITLEBAR_LEFT_CONTROL_WIDTH = 32;
+const WORKBENCH_MAIN_LEFT_INSET = 0;
+const WORKBENCH_NAVIGATOR_TO_MAIN_GAP = 5;
+const WORKBENCH_ACTIVITY_BAR_WIDTH = 44;
+
 type AppShellProps = {
+  activeProject?: ProjectSummary | null;
+  projects?: readonly ProjectSummary[];
+  onOpenGlobalSearch?: () => void;
+  activeTabId?: string | null;
+  titlebarActivity?: ReactNode;
+  onKeepConversationTab?: (id: string) => void;
+  navigation?: { canGoBack: boolean; canGoForward: boolean; goBack: () => void; goForward: () => void };
+  activeConversationId?: string | null;
   agentClient: AgentClient;
+  conversationTabs?: readonly AppTitlebarConversationTab[];
   filePanel: ReactNode;
   mainContent: ReactNode;
   projectNavigator: ReactNode;
+  onCloseAllConversationTabs?: () => void;
+  onCloseConversationTab?: (conversationId: string) => void;
+  onCloseOtherConversationTabs?: (conversationId: string) => void;
+  onSelectConversationTab?: (conversationId: string) => void;
+  onMoveConversationTab?: (source: string, target: string, side: "before" | "after") => void;
 };
 
 export function AppShell({
+  activeProject = null,
+  projects = [],
+  onOpenGlobalSearch,
+  activeTabId,
+  titlebarActivity,
+  onKeepConversationTab,
+  navigation,
+  activeConversationId = null,
   agentClient,
+  conversationTabs = [],
   filePanel,
   mainContent,
   projectNavigator,
+  onCloseAllConversationTabs,
+  onCloseConversationTab,
+  onCloseOtherConversationTabs,
+  onSelectConversationTab,
+  onMoveConversationTab,
 }: AppShellProps): ReactElement {
   const [isFilePanelResizing, setFilePanelResizing] = useState(false);
+  const filePanelRef = useRef<HTMLDivElement>(null);
+  const filePanelDraggingRef = useRef(false);
+  const liveFilePanelWidthRef = useRef(0);
+  useEffect(() => {
+    if (!isFilePanelResizing) filePanelRef.current?.style.removeProperty("--app-live-file-panel-width");
+  }, [isFilePanelResizing]);
+  const [isProjectNavigatorResizing, setProjectNavigatorResizing] = useState(false);
   const isFilePanelOpen = useWorkbenchUiStore(
     (state) => state.isFilePanelOpen,
+  );
+  const isSettingsFilePanelOpen = useWorkbenchUiStore(
+    (state) => state.isSettingsFilePanelOpen,
   );
   const activeActivity = useWorkbenchUiStore((state) => state.activeActivity);
   const isProjectNavigatorOpen = useWorkbenchUiStore(
     (state) => state.isProjectNavigatorOpen,
   );
+  const [navigatorPeek, setNavigatorPeek] = useState(false);
+  const [previousNavigatorOpen, setPreviousNavigatorOpen] = useState(isProjectNavigatorOpen);
+  const [previousActivity, setPreviousActivity] = useState(activeActivity);
+  const peekTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const cancelPeekTimer = (): void => {
+    if (peekTimer.current !== null) clearTimeout(peekTimer.current);
+    peekTimer.current = null;
+  };
+  if (previousNavigatorOpen !== isProjectNavigatorOpen || previousActivity !== activeActivity) {
+    setPreviousNavigatorOpen(isProjectNavigatorOpen);
+    setPreviousActivity(activeActivity);
+    setNavigatorPeek(false);
+  }
+  useEffect(() => {
+    cancelPeekTimer();
+    return cancelPeekTimer;
+  }, [isProjectNavigatorOpen, activeActivity]);
+  const scheduleNavigatorPeek = (visible: boolean): void => {
+    cancelPeekTimer();
+    if (isProjectNavigatorOpen || activeActivity !== "conversations") return;
+    peekTimer.current = setTimeout(() => {
+      peekTimer.current = null;
+      setNavigatorPeek(visible);
+    }, visible ? 180 : 280);
+  };
   const filePanelWidth = useWorkbenchUiStore((state) => state.filePanelWidth);
+  const conversationFilePanelOpen = useWorkbenchUiStore((state) =>
+    activeConversationId === null
+      ? false
+      : state.filePanelOpenByConversationId[activeConversationId] ?? false
+  );
+  const conversationFilePanelWidth = useWorkbenchUiStore((state) =>
+    activeConversationId === null
+      ? undefined
+      : state.filePanelWidthsByConversationId[activeConversationId],
+  );
   const projectNavigatorWidth = useWorkbenchUiStore(
     (state) => state.projectNavigatorWidth,
   );
   const setFilePanelOpen = useWorkbenchUiStore((state) => state.setFilePanelOpen);
+  const setFilePanelOpenForConversation = useWorkbenchUiStore(
+    (state) => state.setFilePanelOpenForConversation,
+  );
+  const setSettingsFilePanelOpen = useWorkbenchUiStore(
+    (state) => state.setSettingsFilePanelOpen,
+  );
   const setFilePanelWidth = useWorkbenchUiStore((state) => state.setFilePanelWidth);
+  const setFilePanelWidthForConversation = useWorkbenchUiStore(
+    (state) => state.setFilePanelWidthForConversation,
+  );
   const setProjectNavigatorOpen = useWorkbenchUiStore(
     (state) => state.setProjectNavigatorOpen,
   );
@@ -51,54 +144,159 @@ export function AppShell({
     (state) => state.setProjectNavigatorWidth,
   );
   const themeMode = useWorkbenchUiStore((state) => state.themeMode);
-  const toggleFilePanel = useWorkbenchUiStore(
-    (state) => state.toggleFilePanel,
-  );
+  const uiFontSize = useWorkbenchUiStore((state) => state.uiFontSize);
+  const chatFontSize = useWorkbenchUiStore((state) => state.chatFontSize);
+  const codeFontSize = useWorkbenchUiStore((state) => state.codeFontSize);
   const toggleProjectNavigator = useWorkbenchUiStore(
     (state) => state.toggleProjectNavigator,
   );
   const configurationWorkspaceTarget = useWorkbenchUiStore(
     (state) => state.configurationWorkspaceTarget,
   );
-  const isConversationWorkspace = activeActivity === "conversations";
-  const canShowFileWorkspace = isConversationWorkspace || (
-    activeActivity === "settings" && configurationWorkspaceTarget !== null
+  const agentPromptWorkspaceTarget = useWorkbenchUiStore(
+    (state) => state.agentPromptWorkspaceTarget,
   );
-  const filePanelStyle = { width: `${filePanelWidth}px` } as CSSProperties;
+  const settingsSection = useWorkbenchUiStore((state) => state.settingsSection);
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = themeMode;
+    return () => {
+      document.documentElement.removeAttribute("data-theme");
+    };
+  }, [themeMode]);
+
+  useEffect(() => {
+    const style = document.documentElement.style;
+    style.setProperty("--app-ui-font-size", `${uiFontSize}px`);
+    style.setProperty("--app-chat-font-size", `${chatFontSize}px`);
+    style.setProperty("--app-code-font-size", `${codeFontSize}px`);
+    return () => {
+      for (const name of ["--app-ui-font-size", "--app-chat-font-size", "--app-code-font-size"]) {
+        style.removeProperty(name);
+      }
+    };
+  }, [uiFontSize, chatFontSize, codeFontSize]);
+
+  const isConversationWorkspace = activeActivity === "conversations";
+  const canShowProjectNavigator = isConversationWorkspace;
+  const activeSettingsWorkspaceTarget = resolveActiveSettingsWorkspaceTarget(
+    activeActivity,
+    settingsSection,
+    agentPromptWorkspaceTarget,
+    configurationWorkspaceTarget,
+  );
+  const isSettingsWorkspace = activeSettingsWorkspaceTarget !== null;
+  const canShowFileWorkspace = (isConversationWorkspace && activeConversationId !== null)
+    || activeActivity === "team"
+    || isSettingsWorkspace;
+  const activeFilePanelOpen = activeActivity === "settings"
+    ? isSettingsFilePanelOpen
+    : isConversationWorkspace
+      ? conversationFilePanelOpen
+      : isFilePanelOpen;
+  const setActiveFilePanelOpen = (isOpen: boolean): void => {
+    if (activeActivity === "settings") {
+      setSettingsFilePanelOpen(isOpen);
+      return;
+    }
+    if (isConversationWorkspace && activeConversationId !== null) {
+      setFilePanelOpenForConversation(activeConversationId, isOpen);
+      return;
+    }
+    setFilePanelOpen(isOpen);
+  };
+  const activeFilePanelWidth = isConversationWorkspace && activeConversationId !== null
+    ? conversationFilePanelWidth ?? filePanelWidth
+    : filePanelWidth;
+  const filePanelStyle = {
+    width: isFilePanelResizing ? `var(--app-live-file-panel-width, ${activeFilePanelWidth}px)` : `${activeFilePanelWidth}px`,
+  } as CSSProperties;
+  const saveFilePanelWidth = (width: number): void => {
+    if (isConversationWorkspace && activeConversationId !== null) {
+      setFilePanelWidthForConversation(activeConversationId, width);
+    } else {
+      setFilePanelWidth(width);
+    }
+  };
   const projectNavigatorStyle = {
     width: `${projectNavigatorWidth}px`,
   } as CSSProperties;
+  const conversationTabsLeadingWidth = WORKBENCH_ACTIVITY_BAR_WIDTH + WORKBENCH_MAIN_LEFT_INSET
+    + (isProjectNavigatorOpen
+      ? projectNavigatorWidth + WORKBENCH_NAVIGATOR_TO_MAIN_GAP
+      : 0)
+    - TITLEBAR_LEFT_CONTROL_WIDTH;
 
+  const accent = projectAccent(activeProject, projects);
+  const accentStyle = accent === null ? undefined : {
+    "--app-project-accent-start": accent[0],
+    "--app-project-accent-end": accent[1],
+  } as CSSProperties;
   return (
-    <div className="app-shell" data-theme={themeMode}>
-      <AppTitlebar
+    <WorkbenchLayout
+      activeActivity={activeActivity}
+      hasProjectAccent={accent !== null}
+      isConversationWorkspace={isConversationWorkspace}
+      projectAccentStyle={accentStyle}
+      themeMode={themeMode}
+      titlebar={<AppTitlebar
+        {...(navigation === undefined ? {} : { navigation })}
+        activeConversationId={activeTabId === undefined ? activeConversationId : activeTabId}
+        activity={titlebarActivity}
+        {...(onKeepConversationTab === undefined ? {} : { onKeepConversationTab })}
         agentClient={agentClient}
+        conversationTabs={conversationTabs}
+        conversationTabsLeadingWidth={conversationTabsLeadingWidth}
         contextText={TITLEBAR_CONTEXT[activeActivity]}
-        isFilePanelOpen={isFilePanelOpen}
+        isFilePanelOpen={canShowFileWorkspace && activeFilePanelOpen}
         isProjectNavigatorOpen={isProjectNavigatorOpen}
-        onToggleFilePanel={toggleFilePanel}
+        onToggleFilePanel={() => setActiveFilePanelOpen(!activeFilePanelOpen)}
         onToggleProjectNavigator={toggleProjectNavigator}
-        showFilePanelControl={canShowFileWorkspace}
-        showProjectNavigatorControl={isConversationWorkspace}
-      />
-      <div
-        className="workbench-grid"
-        data-active-activity={activeActivity}
-        data-full-page={String(!isConversationWorkspace)}
-      >
-        <ActivityBar />
-        {isConversationWorkspace && isProjectNavigatorOpen ? (
+        {...(onCloseAllConversationTabs === undefined ? {} : {
+          onCloseAllConversationTabs,
+        })}
+        {...(onCloseConversationTab === undefined ? {} : {
+          onCloseConversationTab,
+        })}
+        {...(onCloseOtherConversationTabs === undefined ? {} : {
+          onCloseOtherConversationTabs,
+        })}
+        {...(onSelectConversationTab === undefined ? {} : {
+          onSelectConversationTab,
+        })}
+        {...(onMoveConversationTab === undefined ? {} : { onMoveConversationTab })}
+        canToggleFilePanel={canShowFileWorkspace}
+        canToggleProjectNavigator={canShowProjectNavigator}
+      />}
+    >
+        <ActivityBar
+          agentClient={agentClient}
+          {...(onOpenGlobalSearch === undefined ? {} : { onOpenGlobalSearch })}
+          onConversationHoverChange={scheduleNavigatorPeek}
+        />
+        {canShowProjectNavigator && !isProjectNavigatorOpen && !navigatorPeek ? (
           <div
-            className="workbench-sidebar workbench-sidebar--left"
+            aria-hidden="true"
+            data-navigator-hover-edge
+            className="absolute inset-y-0 left-[44px] z-30 w-1"
+            onMouseEnter={() => scheduleNavigatorPeek(true)}
+            onMouseLeave={cancelPeekTimer}
+          />
+        ) : null}
+        {isProjectNavigatorOpen || navigatorPeek ? (
+          <div
+            className={`workbench-sidebar workbench-sidebar--left${!isProjectNavigatorOpen ? " absolute! inset-y-0 left-[44px] z-30 max-w-full bg-[var(--app-panel)] shadow-xl" : ""}`}
+            data-navigator-peek={!isProjectNavigatorOpen || undefined}
+            hidden={!canShowProjectNavigator}
             style={projectNavigatorStyle}
+            onMouseEnter={cancelPeekTimer}
+            onMouseLeave={() => scheduleNavigatorPeek(false)}
           >
             {projectNavigator}
           </div>
         ) : null}
-        {isConversationWorkspace ? <ResizableDivider
-          ariaLabel={
-            isProjectNavigatorOpen ? "调整项目栏宽度" : "拖动展开项目栏"
-          }
+        {canShowProjectNavigator && (isProjectNavigatorOpen || isProjectNavigatorResizing) ? <ResizableDivider
+          ariaLabel="调整项目栏宽度"
           className="workbench-resizable-divider--left"
           collapsed={!isProjectNavigatorOpen}
           direction="from-start"
@@ -109,30 +307,43 @@ export function AppShell({
             setProjectNavigatorOpen(!isCollapsed)
           }
           onResize={setProjectNavigatorWidth}
+          onDraggingChange={setProjectNavigatorResizing}
         /> : null}
         <main className="workbench-main" aria-label="主要工作区">
           {mainContent}
         </main>
-        {canShowFileWorkspace && (isFilePanelOpen || isFilePanelResizing) ? <ResizableDivider
+        {canShowFileWorkspace && (activeFilePanelOpen || isFilePanelResizing) ? <ResizableDivider
           ariaLabel="调整右侧工作区宽度"
           className="workbench-resizable-divider--right"
           direction="from-end"
+          liveResizeId="right-workspace"
           max={FILE_PANEL_WIDTH_RANGE.max}
           min={FILE_PANEL_WIDTH_RANGE.min}
-          size={filePanelWidth}
-          onCollapsedChange={(isCollapsed) => setFilePanelOpen(!isCollapsed)}
-          onDraggingChange={setFilePanelResizing}
-          onResize={setFilePanelWidth}
+          size={activeFilePanelWidth}
+          onCollapsedChange={(isCollapsed) => setActiveFilePanelOpen(!isCollapsed)}
+          onDraggingChange={(dragging) => {
+            filePanelDraggingRef.current = dragging;
+            if (dragging) liveFilePanelWidthRef.current = activeFilePanelWidth;
+            else saveFilePanelWidth(liveFilePanelWidthRef.current);
+            setFilePanelResizing(dragging);
+          }}
+          onResize={(width) => {
+            if (filePanelDraggingRef.current) {
+              liveFilePanelWidthRef.current = width;
+              filePanelRef.current?.style.setProperty("--app-live-file-panel-width", `${width}px`);
+              return;
+            }
+            saveFilePanelWidth(width);
+          }}
         /> : null}
-        {canShowFileWorkspace && isFilePanelOpen ? (
-          <div
-            className="workbench-sidebar workbench-sidebar--right"
-            style={filePanelStyle}
-          >
-            {filePanel}
-          </div>
-        ) : null}
-      </div>
-    </div>
+        <div
+          className="workbench-sidebar workbench-sidebar--right"
+          ref={filePanelRef}
+          hidden={!canShowFileWorkspace || !activeFilePanelOpen}
+          style={filePanelStyle}
+        >
+          {filePanel}
+        </div>
+    </WorkbenchLayout>
   );
 }

@@ -5,13 +5,12 @@ import {
   ChevronLeft,
   ChevronRight,
   CirclePlus,
-  ImagePlus,
-  Layers3,
+  Eye,
+  FolderOpen,
   Plus,
   RotateCcw,
   Settings2,
   ShieldCheck,
-  Sparkles,
   Trash2,
   UsersRound,
 } from "lucide-react";
@@ -26,17 +25,21 @@ import {
   SelectValue,
 } from "../../components/ui/select.js";
 import {
-  AVAILABLE_MCP_SERVERS,
-  AVAILABLE_SKILLS,
   useAgentDirectoryStore,
-  type AgentCapabilityScope,
   type AgentPermissionRule,
   type AgentPermissionTool,
   type AgentModelStrategy,
   type AgentProfile,
   type AgentTeam,
 } from "../../stores/agent-directory-store.js";
-import { AgentAvatar, AGENT_AVATAR_ICON_OPTIONS } from "../team/agent-avatar.js";
+import { useWorkbenchUiStore } from "../../stores/workbench-ui-store.js";
+import { SettingsCategoryHeading, SettingsConfigurationGroup } from "./components/settings-configuration-card.js";
+import { SettingsDirectoryDeleteButton } from "./components/settings-directory-delete-button.js";
+import { SettingsDirectoryList } from "./components/settings-directory-list.js";
+import { AgentAvatar } from "../team/agent-avatar.js";
+import { AgentAvatarPicker } from "./agent-avatar-picker.js";
+import type { AgentClient } from "../../runtime/index.js";
+import { AgentCapabilityEditor } from "./agents/agent-capability-editor.js";
 import "./agent-team-settings.css";
 
 type ManagementView = "agents" | "teams";
@@ -49,20 +52,29 @@ const MODEL_STRATEGY_LABEL: Record<AgentModelStrategy, string> = {
   inherit: "继承对话",
 };
 
-export function AgentTeamSettings(): ReactElement {
-  const [activeView, setActiveView] = useState<ManagementView>("teams");
+export function AgentTeamSettings({ agentClient, searchTarget }: { agentClient: AgentClient; searchTarget?: { agentView?: ManagementView } | null }): ReactElement {
+  const [activeView, setActiveView] = useState<ManagementView>(searchTarget?.agentView ?? "teams");
+  const [previousSearchTarget, setPreviousSearchTarget] = useState(searchTarget);
+  if (previousSearchTarget !== searchTarget) {
+    setPreviousSearchTarget(searchTarget);
+    if (searchTarget?.agentView !== undefined) setActiveView(searchTarget.agentView);
+  }
   const agents = useAgentDirectoryStore((state) => state.agents);
   const teams = useAgentDirectoryStore((state) => state.teams);
   const addAgent = useAgentDirectoryStore((state) => state.addAgent);
   const addTeam = useAgentDirectoryStore((state) => state.addTeam);
+  const removeAgent = useAgentDirectoryStore((state) => state.removeAgent);
+  const removeTeam = useAgentDirectoryStore((state) => state.removeTeam);
   const [selectedAgentId, setSelectedAgentId] = useState(
     agents.find((agent) => agent.isDefault)?.id ?? agents[0]?.id ?? "",
   );
   const [selectedTeamId, setSelectedTeamId] = useState(teams[0]?.id ?? "");
-  const activeAgents = agents.filter((agent) => agent.enabled).length;
-  const customCapabilityAgents = agents.filter(
-    (agent) => agent.capabilityScope === "custom",
-  ).length;
+  const [teamPage, setTeamPage] = useState(0);
+
+  function createTeam(): void {
+    setSelectedTeamId(addTeam());
+    setTeamPage(Math.floor(teams.length / DIRECTORY_PAGE_SIZE));
+  }
 
   return (
     <section className="settings-section agent-team-settings" aria-labelledby="settings-agent-team-heading">
@@ -71,11 +83,7 @@ export function AgentTeamSettings(): ReactElement {
           <h2 id="settings-agent-team-heading">Agent 与团队</h2>
           <p className="settings-section__description">执行角色与协作编排</p>
         </div>
-        <span className="workspace-mode-badge">跨项目复用</span>
-      </header>
-
-      <div className="agent-team-settings__body">
-        <div className="team-management-toolbar">
+        <div className="settings-section-actions team-management-toolbar">
           <div className="team-management-tabs" role="tablist" aria-label="管理对象">
             <button
               aria-selected={activeView === "teams"}
@@ -98,39 +106,32 @@ export function AgentTeamSettings(): ReactElement {
               <span>{agents.length}</span>
             </button>
           </div>
-          {activeView === "agents" ? (
-            <IconButton
-              label="新建 Agent"
-              size="compact"
-              onClick={() => setSelectedAgentId(addAgent())}
-            >
-              <CirclePlus aria-hidden="true" size={18} />
-            </IconButton>
-          ) : null}
         </div>
+      </header>
 
-        <div className="team-metrics" aria-label="Agent 与团队概况">
-          <TeamMetric icon={UsersRound} label="可用团队" value={String(teams.length)} />
-          <TeamMetric icon={BrainCircuit} label="启用 Agent" value={`${activeAgents} / ${agents.length}`} />
-          <TeamMetric icon={Sparkles} label="继承全部能力" value={String(agents.length - customCapabilityAgents)} />
-          <TeamMetric icon={ShieldCheck} label="自定义能力范围" value={String(customCapabilityAgents)} />
-        </div>
+      <div className="agent-team-settings__body">
 
         {activeView === "teams" ? (
           <TeamManagementView
             agents={agents}
-            onCreateTeam={() => {
-              const id = addTeam();
-              setSelectedTeamId(id);
+            onCreateTeam={createTeam}
+            onDeleteTeam={(id) => {
+              removeTeam(id);
+              if (selectedTeamId === id) {
+                setSelectedTeamId(useAgentDirectoryStore.getState().teams[0]?.id ?? "");
+                setTeamPage(0);
+              }
             }}
             selectedAgentId={selectedAgentId}
             selectedTeamId={selectedTeamId}
+            teamPage={teamPage}
             teams={teams}
             onOpenAgent={(agentId) => {
               setSelectedAgentId(agentId);
               setActiveView("agents");
             }}
             onSelectMember={setSelectedAgentId}
+            onSelectPage={setTeamPage}
             onSelectTeam={(teamId) => {
               const team = teams.find((candidate) => candidate.id === teamId);
               setSelectedTeamId(teamId);
@@ -139,7 +140,17 @@ export function AgentTeamSettings(): ReactElement {
           />
         ) : (
           <AgentManagementView
+            agentClient={agentClient}
             agents={agents}
+            onCreateAgent={() => setSelectedAgentId(addAgent())}
+            onDeleteAgent={(id) => {
+              removeAgent(id);
+              useWorkbenchUiStore.getState().closeAgentPromptWorkspace(id);
+              if (selectedAgentId === id) {
+                const remaining = useAgentDirectoryStore.getState().agents;
+                setSelectedAgentId(remaining[Math.min(agents.findIndex((agent) => agent.id === id), remaining.length - 1)]?.id ?? "");
+              }
+            }}
             selectedAgentId={selectedAgentId}
             teams={teams}
             onSelectAgent={setSelectedAgentId}
@@ -153,24 +164,29 @@ export function AgentTeamSettings(): ReactElement {
 function TeamManagementView({
   agents,
   onCreateTeam,
+  onDeleteTeam,
   onOpenAgent,
   onSelectMember,
   onSelectTeam,
   selectedAgentId,
   selectedTeamId,
+  teamPage,
   teams,
+  onSelectPage,
 }: {
   agents: AgentProfile[];
   onCreateTeam: () => void;
+  onDeleteTeam: (id: string) => void;
   onOpenAgent: (agentId: string) => void;
   onSelectMember: (agentId: string) => void;
   onSelectTeam: (teamId: string) => void;
   selectedAgentId: string;
   selectedTeamId: string;
+  teamPage: number;
   teams: AgentTeam[];
+  onSelectPage: (page: number) => void;
 }): ReactElement {
   const selectedTeam = teams.find((team) => team.id === selectedTeamId) ?? teams[0];
-  const [teamPage, setTeamPage] = useState(0);
   const teamPageCount = Math.max(1, Math.ceil(teams.length / DIRECTORY_PAGE_SIZE));
   const currentTeamPage = Math.min(teamPage, teamPageCount - 1);
   const pagedTeams = teams.slice(
@@ -178,15 +194,11 @@ function TeamManagementView({
     (currentTeamPage + 1) * DIRECTORY_PAGE_SIZE,
   );
 
-  if (selectedTeam === undefined) {
-    return <ManagementEmpty icon={UsersRound} label="还没有团队" />;
-  }
-
-  const members = selectedTeam.memberIds
+  const members = (selectedTeam?.memberIds ?? [])
     .map((memberId) => agents.find((agent) => agent.id === memberId))
     .filter((agent): agent is AgentProfile => agent !== undefined);
   const selectedMember = members.find((agent) => agent.id === selectedAgentId)
-    ?? members.find((agent) => agent.id === selectedTeam.leadAgentId)
+    ?? members.find((agent) => agent.id === selectedTeam?.leadAgentId)
     ?? members[0];
 
   return (
@@ -194,26 +206,15 @@ function TeamManagementView({
       <section className="team-directory-pane" aria-label="团队列表">
         <PaneHeading
           label="团队目录"
-          action={(
-            <IconButton
-              label="创建团队"
-              size="compact"
-              onClick={() => {
-                onCreateTeam();
-                setTeamPage(Math.floor(teams.length / DIRECTORY_PAGE_SIZE));
-              }}
-            >
-              <CirclePlus aria-hidden="true" size={18} />
-            </IconButton>
-          )}
+          action={<IconButton label="创建团队" size="compact" onClick={onCreateTeam}><CirclePlus aria-hidden="true" size={18} /></IconButton>}
         />
-        <div className="team-directory-list">
+        <SettingsDirectoryList className="team-directory-list" selectedId={selectedTeam?.id ?? null}>
           {pagedTeams.map((team) => (
+            <div key={team.id} className="group/directory relative" data-active={team.id === selectedTeam?.id}>
             <button
-              key={team.id}
-              aria-pressed={team.id === selectedTeam.id}
-              className="team-directory-row"
-              data-selected={team.id === selectedTeam.id}
+              aria-pressed={team.id === selectedTeam?.id}
+              className="team-directory-row w-full"
+              data-selected={team.id === selectedTeam?.id}
               type="button"
               onClick={() => onSelectTeam(team.id)}
             >
@@ -226,8 +227,10 @@ function TeamManagementView({
               </span>
               <ChevronRight aria-hidden="true" size={14} />
             </button>
+            <SettingsDirectoryDeleteButton label={`删除团队 ${team.name}`} onDelete={() => onDeleteTeam(team.id)} />
+            </div>
           ))}
-        </div>
+        </SettingsDirectoryList>
         <footer className="team-directory-footer">
           <span>共 {teams.length} 个团队</span>
           <div className="team-directory-pagination-controls" aria-label="团队分页">
@@ -236,7 +239,7 @@ function TeamManagementView({
               disabled={currentTeamPage === 0}
               title="上一页"
               type="button"
-              onClick={() => setTeamPage(Math.max(0, currentTeamPage - 1))}
+              onClick={() => onSelectPage(Math.max(0, currentTeamPage - 1))}
             >
               <ChevronLeft aria-hidden="true" size={14} />
             </button>
@@ -248,7 +251,7 @@ function TeamManagementView({
               disabled={currentTeamPage >= teamPageCount - 1}
               title="下一页"
               type="button"
-              onClick={() => setTeamPage(Math.min(teamPageCount - 1, currentTeamPage + 1))}
+              onClick={() => onSelectPage(Math.min(teamPageCount - 1, currentTeamPage + 1))}
             >
               <ChevronRight aria-hidden="true" size={14} />
             </button>
@@ -256,47 +259,57 @@ function TeamManagementView({
         </footer>
       </section>
 
-      <TeamConfigurationPane
-        agent={selectedMember}
-        agents={agents}
-        onOpenAgent={onOpenAgent}
-        onSelectMember={onSelectMember}
-        team={selectedTeam}
-      />
+      {selectedTeam === undefined ? (
+        <ManagementEmpty icon={UsersRound} label="还没有团队" />
+      ) : (
+        <TeamConfigurationPane
+          agent={selectedMember}
+          agents={agents}
+          onOpenAgent={onOpenAgent}
+          onSelectMember={onSelectMember}
+          team={selectedTeam}
+        />
+      )}
     </div>
   );
 }
 
 function AgentManagementView({
+  agentClient,
   agents,
+  onCreateAgent,
+  onDeleteAgent,
   onSelectAgent,
   selectedAgentId,
   teams,
 }: {
+  agentClient: AgentClient;
   agents: AgentProfile[];
+  onCreateAgent: () => void;
+  onDeleteAgent: (id: string) => void;
   onSelectAgent: (agentId: string) => void;
   selectedAgentId: string;
   teams: AgentTeam[];
 }): ReactElement {
   const selectedAgent = agents.find((agent) => agent.id === selectedAgentId) ?? agents[0];
 
-  if (selectedAgent === undefined) {
-    return <ManagementEmpty icon={BrainCircuit} label="还没有 Agent" />;
-  }
-
   return (
     <div className="agent-management-layout">
       <section className="agent-directory-pane" aria-label="Agent 列表">
-        <PaneHeading label="Agent Profiles" value={agents.length} />
-        <div className="agent-directory-list">
+        <PaneHeading
+          label="Agent 目录"
+          value={agents.length}
+          action={<IconButton label="新建 Agent" size="compact" onClick={onCreateAgent}><CirclePlus aria-hidden="true" size={18} /></IconButton>}
+        />
+        <SettingsDirectoryList className="agent-directory-list" selectedId={selectedAgent?.id ?? null}>
           {agents.map((agent) => {
             const teamCount = teams.filter((team) => team.memberIds.includes(agent.id)).length;
             return (
+              <div key={agent.id} className="group/directory relative" data-active={agent.id === selectedAgent?.id}>
               <button
-                key={agent.id}
-                aria-pressed={agent.id === selectedAgent.id}
-                className="agent-directory-row"
-                data-selected={agent.id === selectedAgent.id}
+                aria-pressed={agent.id === selectedAgent?.id}
+                className="agent-directory-row w-full"
+                data-selected={agent.id === selectedAgent?.id}
                 type="button"
                 onClick={() => onSelectAgent(agent.id)}
               >
@@ -310,23 +323,36 @@ function AgentManagementView({
                 </span>
                 <ChevronRight aria-hidden="true" size={14} />
               </button>
+              <SettingsDirectoryDeleteButton
+                disabled={agent.isDefault}
+                {...(agent.isDefault ? { disabledReason: "默认 Agent 不能删除" } : {})}
+                label={`删除 Agent ${agent.name}`}
+                onDelete={() => onDeleteAgent(agent.id)}
+              />
+              </div>
             );
           })}
-        </div>
+        </SettingsDirectoryList>
         <footer className="team-directory-footer">共 {agents.length} 个 Agent</footer>
       </section>
-      <AgentConfigurationPane agent={selectedAgent} teams={teams} />
+      {selectedAgent === undefined ? (
+        <ManagementEmpty icon={BrainCircuit} label="还没有 Agent" />
+      ) : (
+        <AgentConfigurationPane agent={selectedAgent} agentClient={agentClient} teams={teams} />
+      )}
     </div>
   );
 }
 
-function TeamConfigurationPane({
+export function TeamConfigurationPane({
+  compact = false,
   agent,
   agents,
   onOpenAgent,
   onSelectMember,
   team,
 }: {
+  compact?: boolean;
   agent: AgentProfile | undefined;
   agents: AgentProfile[];
   onOpenAgent: (agentId: string) => void;
@@ -346,7 +372,9 @@ function TeamConfigurationPane({
     : team.memberConfigurations[agent.id];
 
   return (
-    <aside className="team-configuration-pane" aria-label={`${team.name} 配置`}>
+    <aside className={`team-configuration-pane${compact ? " px-0!" : ""}`} aria-label={`${team.name} 配置`}>
+      <div className="management-detail-body">
+      <SettingsConfigurationGroup cardAriaLabel="团队基本配置" cardClassName="management-profile-card p-0" icon={Settings2} title="基本配置">
       <div className="management-detail-heading">
         <span className="management-detail-heading__icon">
           <Settings2 aria-hidden="true" size={16} />
@@ -365,11 +393,11 @@ function TeamConfigurationPane({
         </button>
       </div>
 
-      <div className="management-detail-body">
         <div className="management-form">
         <label>
           <span>团队名称</span>
           <input
+            aria-label="团队名称"
             value={team.name}
             onChange={(event) => updateTeam(team.id, { name: event.target.value })}
           />
@@ -377,6 +405,7 @@ function TeamConfigurationPane({
         <label>
           <span>团队说明</span>
           <textarea
+            aria-label="团队说明"
             rows={3}
             value={team.description}
             onChange={(event) => updateTeam(team.id, { description: event.target.value })}
@@ -385,132 +414,136 @@ function TeamConfigurationPane({
         <label>
           <span className="management-field-label">
             团队指令
-            <small>所有成员继承</small>
+            <small>协调 Agent 与所有成员共用</small>
           </span>
           <textarea
+            aria-label="团队指令"
             placeholder="留空时仅注入团队结构、项目和当前任务上下文"
             rows={4}
             value={team.instructions}
             onChange={(event) => updateTeam(team.id, { instructions: event.target.value })}
           />
           <small className="management-field-hint">
-            团队名称、成员清单、规模和当前工作项由系统按运行状态自动注入。
+            可在这里编辑群聊分流、委派和交付规则。默认未点名的新工作交给负责人，负责人委派、验收并在群里交付；明确 @ 或引用成员消息优先。团队结构和当前任务由系统自动注入。
           </small>
         </label>
-        <div className="management-form__row">
-          <label>
-            <span>Team Lead</span>
-            <Select
-              value={team.leadAgentId}
-              onValueChange={(leadAgentId) => updateTeam(team.id, { leadAgentId })}
-            >
-              <SelectTrigger><SelectValue /></SelectTrigger>
-              <SelectContent>
-                {leadCandidates.map((agent) => (
-                  <SelectItem key={agent.id} value={agent.id}>{agent.name}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </label>
-          <label>
-            <span>最大 Worker</span>
-            <Select
-              value={String(team.maxWorkers)}
-              onValueChange={(value) => updateTeam(team.id, { maxWorkers: Number(value) })}
-            >
-              <SelectTrigger><SelectValue /></SelectTrigger>
-              <SelectContent>
-                {[1, 2, 3, 4, 5].map((count) => (
-                  <SelectItem key={count} value={String(count)}>{count}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </label>
         </div>
-        </div>
+      </SettingsConfigurationGroup>
 
-        <div className="team-member-editor">
-        <section className="team-member-management" aria-label={`${team.name} 成员编排`}>
-          <PaneHeading label="团队 Agent" value={members.length} />
-          <TeamMemberAdd team={team} agents={agents} />
-          <div className="team-member-list team-member-list--embedded">
-            {members.map((member) => (
-              <TeamMemberRow
-                key={member.id}
-                agent={member}
-                isLead={team.leadAgentId === member.id}
-                isSelected={agent?.id === member.id}
-                team={team}
-                onSelect={() => onSelectMember(member.id)}
-              />
-            ))}
+        <SettingsConfigurationGroup cardAriaLabel={`${team.name} 成员编排`} cardClassName="team-members-section" icon={UsersRound} title="成员与职责">
+          <header className="team-members-section__heading">
+            <div>
+              <p>{members.length} 名成员 · 职责与额外要求仅在当前团队生效。</p>
+            </div>
+            <TeamMemberAdd team={team} agents={agents} />
+          </header>
+          <div className="management-form team-members-section__controls">
+            <div className="management-form__row">
+              <label>
+                <span>Team Lead</span>
+                <Select
+                  value={team.leadAgentId}
+                  onValueChange={(leadAgentId) => updateTeam(team.id, { leadAgentId })}
+                >
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    {leadCandidates.map((agent) => (
+                      <SelectItem key={agent.id} value={agent.id}>{agent.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </label>
+              <label>
+                <span>最大 Worker</span>
+                <Select
+                  value={String(team.maxWorkers)}
+                  onValueChange={(value) => updateTeam(team.id, { maxWorkers: Number(value) })}
+                >
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    {[1, 2, 3, 4, 5].map((count) => (
+                      <SelectItem key={count} value={String(count)}>{count}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </label>
+            </div>
           </div>
-        </section>
 
-        {agent === undefined ? (
-          <div className="team-member-configuration team-member-configuration--empty">
-            <BrainCircuit aria-hidden="true" size={18} />
-            <p>从左侧选择一个 Agent 配置团队专属要求。</p>
-          </div>
-        ) : (
-          <section className="team-member-configuration" aria-label={`${agent.name} 团队内配置`}>
-            <div className="team-member-configuration__heading">
-              <AgentAvatar avatar={agent.avatar} status={agent.status} />
-              <div>
-                <p>当前 Agent 的团队配置</p>
-                <h3>{agent.name}</h3>
+          <div className="team-member-editor">
+            <div className="team-member-management">
+              <div className="team-member-list team-member-list--embedded">
+                {members.map((member) => (
+                  <TeamMemberRow
+                    key={member.id}
+                    agent={member}
+                    isLead={team.leadAgentId === member.id}
+                    isSelected={agent?.id === member.id}
+                    team={team}
+                    onSelect={() => onSelectMember(member.id)}
+                  />
+                ))}
               </div>
-              <button
-                aria-label={`打开 ${agent.name} 的基础配置`}
-                title="打开 Agent 基础配置"
-                type="button"
-                onClick={() => onOpenAgent(agent.id)}
-              >
-                <Settings2 aria-hidden="true" size={14} />
-              </button>
             </div>
-            <div className="management-form team-member-configuration__form">
-              <p className="team-member-configuration__description">
-                左侧选择哪个 Agent，这里的职责和要求就只对它生效。
-              </p>
-              <label>
-                <span className="management-field-label">
-                  在本团队中的职责
-                  <small>可选</small>
-                </span>
-                <input
-                  placeholder={`留空则沿用：${agent.role}`}
-                  value={memberConfiguration?.role ?? ""}
-                  onChange={(event) => updateTeamMemberConfiguration(
-                    team.id,
-                    agent.id,
-                    { role: event.target.value },
-                  )}
-                />
-              </label>
-              <label>
-                <span className="management-field-label">
-                  给该成员的额外要求
-                  <small>可选</small>
-                </span>
-                <textarea
-                  placeholder="只在当前团队生效；留空则不增加额外要求"
-                  rows={4}
-                  value={memberConfiguration?.instructions ?? ""}
-                  onChange={(event) => updateTeamMemberConfiguration(
-                    team.id,
-                    agent.id,
-                    { instructions: event.target.value },
-                  )}
-                />
-              </label>
-            </div>
-          </section>
-        )}
-        </div>
 
-        <section className="management-policy-section">
-          <h3>项目范围</h3>
+            {agent === undefined ? (
+              <div className="team-member-configuration team-member-configuration--empty">
+                <BrainCircuit aria-hidden="true" size={18} />
+                <p>选择成员，配置其在当前团队中的职责与额外要求。</p>
+              </div>
+            ) : (
+              <section className="team-member-configuration" aria-label={`${agent.name} 团队内配置`}>
+                <div className="team-member-configuration__heading">
+                  <AgentAvatar avatar={agent.avatar} status={agent.status} />
+                  <h3>{agent.name}</h3>
+                  <button
+                    aria-label={`打开 ${agent.name} 的基础配置`}
+                    title="打开 Agent 基础配置"
+                    type="button"
+                    onClick={() => onOpenAgent(agent.id)}
+                  >
+                    <Settings2 aria-hidden="true" size={14} />
+                  </button>
+                </div>
+                <div className="management-form team-member-configuration__form">
+                  <label>
+                    <span className="management-field-label">
+                      在本团队中的职责
+                      <small>可选</small>
+                    </span>
+                    <input
+                      placeholder={`留空则沿用：${agent.role}`}
+                      value={memberConfiguration?.role ?? ""}
+                      onChange={(event) => updateTeamMemberConfiguration(
+                        team.id,
+                        agent.id,
+                        { role: event.target.value },
+                      )}
+                    />
+                  </label>
+                  <label>
+                    <span className="management-field-label">
+                      给该成员的额外要求
+                      <small>可选</small>
+                    </span>
+                    <textarea
+                      placeholder="只在当前团队生效；留空则不增加额外要求"
+                      rows={4}
+                      value={memberConfiguration?.instructions ?? ""}
+                      onChange={(event) => updateTeamMemberConfiguration(
+                        team.id,
+                        agent.id,
+                        { instructions: event.target.value },
+                      )}
+                    />
+                  </label>
+                </div>
+              </section>
+            )}
+          </div>
+        </SettingsConfigurationGroup>
+
+        <SettingsConfigurationGroup cardAriaLabel="团队项目范围" icon={FolderOpen} title="项目范围">
           <div className="management-choice-row">
             <button
               aria-pressed={team.projectScope === "all"}
@@ -529,7 +562,7 @@ function TeamConfigurationPane({
               指定项目
             </button>
           </div>
-        </section>
+        </SettingsConfigurationGroup>
       </div>
 
     </aside>
@@ -538,18 +571,25 @@ function TeamConfigurationPane({
 
 function AgentConfigurationPane({
   agent,
+  agentClient,
   teams,
 }: {
   agent: AgentProfile;
+  agentClient: AgentClient;
   teams: AgentTeam[];
 }): ReactElement {
   const updateAgent = useAgentDirectoryStore((state) => state.updateAgent);
+  const openAgentPromptWorkspace = useWorkbenchUiStore(
+    (state) => state.openAgentPromptWorkspace,
+  );
   const memberships = teams.filter((team) => team.memberIds.includes(agent.id));
 
   return (
     <aside className="agent-configuration-pane" aria-label={`${agent.name} 配置`}>
+      <div className="management-detail-body grid content-start gap-[18px]">
+      <SettingsConfigurationGroup cardClassName="management-profile-card p-0" icon={BrainCircuit} title="基本配置">
       <div className="management-detail-heading">
-        <AgentAvatar avatar={agent.avatar} size="large" status={agent.status} />
+        <AgentAvatar avatar={agent.avatar} status={agent.status} />
         <div>
           <h2>{agent.name}</h2>
         </div>
@@ -565,47 +605,70 @@ function AgentConfigurationPane({
         </button>
       </div>
 
-      <div className="management-detail-body">
         <div className="agent-editor-grid">
+          <AvatarEditor agent={agent} onUpdate={(patch) => updateAgent(agent.id, patch)} />
+
           <div className="management-form">
-          <div className="management-form__row">
+            <div className="flex min-w-0 items-center justify-between gap-2">
+              <h3 className="m-0 text-[length:var(--app-font-size-auxiliary)] font-bold text-[var(--app-muted-foreground)]">
+                Markdown 文档属性
+              </h3>
+              <span className="shrink-0 text-[length:var(--app-font-size-caption)] font-semibold text-[var(--app-accent)]">自动同步</span>
+            </div>
+            <div className="management-form__row">
+              <label>
+                <span>名称</span>
+                <input
+                  aria-label="名称"
+                  value={agent.name}
+                  onChange={(event) => updateAgent(agent.id, { name: event.target.value })}
+                />
+              </label>
+              <label>
+                <span>角色</span>
+                <input
+                  aria-label="角色"
+                  value={agent.role}
+                  onChange={(event) => updateAgent(agent.id, { role: event.target.value })}
+                />
+              </label>
+            </div>
             <label>
-              <span>名称</span>
+              <span>用途说明</span>
               <input
-                value={agent.name}
-                onChange={(event) => updateAgent(agent.id, { name: event.target.value })}
+                aria-label="用途说明"
+                value={agent.description}
+                onChange={(event) => updateAgent(agent.id, { description: event.target.value })}
               />
             </label>
-            <label>
-              <span>角色</span>
-              <input
-                value={agent.role}
-                onChange={(event) => updateAgent(agent.id, { role: event.target.value })}
-              />
-            </label>
-          </div>
-          <label>
-            <span>用途说明</span>
-            <input
-              value={agent.description}
-              onChange={(event) => updateAgent(agent.id, { description: event.target.value })}
-            />
-          </label>
-          <label>
-            <span>核心指令</span>
-            <textarea
-              rows={5}
-              value={agent.instructions}
-              onChange={(event) => updateAgent(agent.id, { instructions: event.target.value })}
-            />
-          </label>
+            <section className="grid min-w-0 gap-[5px] border-t border-[var(--app-border)] pt-3" aria-labelledby={`agent-instructions-${agent.id}`}>
+              <div className="flex min-w-0 items-center justify-between gap-2">
+                <h3 id={`agent-instructions-${agent.id}`} className="m-0 text-[length:var(--app-font-size-control)] font-semibold text-[var(--app-foreground)]">
+                  详细提示词
+                </h3>
+                <button
+                  aria-label={`查看 ${agent.name} 的提示词文档`}
+                  className="inline-flex h-7 shrink-0 items-center gap-[5px] rounded-[var(--app-radius)] border border-[var(--app-border)] bg-[var(--app-panel)] px-2 text-[length:var(--app-font-size-control)] font-semibold text-[var(--app-muted-foreground)] outline-none hover:border-[var(--app-accent)] hover:text-[var(--app-foreground)] focus-visible:ring-2 focus-visible:ring-[var(--app-focus-ring)]"
+                  type="button"
+                  onClick={() => openAgentPromptWorkspace({
+                    agentId: agent.id,
+                    title: `${agent.name.trim() || "未命名 Agent"} 提示词`,
+                  })}
+                >
+                  <Eye aria-hidden="true" size={14} />
+                  查看
+                </button>
+              </div>
+              <p className="m-0 text-[length:var(--app-font-size-auxiliary)] leading-[1.45] text-[var(--app-muted-foreground)]">
+                在右侧标签中查看和编辑完整 Markdown 提示词及其文档属性。
+              </p>
+            </section>
           </div>
 
-          <div className="agent-policy-column">
-            <AvatarEditor agent={agent} onUpdate={(patch) => updateAgent(agent.id, patch)} />
+        </div>
+      </SettingsConfigurationGroup>
 
-          <section className="management-policy-section">
-            <h3>模型策略</h3>
+      <SettingsConfigurationGroup icon={Boxes} title="模型策略">
             <div className="management-choice-row management-choice-row--three">
               {(["inherit", "auto", "fixed"] as const).map((strategy) => (
                 <button
@@ -622,22 +685,19 @@ function AgentConfigurationPane({
                 </button>
               ))}
             </div>
-          </section>
+      </SettingsConfigurationGroup>
 
-          <CapabilityEditor agent={agent} onUpdate={(patch) => updateAgent(agent.id, patch)} />
+          <AgentCapabilityEditor agent={agent} agentClient={agentClient} onUpdate={(patch) => updateAgent(agent.id, patch)} />
 
           <PermissionEditor agent={agent} onUpdate={(patch) => updateAgent(agent.id, patch)} />
 
-          <section className="management-policy-section">
-            <h3>所在团队</h3>
+          <SettingsConfigurationGroup icon={UsersRound} title="所在团队">
             <div className="management-tag-list">
               {memberships.length === 0 ? <span>未加入团队</span> : memberships.map((team) => (
                 <span key={team.id}><UsersRound aria-hidden="true" size={12} />{team.name}</span>
               ))}
             </div>
-          </section>
-          </div>
-        </div>
+          </SettingsConfigurationGroup>
       </div>
     </aside>
   );
@@ -689,45 +749,23 @@ function AvatarEditor({
 
   return (
     <section className="management-policy-section agent-avatar-editor-section">
-      <h3>头像</h3>
-      <div className="agent-avatar-editor">
-        <div className="agent-avatar-editor__preview">
-          <AgentAvatar avatar={agent.avatar} size="large" status={agent.status} />
-          <span>{agent.avatar.kind === "image" ? agent.avatar.fileName : "预设图标"}</span>
-        </div>
-        <div className="agent-avatar-presets" aria-label="预设 Agent 图标">
-          {AGENT_AVATAR_ICON_OPTIONS.map((option) => {
-            const Icon = option.icon;
-            const selected = agent.avatar.kind === "icon" && agent.avatar.icon === option.id;
-            return (
-              <button
-                key={option.id}
-                aria-label={option.label}
-                aria-pressed={selected}
-                title={option.label}
-                type="button"
-                onClick={() => {
-                  setError(null);
-                  onUpdate({ avatar: { icon: option.id, kind: "icon" } });
-                }}
-              >
-                <Icon aria-hidden="true" size={15} strokeWidth={1.8} />
-              </button>
-            );
-          })}
-        </div>
-      </div>
-      <div className="agent-avatar-actions">
-        <label className="agent-avatar-upload">
-          <ImagePlus aria-hidden="true" size={14} />
-          选择 SVG 或图片
-          <input
-            accept="image/svg+xml,image/png,image/jpeg,image/webp,.svg,.png,.jpg,.jpeg,.webp"
-            type="file"
-            onChange={handleFileChange}
-          />
-        </label>
-        {agent.avatar.kind === "image" ? (
+      <SettingsCategoryHeading icon={BrainCircuit}>头像</SettingsCategoryHeading>
+      <AgentAvatarPicker
+        avatar={agent.avatar}
+        status={agent.status}
+        uploadError={error}
+        onIconChange={(icon) => {
+          setError(null);
+          onUpdate({ avatar: { icon, kind: "icon" } });
+        }}
+        onPresetChange={(preset) => {
+          setError(null);
+          onUpdate({ avatar: { kind: "preset", preset } });
+        }}
+        onFileChange={handleFileChange}
+      />
+      {agent.avatar.kind === "image" ? (
+        <div className="agent-avatar-actions">
           <button
             className="agent-avatar-reset"
             type="button"
@@ -736,101 +774,15 @@ function AvatarEditor({
             <RotateCcw aria-hidden="true" size={13} />
             恢复图标
           </button>
-        ) : null}
-      </div>
-      {error === null ? null : <p className="agent-avatar-error" role="alert">{error}</p>}
-    </section>
-  );
-}
-
-function CapabilityEditor({
-  agent,
-  onUpdate,
-}: {
-  agent: AgentProfile;
-  onUpdate: (patch: Partial<AgentProfile>) => void;
-}): ReactElement {
-  function toggleId(key: "mcpServerIds" | "skillIds", id: string): void {
-    const current = agent[key];
-    onUpdate({ [key]: current.includes(id)
-      ? current.filter((candidate) => candidate !== id)
-      : [...current, id] });
-  }
-
-  return (
-    <section className="management-policy-section">
-      <div className="management-policy-section__heading">
-        <h3>Skill 与 MCP</h3>
-        <Select
-          value={agent.capabilityScope}
-          onValueChange={(value) => onUpdate({ capabilityScope: value as AgentCapabilityScope })}
-        >
-          <SelectTrigger className="capability-scope-select"><SelectValue /></SelectTrigger>
-          <SelectContent>
-            <SelectItem value="inherit_all">继承全部</SelectItem>
-            <SelectItem value="custom">自定义范围</SelectItem>
-          </SelectContent>
-        </Select>
-      </div>
-      {agent.capabilityScope === "inherit_all" ? (
-        <div className="capability-inherited-note">
-          <Layers3 aria-hidden="true" size={15} />
-          默认可以发现并按需使用所有已启用的 Skill、插件和 MCP。
         </div>
-      ) : (
-        <div className="capability-picker-grid">
-          <CapabilityGroup
-            icon={Sparkles}
-            items={AVAILABLE_SKILLS}
-            label="Skills"
-            selectedIds={agent.skillIds}
-            onToggle={(id) => toggleId("skillIds", id)}
-          />
-          <CapabilityGroup
-            icon={Boxes}
-            items={AVAILABLE_MCP_SERVERS}
-            label="MCP Servers"
-            selectedIds={agent.mcpServerIds}
-            onToggle={(id) => toggleId("mcpServerIds", id)}
-          />
-        </div>
-      )}
+      ) : null}
     </section>
-  );
-}
-
-function CapabilityGroup({
-  icon: Icon,
-  items,
-  label,
-  onToggle,
-  selectedIds,
-}: {
-  icon: typeof Sparkles;
-  items: readonly { id: string; name: string }[];
-  label: string;
-  onToggle: (id: string) => void;
-  selectedIds: string[];
-}): ReactElement {
-  return (
-    <fieldset className="capability-group">
-      <legend><Icon aria-hidden="true" size={13} />{label}</legend>
-      {items.map((item) => (
-        <label key={item.id}>
-          <input
-            checked={selectedIds.includes(item.id)}
-            type="checkbox"
-            onChange={() => onToggle(item.id)}
-          />
-          <span>{item.name}</span>
-        </label>
-      ))}
-    </fieldset>
   );
 }
 
 const PERMISSION_TOOL_OPTIONS: readonly { label: string; value: AgentPermissionTool }[] = [
   { label: "执行命令", value: "run_command" },
+  { label: "电脑控制", value: "computer_use" },
   { label: "写入文件", value: "write_file" },
   { label: "删除文件", value: "delete_file" },
   { label: "替换文件内容", value: "replace_in_file" },
@@ -868,27 +820,32 @@ function PermissionEditor({
   }
 
   return (
-    <section className="management-policy-section" aria-labelledby={`agent-permissions-${agent.id}`}>
+    <SettingsConfigurationGroup cardAriaLabel={`${agent.name} 权限规则`} icon={ShieldCheck} title="权限规则">
       <div className="management-policy-section__heading">
-        <div>
-          <h3 id={`agent-permissions-${agent.id}`}>权限规则</h3>
-          <p className="settings-section__description">
-            只保存明确允许的规则；未匹配的命令或敏感操作仍需审批。命令末尾可使用 * 做前缀匹配。
+        <div className="min-w-0">
+          <p className="m-0 max-w-full break-words text-[length:var(--app-font-size-control)] font-medium leading-[1.35] text-[var(--app-muted-foreground)]">
+            这里是手动维护的高级长期规则，审批卡不会自动添加。未匹配操作仍需审批；命令末尾可使用 * 做前缀匹配。
           </p>
         </div>
-        <button disabled={rules.length >= 200} type="button" onClick={addRule}>
-          <Plus aria-hidden="true" size={13} />
-          添加规则
-        </button>
       </div>
+      <button
+        className="mb-2 inline-flex h-8 items-center gap-[5px] rounded-[var(--app-radius)] border border-[var(--app-border)] bg-[var(--app-panel)] px-2 text-[length:var(--app-font-size-control)] font-semibold text-[var(--app-muted-foreground)] outline-none hover:border-[#93c5fd] hover:text-[var(--app-foreground)] focus-visible:ring-2 focus-visible:ring-[var(--app-focus-ring)] disabled:pointer-events-none disabled:opacity-40"
+        disabled={rules.length >= 200}
+        type="button"
+        onClick={addRule}
+      >
+        <Plus aria-hidden="true" size={13} />
+        添加规则
+      </button>
       {rules.length === 0 ? (
         <p className="capability-inherited-note">当前 Agent 没有持久化允许规则。</p>
       ) : (
-        <div className="agent-permission-rule-list">
+        <div className="agent-permission-rule-list min-w-0">
           {rules.map((rule, index) => (
-            <div className="agent-permission-rule" key={`${rule.tool}-${index}`}>
+            <div className="agent-permission-rule min-w-0" key={`${rule.tool}-${index}`}>
               <select
                 aria-label="权限工具"
+                className="w-full max-w-full"
                 value={rule.tool}
                 onChange={(event) => updateRule(index, {
                   tool: event.target.value as AgentPermissionTool,
@@ -900,6 +857,7 @@ function PermissionEditor({
               </select>
               <input
                 aria-label="权限匹配规则"
+                className="w-full max-w-full"
                 placeholder={rule.tool === "run_command" ? "例如：mvn package *" : "例如：src/* 或 *"}
                 value={rule.pattern}
                 onChange={(event) => updateRule(index, { pattern: event.target.value })}
@@ -915,7 +873,7 @@ function PermissionEditor({
           ))}
         </div>
       )}
-    </section>
+    </SettingsConfigurationGroup>
   );
 }
 
@@ -1018,27 +976,9 @@ function PaneHeading({
   value?: number;
 }): ReactElement {
   return (
-    <div className="team-section-heading">
+    <div className="agent-team-section-heading">
       <h2>{label}</h2>
       {action ?? (value === undefined ? null : <span>{value}</span>)}
-    </div>
-  );
-}
-
-function TeamMetric({
-  icon: Icon,
-  label,
-  value,
-}: {
-  icon: typeof UsersRound;
-  label: string;
-  value: string;
-}): ReactElement {
-  return (
-    <div className="team-metric">
-      <Icon aria-hidden="true" size={15} />
-      <span>{label}</span>
-      <strong>{value}</strong>
     </div>
   );
 }

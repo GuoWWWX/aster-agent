@@ -1,3 +1,4 @@
+/* CSS trigger #2: feature scroll containers and interaction selectors. */
 .conversation-project-picker {
   width: min(284px, calc(100vw - 16px));
   overflow: hidden;
@@ -55,6 +56,7 @@
   max-height: min(260px, 42vh);
   flex-direction: column;
   overflow: auto;
+  scrollbar-gutter: stable;
   padding: 2px 0;
 }
 
@@ -88,7 +90,7 @@
 .conversation-project-picker__projects button > svg,
 .conversation-project-picker__action > svg {
   flex: 0 0 auto;
-  color: #64748b;
+  color: var(--app-muted-foreground);
 }
 
 .conversation-project-picker__projects button > svg:last-child,
@@ -129,5 +131,5 @@
 
 [data-theme="dark"] .conversation-project-picker {
   border-color: #3d3d3d;
-  background: #282828;
+  background: var(--app-panel);
 }

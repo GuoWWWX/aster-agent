@@ -1,8 +1,110 @@
-import { describe, expect, it } from "vitest";
+// @vitest-environment jsdom
 
-import { renderAgentMarkdown } from "./agent-markdown.js";
+import { act, createElement, Fragment } from "react";
+import { createRoot } from "react-dom/client";
+import { describe, expect, it, vi } from "vitest";
+
+import { MediaPreviewDialogHost } from "../media/image-viewer.js";
+import { TooltipProvider } from "../ui/tooltip.js";
+import { AgentMarkdown, AgentMarkdownWorkspaceScope, renderAgentMarkdown } from "./agent-markdown.js";
+import agentMarkdownStyles from "./agent-markdown.css?inline";
 
 describe("AgentMarkdown", () => {
+  it("renders active references as inline controls while preserving code and existing links", () => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    const container = document.createElement("div"); document.body.append(container); const root = createRoot(container); const open = vi.fn();
+    const content = "@测试工程师 请验收 **这份代码**。`@测试工程师` [@测试工程师](https://example.test)\n\n```text\n@测试工程师\n```";
+    act(() => root.render(createElement(AgentMarkdown, { content, inlineReferences: [{ label: "@测试工程师", content: createElement("button", { onClick: open }, "头像 测试工程师") }] })));
+    expect(container.querySelectorAll('[data-message-reference]')).toHaveLength(1);
+    expect(container.querySelector("strong")?.textContent).toBe("这份代码");
+    expect(container.querySelector("code")?.textContent).toBe("@测试工程师");
+    act(() => container.querySelector<HTMLButtonElement>('[data-message-reference] button')!.click()); expect(open).toHaveBeenCalledOnce();
+    act(() => root.unmount()); container.remove(); vi.unstubAllGlobals();
+  });
+  it("opens workspace file links through the editor callback while preserving external navigation", () => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    const onOpenFile = vi.fn();
+    const container = document.createElement("div"); document.body.append(container);
+    const root = createRoot(container);
+    act(() => root.render(createElement(AgentMarkdownWorkspaceScope, {
+      onOpenFile,
+      children: createElement(AgentMarkdown, { content: "[Java](QuickSortDegenerate.java) [Python](./quicksort_degenerate.py#L12) [JS](src/../quicksort-degenerate.js) [Web](https://example.com/docs)" }),
+    })));
+    const links = [...container.querySelectorAll("a")];
+    expect(links).toHaveLength(4);
+    for (const link of links.slice(0, 3)) {
+      const click = new MouseEvent("click", { bubbles: true, cancelable: true });
+      act(() => { link.dispatchEvent(click); });
+      expect(click.defaultPrevented).toBe(true);
+    }
+    expect(onOpenFile.mock.calls).toEqual([["QuickSortDegenerate.java"], ["quicksort_degenerate.py"], ["quicksort-degenerate.js"]]);
+    const external = links[3]!;
+    expect(external.getAttribute("target")).toBe("_blank");
+    expect(external.getAttribute("href")).toBe("https://example.com/docs");
+    act(() => root.unmount()); container.remove(); vi.unstubAllGlobals();
+  });
+  it("virtualizes large non-HTML blocks and copies the complete escaped source", async () => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("navigator", { clipboard: { writeText } });
+    const container = document.createElement("div"); document.body.append(container);
+    const root = createRoot(container);
+    const source = 'console.log("<script>原文</script>");\n'.repeat(1000);
+    await act(async () => { root.render(createElement(AgentMarkdown, { content: "```javascript\n" + source + "```" })); await Promise.resolve(); });
+    expect(container.querySelector(".cm-editor")).not.toBeNull();
+    await act(async () => {
+      await vi.waitFor(() => expect(container.querySelector(".cm-line span[class]")).not.toBeNull());
+    });
+    expect(container.querySelector("script")).toBeNull();
+    await act(async () => { container.querySelector<HTMLButtonElement>("[data-action='copy-code']")?.click(); await Promise.resolve(); });
+    expect(writeText).toHaveBeenCalledWith(source);
+    act(() => root.unmount()); container.remove(); vi.unstubAllGlobals();
+  });
+  it("uses a separate header, terminal command colors and copies only original code", async () => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("navigator", { clipboard: { writeText } });
+    const container = document.createElement("div"); document.body.append(container);
+    const root = createRoot(container);
+    const source = "javac BubbleSort.java QuickSort.java\njava QuickSort\nping 127.0.0.1 -n 4\n";
+    act(() => root.render(createElement(AgentMarkdown, { content: "```bash\n" + source + "```" })));
+    expect(container.querySelector(".agent-markdown__code-header")?.textContent).toBe("Bash");
+    expect(container.querySelector("button .lucide-copy")).not.toBeNull();
+    expect(container.querySelector("pre button")).toBeNull();
+    expect(container.querySelector(".agent-markdown__shell-command")?.textContent).toBe("javac");
+    expect(container.querySelector(".agent-markdown__shell-parameter")?.textContent).toBe("-n");
+    expect([...container.querySelectorAll(".agent-markdown__shell-address")].map((node) => node.textContent)).toContain("127.0.0.1");
+    await act(async () => { container.querySelector<HTMLButtonElement>("[data-action='copy-code']")?.click(); await Promise.resolve(); });
+    expect(writeText).toHaveBeenCalledWith(source);
+    expect(container.querySelector("button")?.getAttribute("aria-label")).toBe("已复制");
+    expect(container.querySelector("button .lucide-check")).not.toBeNull();
+    act(() => root.unmount()); container.remove(); vi.unstubAllGlobals();
+  });
+  it("restores md-king-compatible markers for ordered and nested unordered lists", () => {
+    const style = document.createElement("style");
+    style.textContent = agentMarkdownStyles;
+    document.head.append(style);
+    const preview = document.createElement("div");
+    preview.className = "agent-markdown";
+    preview.innerHTML = renderAgentMarkdown([
+      "- 一级",
+      "  - 二级",
+      "    - 三级",
+      "",
+      "1. 有序项",
+    ].join("\n"));
+    document.body.append(preview);
+
+    const unorderedLists = preview.querySelectorAll("ul");
+    const orderedList = preview.querySelector("ol");
+    expect(unorderedLists).toHaveLength(3);
+    expect(getComputedStyle(unorderedLists[0]!).listStyleType).toBe("disc");
+    expect(getComputedStyle(unorderedLists[1]!).listStyleType).toBe("circle");
+    expect(getComputedStyle(unorderedLists[2]!).listStyleType).toBe("square");
+    expect(orderedList).not.toBeNull();
+    expect(getComputedStyle(orderedList!).listStyleType).toBe("decimal");
+  });
+
   it("renders md-king-compatible Markdown elements without accepting raw HTML", () => {
     const html = renderAgentMarkdown(
       "# 结果\n\n- [ ] 待处理\n- [x] 已完成\n\n~~删除~~ [文档](https://example.com)\n\n```java\ninterface Assistant {}\n```\n\n| A | B |\n| - | - |\n| 1 | 2 |\n\n<script>alert(1)</script>"
@@ -17,6 +119,8 @@ describe("AgentMarkdown", () => {
     expect(html).toContain('rel="noreferrer noopener"');
     expect(html).toContain('class="agent-markdown__code-block"');
     expect(html).toContain("data-language=\"java\"");
+    expect(html).toContain('class="agent-markdown__code-copy"');
+    expect(html).toContain('aria-label="复制代码"');
     expect(html).toContain('class="hljs"');
     expect(html).toContain('class="hljs-keyword"');
     expect(html).toContain('class="agent-markdown__table-scroll"');
@@ -38,5 +142,91 @@ describe("AgentMarkdown", () => {
     expect(html).toContain("<td>1</td>");
     expect(html).not.toContain('style="text-align:right"');
     expect(html).not.toContain('style="text-align:left"');
+  });
+
+  it("decorates file links with shared type icons without changing ordinary web links", () => {
+    const html = renderAgentMarkdown([
+      "[Word 文档](docs/report.docx)",
+      "[TSX 文件](src/app.tsx)",
+      "[Java 文件](src/BubbleSort.java)",
+      "[普通网站](https://example.com)",
+    ].join(" "));
+
+    expect(html.match(/class="agent-markdown__file-link"/gu)).toHaveLength(3);
+    expect(html.match(/class="agent-markdown__file-icon/gu)).toHaveLength(3);
+    expect(html.match(/class="agent-markdown__file-label"/gu)).toHaveLength(3);
+    expect(html.match(/<\/span><\/a>/gu)).toHaveLength(3);
+    expect(html).toContain('<a href="https://example.com"');
+  });
+
+  it("renders labeled dividers without changing ordinary horizontal rules", () => {
+    const html = renderAgentMarkdown([
+      "---",
+      "",
+      "--- 上下文已压缩",
+      "",
+      "```text",
+      "--- 代码里的文字",
+      "```",
+    ].join("\n"));
+
+    expect(html).toContain("<hr>");
+    expect(html).toContain('class="agent-markdown__labeled-divider"');
+    expect(html).toContain('aria-label="上下文已压缩"');
+    expect(html).toContain("<span>上下文已压缩</span>");
+    expect(html.match(/agent-markdown__labeled-divider/gu)).toHaveLength(1);
+    expect(html).toContain("--- 代码里的文字");
+  });
+
+  it("escapes labeled divider text", () => {
+    const html = renderAgentMarkdown("--- <img src=x onerror=alert(1)>");
+
+    expect(html).toContain("&lt;img src=x onerror=alert(1)&gt;");
+    expect(html).not.toContain("<img");
+  });
+
+  it("marks rendered images as keyboard-accessible previews", () => {
+    const html = renderAgentMarkdown("![运行结果](assets/result.png)");
+
+    expect(html).toContain('data-action="preview-image"');
+    expect(html).toContain('role="button"');
+    expect(html).toContain('tabindex="0"');
+    expect(html).toContain('aria-label="预览图片：运行结果"');
+  });
+
+  it("opens the shared overlay viewer when a Markdown image is clicked", () => {
+    Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
+    vi.stubGlobal("ResizeObserver", class {
+      disconnect(): void {}
+      observe(): void {}
+      unobserve(): void {}
+    });
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(createElement(
+        TooltipProvider,
+        null,
+        createElement(
+          Fragment,
+          null,
+          createElement(AgentMarkdown, { content: "![运行结果](data:image/png;base64,AQID)" }),
+          createElement(MediaPreviewDialogHost),
+        ),
+      ));
+    });
+    act(() => {
+      (container.querySelector("img[data-action='preview-image']") as HTMLImageElement).click();
+    });
+
+    expect(document.body.querySelector('[role="dialog"]')).not.toBeNull();
+    expect(document.body.querySelector('button[aria-label="放大图片"]')).not.toBeNull();
+    expect(document.body.querySelector('button[aria-label="使图片适应窗口"]')).not.toBeNull();
+
+    act(() => root.unmount());
+    container.remove();
+    vi.unstubAllGlobals();
   });
 });

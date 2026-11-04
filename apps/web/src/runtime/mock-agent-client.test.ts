@@ -1,10 +1,50 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { MockAgentClient } from "./mock-agent-client.js";
+import { updateSideSessionsForRunEvent, upsertSideSession } from "../features/workspace/right-sidebar-workspace.js";
+import { conversationActivityRows } from "../features/chat/conversation-activity.js";
 
 describe("MockAgentClient", () => {
+  it.each([false, true])("keeps the first-message title short without ellipses and preserves a manual title (%s)", async manual => {
+    vi.useFakeTimers();
+    const client = new MockAgentClient();
+    const conversation = await client.createConversation({ projectId: null });
+    if (manual) await client.renameConversation({ conversationId: conversation.id, title: "手动命名" });
+    const content = "请帮我设计一个支持团队并行协作和消息查询的项目管理页面";
+    await client.sendConversationMessage({ conversationId: conversation.id, content });
+    expect((await client.listConversations()).find(item => item.id === conversation.id)?.title)
+      .toBe(manual ? "手动命名" : Array.from(content).slice(0, 20).join(""));
+    await vi.advanceTimersByTimeAsync(800);
+  });
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  it("notifies sidebar and activity views when a completed result is viewed while retaining live Runs", async () => {
+    vi.useFakeTimers();
+    const client = new MockAgentClient();
+    const conversation = await client.createConversation({ projectId: null });
+    await client.sendConversationMessage({ content: "检查", conversationId: conversation.id });
+    await vi.advanceTimersByTimeAsync(800);
+    const completed = (await client.listConversations())[0]!;
+    let sidebar = upsertSideSession([], completed);
+    const running = await client.createConversation({ projectId: null });
+    await client.sendConversationMessage({ content: "继续检查", conversationId: running.id });
+    const live = (await client.listConversations()).find(({ id }) => id === running.id)!;
+    sidebar = upsertSideSession(sidebar, live);
+    const updated = vi.fn();
+    const unsubscribe = client.onConversationRunEvent((event) => {
+      if (event.type !== "conversation.updated") return;
+      updated(event);
+      sidebar = updateSideSessionsForRunEvent(sidebar, event);
+    });
+    expect(conversationActivityRows(sidebar, {})).toHaveLength(2);
+    await client.markConversationResultViewed({ conversationId: completed.id });
+    expect(updated).toHaveBeenCalledExactlyOnceWith({ type: "conversation.updated", conversation: { ...completed, hasUnreadResult: false } });
+    expect(sidebar.find(({ id }) => id === completed.id)?.hasUnreadResult).toBe(false);
+    expect(conversationActivityRows(sidebar, {}).map(({ session }) => session.id)).toEqual([live.id]);
+    expect(sidebar.find(({ id }) => id === live.id)?.activeRunId).toBe(live.activeRunId);
+    unsubscribe();
   });
 
   it("reports mock capabilities and rejects desktop-only commands", async () => {
@@ -173,8 +213,56 @@ describe("MockAgentClient", () => {
       pinned: true,
       projectId: project.id,
     })).resolves.toMatchObject({ isPinned: true });
+    await expect(client.setProjectTeamsInNavigator({
+      projectId: project.id,
+      showTeamsInNavigator: true,
+    })).resolves.toMatchObject({ showTeamsInNavigator: true });
     await client.removeProject({ projectId: project.id });
     await expect(client.listProjects()).resolves.toEqual([]);
+  });
+
+  it("keeps custom Team instance ordering in the mock runtime", async () => {
+    const client = new MockAgentClient();
+    const teams = (await client.getApplicationSettings()).agentDirectory.teams;
+    const firstTeam = teams[0];
+    const secondTeam = teams[1];
+    if (firstTeam === undefined || secondTeam === undefined) {
+      throw new Error("The mock Team templates are missing.");
+    }
+    const first = await client.createTeamInstance({ scope: "global", teamId: firstTeam.id });
+    const second = await client.createTeamInstance({ scope: "global", teamId: secondTeam.id });
+
+    await expect(client.reorderTeamInstances({
+      teamInstanceIds: [second.id, first.id],
+    })).resolves.toMatchObject([{ id: second.id }, { id: first.id }]);
+  });
+
+  it("creates and reuses a durable shared Team member conversation", async () => {
+    const client = new MockAgentClient();
+
+    const first = await client.ensureTeamMemberConversation({
+      agentId: "frontend-engineer",
+      teamId: "default-team",
+    });
+    const second = await client.ensureTeamMemberConversation({
+      agentId: "frontend-engineer",
+      teamId: "default-team",
+    });
+
+    expect(first.lead).toMatchObject({
+      agentId: "team-lead",
+      parentConversationId: null,
+      projectId: null,
+      threadKind: "team_lead",
+    });
+    expect(first.member).toMatchObject({
+      agentId: "frontend-engineer",
+      parentConversationId: first.lead.id,
+      projectId: null,
+      threadKind: "agent",
+    });
+    expect(second.member.id).toBe(first.member.id);
+    expect(second.lead.id).toBe(first.lead.id);
   });
 
   it("keeps conversations in the order they were pinned", async () => {
@@ -506,8 +594,12 @@ describe("MockAgentClient", () => {
     await expect(client.listConversationForks({ conversationId: conversation.id }))
       .resolves.toEqual([]);
     const forkTimeline = await client.listConversationTimeline({ conversationId: fork.id });
-    expect(forkTimeline.map((item) => item.kind === "tool" ? item.name : item.content)).toEqual(
-      firstTimeline.map((item) => item.kind === "tool" ? item.name : item.content),
+    expect(forkTimeline.map((item) => item.kind === "tool"
+      ? item.name
+      : item.kind === "model_retry" ? item.reason : item.content)).toEqual(
+      firstTimeline.map((item) => item.kind === "tool"
+        ? item.name
+        : item.kind === "model_retry" ? item.reason : item.content),
     );
     expect(forkTimeline.every((item) => item.conversationId === fork.id)).toBe(true);
     expect(forkTimeline.every((item) => item.runId !== null)).toBe(true);
@@ -526,8 +618,12 @@ describe("MockAgentClient", () => {
     const nestedTimeline = await client.listConversationTimeline({
       conversationId: nestedFork.id,
     });
-    expect(nestedTimeline.map((item) => item.kind === "tool" ? item.name : item.content)).toEqual(
-      firstTimeline.map((item) => item.kind === "tool" ? item.name : item.content),
+    expect(nestedTimeline.map((item) => item.kind === "tool"
+      ? item.name
+      : item.kind === "model_retry" ? item.reason : item.content)).toEqual(
+      firstTimeline.map((item) => item.kind === "tool"
+        ? item.name
+        : item.kind === "model_retry" ? item.reason : item.content),
     );
     expect(nestedTimeline.map((item) => item.id)).not.toEqual(
       forkTimeline.map((item) => item.id),
@@ -754,11 +850,15 @@ describe("MockAgentClient", () => {
       conversationId: first.id,
       modelSelection: selection,
     })).resolves.toMatchObject({ modelSelection: selection });
+    await expect(client.setConversationPermissionMode({
+      conversationId: first.id,
+      permissionMode: "read_only",
+    })).resolves.toMatchObject({ permissionMode: "read_only" });
     await expect(client.createConversation({})).resolves.toMatchObject({
       modelSelection: selection,
     });
     const side = await client.forkConversation({ conversationId: first.id });
-    expect(side).toMatchObject({ modelSelection: selection });
+    expect(side).toMatchObject({ modelSelection: selection, permissionMode: "read_only" });
 
     const fallbackSelection = {
       modelId: "fallback-model",

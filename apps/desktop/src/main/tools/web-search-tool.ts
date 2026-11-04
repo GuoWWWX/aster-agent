@@ -1,6 +1,8 @@
 import { parse, type DefaultTreeAdapterTypes } from "parse5";
 import { z } from "zod";
 
+import { APPLICATION_DISPLAY_NAME } from "@agent/protocol";
+
 import { toolErrorContent } from "../errors/tool-error.js";
 import type { ModelToolDefinition } from "../model/model-contracts.js";
 import { modelToolParameters, parseToolArguments } from "../model/tool-arguments.js";
@@ -61,7 +63,7 @@ async function searchDuckDuckGoLite(
   const response = await fetch(url, {
     headers: {
       accept: "text/html",
-      "user-agent": "Aster web_search/1.0",
+      "user-agent": `${APPLICATION_DISPLAY_NAME} web_search/1.0`,
     },
     signal: requestSignal,
   });
@@ -233,7 +235,20 @@ export class WebSearchTool {
     return { group: "read", kind: "parallel" };
   }
 
-  public async execute(rawArguments: string, signal: AbortSignal): Promise<ToolExecution> {
+  public prepareApproval(rawArguments: string, signal: AbortSignal): ToolExecution {
+    try {
+      signal.throwIfAborted();
+      const input = webSearchArgumentsSchema.parse(parseToolArguments(rawArguments));
+      return { kind: "approved_action", isError: false, content: JSON.stringify({ ok: true, value: { status: "awaiting_approval" } }),
+        action: { permissionTool: "web_search", pattern: JSON.stringify(input), rejectionMessage: "用户拒绝了本次联网搜索。",
+          execute: () => this.execute(JSON.stringify(input), signal) } };
+    } catch (error) {
+      if (signal.aborted) throw error;
+      return { kind: "completed", isError: true, content: toolErrorContent(error, "tool:web_search") };
+    }
+  }
+
+  public async execute(rawArguments: string, signal: AbortSignal): Promise<ToolExecutionResult> {
     try {
       const input = webSearchArgumentsSchema.parse(parseToolArguments(rawArguments));
       const results = await this.provider(

@@ -1,0 +1,340 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1800" height="1240" viewBox="0 0 1800 1240" role="img" aria-labelledby="title desc">
+  <title id="title">Agent 团队协作计划与运行图四处展示效果图</title>
+  <desc id="desc">组合展示需求看板、任务与验收、来源对话和执行规划完整画布中的协作路径视觉方案。</desc>
+  <defs>
+    <linearGradient id="page-bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#f7f9fc"/>
+      <stop offset="1" stop-color="#eef3f9"/>
+    </linearGradient>
+    <filter id="panel-shadow" x="-10%" y="-10%" width="120%" height="125%">
+      <feDropShadow dx="0" dy="4" stdDeviation="9" flood-color="#182b49" flood-opacity="0.08"/>
+    </filter>
+    <marker id="arrow-blue" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+      <path d="M0,0 L8,4 L0,8 Z" fill="#3478f6"/>
+    </marker>
+    <marker id="arrow-gray" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+      <path d="M0,0 L8,4 L0,8 Z" fill="#98a6b8"/>
+    </marker>
+    <marker id="arrow-amber" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+      <path d="M0,0 L8,4 L0,8 Z" fill="#d88916"/>
+    </marker>
+    <style>
+      .ui { font-family: "Microsoft YaHei UI", "Segoe UI", sans-serif; }
+      .panel { fill:#ffffff; stroke:#dce3ec; stroke-width:1; filter:url(#panel-shadow); }
+      .bar { fill:#f8fafc; stroke:#e1e7ef; stroke-width:1; }
+      .surface { fill:#fbfcfe; stroke:#e2e8f0; stroke-width:1; }
+      .card { fill:#ffffff; stroke:#dce3ec; stroke-width:1; }
+      .selected-card { fill:#f3f7ff; stroke:#8bb3ff; stroke-width:1.5; }
+      .muted-box { fill:#f6f8fb; stroke:#e0e6ee; stroke-width:1; }
+      .title { fill:#17223b; font-size:27px; font-weight:700; }
+      .subtitle { fill:#69788c; font-size:14px; }
+      .panel-title { fill:#1d2a40; font-size:17px; font-weight:700; }
+      .heading { fill:#1d2a40; font-size:14px; font-weight:700; }
+      .body { fill:#33435a; font-size:12px; }
+      .small { fill:#6f7e91; font-size:10px; }
+      .tiny { fill:#7c899a; font-size:9px; }
+      .blue { fill:#2767d8; }
+      .green { fill:#168a52; }
+      .amber { fill:#b46b0d; }
+      .pill-blue { fill:#e8f0ff; stroke:#bdd2ff; }
+      .pill-green { fill:#eaf8f0; stroke:#bce7cd; }
+      .pill-amber { fill:#fff4df; stroke:#f0cd8e; }
+      .node { fill:#ffffff; stroke:#cbd5e1; stroke-width:1.2; }
+      .node-active { fill:#f1f6ff; stroke:#4f86ef; stroke-width:1.8; }
+      .node-temp { fill:#fffaf1; stroke:#d9a14b; stroke-width:1.2; stroke-dasharray:4 3; }
+      .edge-plan { fill:none; stroke:#98a6b8; stroke-width:1.6; stroke-dasharray:6 5; marker-end:url(#arrow-gray); }
+      .edge-live { fill:none; stroke:#3478f6; stroke-width:2.4; marker-end:url(#arrow-blue); }
+      .edge-adhoc { fill:none; stroke:#d88916; stroke-width:2; stroke-dasharray:3 4; marker-end:url(#arrow-amber); }
+      .divider { stroke:#e3e8ef; stroke-width:1; }
+      .dot-blue { fill:#3478f6; stroke:#ffffff; stroke-width:1.5; }
+    </style>
+  </defs>
+
+  <rect width="1800" height="1240" fill="url(#page-bg)"/>
+  <g class="ui">
+    <text x="40" y="39" class="title">Agent 团队协作计划与运行图 · 四处展示效果</text>
+    <text x="40" y="63" class="subtitle">同一 WorkItem 投影：计划路线提前出现，真实消息触发一次方向脉冲，计划外联系动态补线</text>
+    <g transform="translate(1376,24)">
+      <path d="M0 12 H54" class="edge-plan"/>
+      <text x="66" y="16" class="small">计划</text>
+      <path d="M122 12 H176" class="edge-live"/>
+      <circle cx="149" cy="12" r="4" class="dot-blue"/>
+      <text x="188" y="16" class="small">已发生 / 流动</text>
+      <path d="M290 12 H344" class="edge-adhoc"/>
+      <text x="356" y="16" class="small">计划外</text>
+    </g>
+
+    <!-- Panel A: board -->
+    <g transform="translate(40,90)">
+      <rect width="840" height="520" rx="10" class="panel"/>
+      <rect width="840" height="52" rx="10" class="bar"/>
+      <rect y="42" width="840" height="10" fill="#f8fafc"/>
+      <circle cx="23" cy="25" r="6" fill="#3478f6"/>
+      <text x="39" y="31" class="panel-title">01 · 需求看板：卡片微缩图</text>
+      <text x="594" y="30" class="small">静态预览 · 选中卡片才播放一次新事件</text>
+
+      <g transform="translate(16,68)">
+        <rect width="192" height="432" rx="7" class="surface"/>
+        <rect x="208" width="192" height="432" rx="7" class="surface"/>
+        <rect x="416" width="192" height="432" rx="7" class="surface"/>
+        <rect x="624" width="184" height="432" rx="7" class="surface"/>
+        <text x="14" y="25" class="heading">待执行</text><text x="169" y="25" class="small">2</text>
+        <text x="222" y="25" class="heading">处理中</text><text x="377" y="25" class="small">3</text>
+        <text x="430" y="25" class="heading">待验收</text><text x="585" y="25" class="small">1</text>
+        <text x="638" y="25" class="heading">已完成</text><text x="785" y="25" class="small">8</text>
+        <line x1="0" y1="38" x2="808" y2="38" class="divider"/>
+
+        <g transform="translate(10,50)">
+          <rect width="172" height="100" rx="6" class="card"/>
+          <text x="10" y="20" class="heading">统一登录错误处理</text>
+          <text x="10" y="40" class="small">等待 Team Lead 规划</text>
+          <rect x="10" y="52" width="152" height="32" rx="4" class="muted-box"/>
+          <text x="32" y="72" class="tiny">尚无计划节点与路线</text>
+          <text x="10" y="94" class="tiny">Agent · 来自对话</text>
+        </g>
+
+        <g transform="translate(218,50)">
+          <rect width="172" height="215" rx="7" class="selected-card"/>
+          <text x="10" y="21" class="heading">团队协作可视化</text>
+          <rect x="112" y="8" width="48" height="20" rx="10" class="pill-blue"/>
+          <text x="124" y="22" class="tiny blue">执行中</text>
+          <text x="10" y="43" class="small">计划 v2 · 4 位成员</text>
+          <rect x="10" y="54" width="152" height="100" rx="5" fill="#fff" stroke="#dbe5f2"/>
+          <path d="M42 102 C62 102 65 76 88 76" class="edge-live"/>
+          <path d="M103 76 C126 76 126 103 146 103" class="edge-plan"/>
+          <path d="M88 88 C88 110 95 123 112 128" class="edge-adhoc"/>
+          <circle cx="33" cy="102" r="15" class="node-active"/>
+          <text x="25" y="106" class="tiny blue">Lead</text>
+          <circle cx="93" cy="76" r="14" class="node"/>
+          <text x="87" y="80" class="tiny">前端</text>
+          <circle cx="146" cy="103" r="14" class="node"/>
+          <text x="140" y="107" class="tiny">测试</text>
+          <circle cx="112" cy="130" r="13" class="node-temp"/>
+          <text x="106" y="134" class="tiny amber">临时</text>
+          <circle cx="70" cy="90" r="4" class="dot-blue"/>
+          <text x="10" y="173" class="small blue">3/5 路线已发生</text>
+          <text x="112" y="173" class="small amber">1 计划外</text>
+          <text x="10" y="194" class="tiny">最近：前端开发 → Team Lead</text>
+          <text x="10" y="209" class="tiny">点击进入任务与验收</text>
+        </g>
+
+        <g transform="translate(426,50)">
+          <rect width="172" height="145" rx="6" class="card"/>
+          <text x="10" y="21" class="heading">只读检查与测试</text>
+          <text x="10" y="42" class="small green">等待用户验收</text>
+          <rect x="10" y="54" width="152" height="60" rx="4" class="muted-box"/>
+          <path d="M41 83 H75" class="edge-live"/>
+          <path d="M98 83 H134" class="edge-live"/>
+          <circle cx="31" cy="83" r="12" class="node"/>
+          <circle cx="87" cy="83" r="12" class="node"/>
+          <circle cx="146" cy="83" r="12" class="node"/>
+          <text x="19" y="133" class="tiny">2/2 路线完成 · 无偏差</text>
+        </g>
+
+        <g transform="translate(634,50)">
+          <rect width="164" height="128" rx="6" class="card"/>
+          <text x="10" y="21" class="heading">模型默认兜底</text>
+          <text x="10" y="42" class="small green">已完成</text>
+          <rect x="10" y="54" width="144" height="42" rx="4" class="muted-box"/>
+          <circle cx="31" cy="75" r="10" class="node"/>
+          <path d="M42 75 H89" class="edge-live"/>
+          <circle cx="102" cy="75" r="10" class="node"/>
+          <text x="10" y="116" class="tiny">计划 v1 · 1 条路线</text>
+        </g>
+      </g>
+    </g>
+
+    <!-- Panel B: task and acceptance -->
+    <g transform="translate(920,90)">
+      <rect width="840" height="520" rx="10" class="panel"/>
+      <rect width="840" height="52" rx="10" class="bar"/>
+      <rect y="42" width="840" height="10" fill="#f8fafc"/>
+      <circle cx="23" cy="25" r="6" fill="#3478f6"/>
+      <text x="39" y="31" class="panel-title">02 · 任务与验收：中央栏嵌入图</text>
+      <text x="620" y="30" class="small">放在主对话入口与执行进度之间</text>
+
+      <g transform="translate(16,68)">
+        <rect width="202" height="432" rx="7" class="surface"/>
+        <rect x="212" width="400" height="432" rx="7" class="surface"/>
+        <rect x="622" width="186" height="432" rx="7" class="surface"/>
+        <text x="12" y="23" class="heading">需求与任务</text>
+        <line x1="0" y1="34" x2="202" y2="34" class="divider"/>
+        <g transform="translate(9,44)">
+          <rect width="184" height="80" rx="5" class="selected-card"/>
+          <rect width="4" height="80" rx="2" fill="#3478f6"/>
+          <text x="12" y="20" class="heading">团队协作可视化</text>
+          <text x="12" y="40" class="small">Agent · 来自对话</text>
+          <text x="12" y="61" class="small amber">执行中</text>
+          <text x="151" y="61" class="tiny">09:42</text>
+        </g>
+        <g transform="translate(9,134)"><rect width="184" height="64" rx="5" class="card"/><text x="10" y="22" class="heading">统一错误处理</text><text x="10" y="44" class="small">等待调度</text></g>
+        <g transform="translate(9,208)"><rect width="184" height="64" rx="5" class="card"/><text x="10" y="22" class="heading">只读检查</text><text x="10" y="44" class="small green">等待验收</text></g>
+
+        <text x="224" y="23" class="heading">当前任务状态</text><text x="570" y="23" class="small blue">执行中</text>
+        <line x1="212" y1="34" x2="612" y2="34" class="divider"/>
+        <g transform="translate(222,44)">
+          <rect width="380" height="54" rx="5" class="muted-box"/>
+          <text x="10" y="20" class="heading">把工作流画布用于 Agent 协作关系</text>
+          <text x="10" y="40" class="small">提前规划连接，运行时显示真实数据方向和偏差。</text>
+        </g>
+        <g transform="translate(222,106)">
+          <rect width="380" height="46" rx="5" class="card"/>
+          <circle cx="18" cy="23" r="9" fill="#e8f0ff" stroke="#8bb3ff"/>
+          <text x="36" y="20" class="heading">Team Lead 主对话</text>
+          <text x="36" y="35" class="tiny">保持来源对话，成员在右侧 Tab 查看</text>
+          <rect x="298" y="10" width="72" height="26" rx="5" class="pill-blue"/>
+          <text x="311" y="27" class="small blue">打开对话</text>
+        </g>
+
+        <g transform="translate(222,160)">
+          <rect width="380" height="164" rx="6" class="card"/>
+          <text x="10" y="22" class="heading">协作路径</text>
+          <rect x="232" y="8" width="47" height="22" rx="11" class="pill-blue"/>
+          <text x="243" y="23" class="tiny blue">对比</text>
+          <text x="289" y="22" class="small">计划 v2 · 1 计划外</text>
+          <path d="M74 85 C110 85 113 55 159 55" class="edge-live"/>
+          <path d="M185 55 C226 55 227 88 267 88" class="edge-plan"/>
+          <path d="M170 70 C170 113 216 120 253 120" class="edge-adhoc"/>
+          <path d="M267 102 C232 136 118 136 74 100" class="edge-live"/>
+          <g transform="translate(31,67)"><rect width="58" height="36" rx="8" class="node-active"/><text x="11" y="15" class="tiny blue">Team Lead</text><text x="13" y="29" class="tiny">运行中</text></g>
+          <g transform="translate(141,37)"><rect width="62" height="36" rx="8" class="node"/><text x="12" y="15" class="tiny">前端开发</text><text x="18" y="29" class="tiny">执行中</text></g>
+          <g transform="translate(253,70)"><rect width="62" height="36" rx="8" class="node"/><text x="12" y="15" class="tiny">测试工程</text><text x="18" y="29" class="tiny">等待中</text></g>
+          <g transform="translate(236,108)"><rect width="66" height="32" rx="8" class="node-temp"/><text x="8" y="20" class="tiny amber">临时审查员</text></g>
+          <circle cx="116" cy="74" r="4" class="dot-blue"/>
+          <text x="10" y="153" class="tiny">4 位成员 · 3/5 路线已发生 · 最近活动 2 秒前</text>
+        </g>
+        <g transform="translate(222,332)">
+          <rect width="380" height="90" rx="5" class="card"/>
+          <text x="10" y="21" class="heading">执行进度</text><text x="323" y="21" class="small">2/4 运行中</text>
+          <circle cx="19" cy="43" r="8" fill="#e8f0ff" stroke="#8bb3ff"/><text x="16" y="47" class="tiny blue">1</text><text x="34" y="47" class="small">梳理现有画布与通信事实</text><text x="322" y="47" class="tiny green">已完成</text>
+          <circle cx="19" cy="67" r="8" fill="#e8f0ff" stroke="#8bb3ff"/><text x="16" y="71" class="tiny blue">2</text><text x="34" y="71" class="small">形成计划图与运行投影</text><text x="322" y="71" class="tiny blue">处理中</text>
+        </g>
+
+        <text x="634" y="23" class="heading">实际执行成员</text>
+        <line x1="622" y1="34" x2="808" y2="34" class="divider"/>
+        <g transform="translate(632,45)"><rect width="166" height="55" rx="5" class="card"/><circle cx="20" cy="21" r="10" class="node-active"/><text x="39" y="20" class="heading">Team Lead</text><text x="39" y="38" class="tiny blue">运行中 · 8 条消息</text></g>
+        <g transform="translate(632,108)"><rect width="166" height="55" rx="5" class="card"/><circle cx="20" cy="21" r="10" class="node"/><text x="39" y="20" class="heading">前端开发</text><text x="39" y="38" class="tiny blue">运行中 · 3 条消息</text></g>
+        <g transform="translate(632,171)"><rect width="166" height="55" rx="5" class="card"/><circle cx="20" cy="21" r="10" class="node"/><text x="39" y="20" class="heading">测试工程师</text><text x="39" y="38" class="tiny">等待中 · 1 条消息</text></g>
+        <text x="634" y="256" class="heading">协作动态</text>
+        <line x1="622" y1="268" x2="808" y2="268" class="divider"/>
+        <circle cx="638" cy="290" r="4" fill="#3478f6"/><text x="648" y="293" class="tiny">前端 → Lead 返回方案</text><text x="648" y="308" class="tiny">09:51 · 已匹配计划边</text>
+        <circle cx="638" cy="332" r="4" fill="#d88916"/><text x="648" y="335" class="tiny">前端 → 临时审查员</text><text x="648" y="350" class="tiny amber">09:48 · 计划外联系</text>
+      </g>
+    </g>
+
+    <!-- Panel C: source conversation -->
+    <g transform="translate(40,650)">
+      <rect width="840" height="550" rx="10" class="panel"/>
+      <rect width="840" height="52" rx="10" class="bar"/>
+      <rect y="42" width="840" height="10" fill="#f8fafc"/>
+      <circle cx="23" cy="25" r="6" fill="#3478f6"/>
+      <text x="39" y="31" class="panel-title">03 · 发起任务的来源主对话：直接显示主协作图</text>
+      <text x="633" y="30" class="small">其他三个位置保持原方案</text>
+      <g transform="translate(16,68)">
+        <rect width="195" height="462" rx="7" class="surface"/>
+        <rect x="205" width="603" height="462" rx="7" class="surface"/>
+        <text x="12" y="24" class="heading">项目对话</text>
+        <line x1="0" y1="35" x2="195" y2="35" class="divider"/>
+        <g transform="translate(9,47)"><rect width="177" height="56" rx="5" class="selected-card"/><text x="12" y="21" class="heading">团队协作关系讨论</text><text x="12" y="42" class="small">当前对话 · 1 个 WorkItem</text></g>
+        <g transform="translate(22,112)"><path d="M0 0 V112" stroke="#cfd8e6"/><circle cx="0" cy="20" r="4" fill="#3478f6"/><text x="12" y="23" class="small">Team Lead</text><circle cx="0" cy="52" r="4" fill="#93a3b6"/><text x="12" y="55" class="small">前端开发</text><circle cx="0" cy="84" r="4" fill="#93a3b6"/><text x="12" y="87" class="small">测试工程师</text><circle cx="0" cy="116" r="4" fill="#d9a14b"/><text x="12" y="119" class="small amber">临时审查员</text></g>
+
+        <text x="224" y="24" class="heading">团队协作关系讨论</text><text x="705" y="24" class="small">Agent · read_only</text>
+        <line x1="205" y1="35" x2="808" y2="35" class="divider"/>
+        <g transform="translate(350,50)"><rect width="430" height="58" rx="10" fill="#eaf2ff"/><text x="18" y="24" class="body">@默认团队 请研究 Agent 协作连线如何设计，先形成方案。</text><text x="340" y="46" class="tiny">09:42</text></g>
+        <g transform="translate(224,120)"><rect width="520" height="48" rx="8" class="card"/><text x="14" y="21" class="body">已提交给默认团队，WorkItem 正在执行。</text><text x="14" y="38" class="tiny">负责人将先规划协作路线，再按实际消息更新。</text></g>
+
+        <g transform="translate(224,180)">
+          <rect width="560" height="210" rx="8" class="card"/>
+          <rect width="560" height="42" rx="8" fill="#f7f9fc" stroke="#dce3ec"/>
+          <rect y="34" width="560" height="8" fill="#f7f9fc"/>
+          <circle cx="20" cy="21" r="7" fill="#e8f0ff" stroke="#8bb3ff"/>
+          <text x="36" y="18" class="heading">团队协作图 · 计划 v2</text>
+          <text x="36" y="33" class="tiny">4 位成员 · 最近：前端开发 → Team Lead</text>
+          <rect x="430" y="9" width="118" height="24" rx="5" class="pill-blue"/>
+          <text x="446" y="25" class="small blue">打开执行规划</text>
+          <path d="M102 104 C145 104 151 75 211 75" class="edge-live"/>
+          <path d="M259 75 C318 75 319 106 382 106" class="edge-plan"/>
+          <path d="M229 92 C232 138 300 144 365 142" class="edge-adhoc"/>
+          <path d="M384 123 C333 171 159 169 103 122" class="edge-live"/>
+          <g transform="translate(45,87)"><rect width="72" height="40" rx="8" class="node-active"/><text x="15" y="17" class="tiny blue">Team Lead</text><text x="19" y="31" class="tiny">运行中</text></g>
+          <g transform="translate(194,56)"><rect width="78" height="40" rx="8" class="node"/><text x="15" y="17" class="tiny">前端开发</text><text x="21" y="31" class="tiny">执行中</text></g>
+          <g transform="translate(365,88)"><rect width="78" height="40" rx="8" class="node"/><text x="15" y="17" class="tiny">测试工程</text><text x="21" y="31" class="tiny">等待中</text></g>
+          <g transform="translate(347,128)"><rect width="86" height="34" rx="8" class="node-temp"/><text x="13" y="21" class="tiny amber">临时审查员</text></g>
+          <circle cx="156" cy="91" r="4" class="dot-blue"/>
+          <rect x="16" y="178" width="126" height="22" rx="11" class="pill-green"/><text x="27" y="193" class="tiny green">3/5 路线已发生</text>
+          <rect x="150" y="178" width="83" height="22" rx="11" class="pill-amber"/><text x="163" y="193" class="tiny amber">1 条计划外</text>
+          <text x="388" y="193" class="tiny blue">查看任务与验收 →</text>
+        </g>
+        <g transform="translate(224,402)"><rect width="560" height="44" rx="7" class="muted-box"/><text x="14" y="27" class="small">输入消息… 可继续与当前主对话沟通；成员对话在右侧 Tab 打开</text></g>
+      </g>
+    </g>
+
+    <!-- Panel D: full canvas -->
+    <g transform="translate(920,650)">
+      <rect width="840" height="550" rx="10" class="panel"/>
+      <rect width="840" height="52" rx="10" class="bar"/>
+      <rect y="42" width="840" height="10" fill="#f8fafc"/>
+      <circle cx="23" cy="25" r="6" fill="#3478f6"/>
+      <text x="39" y="31" class="panel-title">04 · 执行规划：完整计划 / 实际 / 对比 / 回放画布</text>
+      <text x="688" y="30" class="small">WorkItem 级</text>
+
+      <g transform="translate(16,68)">
+        <rect width="808" height="462" rx="7" class="surface"/>
+        <rect width="808" height="45" rx="7" fill="#ffffff" stroke="#dce3ec"/>
+        <rect y="37" width="808" height="8" fill="#fff"/>
+        <text x="14" y="19" class="heading">团队协作可视化</text><text x="14" y="35" class="tiny">当前计划 v2 · 2026-08-31 09:46 发布</text>
+        <g transform="translate(270,10)"><rect width="50" height="24" rx="5" class="card"/><text x="14" y="16" class="tiny">计划</text></g>
+        <g transform="translate(324,10)"><rect width="50" height="24" rx="5" class="card"/><text x="14" y="16" class="tiny">实际</text></g>
+        <g transform="translate(378,10)"><rect width="50" height="24" rx="5" class="pill-blue"/><text x="14" y="16" class="tiny blue">对比</text></g>
+        <g transform="translate(432,10)"><rect width="50" height="24" rx="5" class="card"/><text x="14" y="16" class="tiny">回放</text></g>
+        <rect x="617" y="10" width="77" height="24" rx="5" class="card"/><text x="632" y="26" class="tiny">只看计划外</text>
+        <rect x="700" y="10" width="94" height="24" rx="5" class="pill-blue"/><text x="714" y="26" class="tiny blue">要求重新规划</text>
+
+        <rect x="12" y="57" width="610" height="335" rx="6" fill="#f9fbfe" stroke="#dde5ef"/>
+        <path d="M140 191 C192 191 200 104 292 104" class="edge-live"/>
+        <path d="M140 207 C206 207 209 270 293 270" class="edge-plan"/>
+        <path d="M363 104 C436 104 443 173 514 173" class="edge-plan"/>
+        <path d="M363 270 C433 270 444 192 514 192" class="edge-live"/>
+        <path d="M332 128 C335 164 416 265 508 280" class="edge-adhoc"/>
+        <path d="M514 209 C436 321 248 333 139 222" class="edge-live"/>
+        <path d="M514 161 C431 42 231 47 140 177" class="edge-live"/>
+
+        <g transform="translate(44,169)"><rect width="108" height="62" rx="10" class="node-active"/><circle cx="20" cy="21" r="10" fill="#3478f6"/><text x="16" y="25" font-size="8" fill="#fff">TL</text><text x="38" y="20" class="heading">Team Lead</text><text x="38" y="38" class="tiny blue">运行中 · 8 条</text><text x="12" y="54" class="tiny">接单 / 调度 / 汇总</text></g>
+        <g transform="translate(278,75)"><rect width="100" height="58" rx="10" class="node"/><circle cx="18" cy="20" r="9" fill="#dce8ff"/><text x="13" y="24" class="tiny blue">FE</text><text x="34" y="19" class="heading">前端开发</text><text x="34" y="37" class="tiny blue">执行中 · 3 条</text><text x="12" y="51" class="tiny">画布与交互</text></g>
+        <g transform="translate(278,241)"><rect width="100" height="58" rx="10" class="node"/><circle cx="18" cy="20" r="9" fill="#e9eef5"/><text x="13" y="24" class="tiny">BE</text><text x="34" y="19" class="heading">后端开发</text><text x="34" y="37" class="tiny">等待 · 1 条</text><text x="12" y="51" class="tiny">投影与持久化</text></g>
+        <g transform="translate(500,145)"><rect width="105" height="64" rx="10" class="node"/><circle cx="18" cy="20" r="9" fill="#eaf8f0"/><text x="13" y="24" class="tiny green">QA</text><text x="34" y="19" class="heading">测试工程师</text><text x="34" y="37" class="tiny">等待中 · 1 条</text><text x="12" y="54" class="tiny">验收与回归</text></g>
+        <g transform="translate(494,258)"><rect width="112" height="52" rx="10" class="node-temp"/><circle cx="18" cy="19" r="8" fill="#fff1d4"/><text x="13" y="23" class="tiny amber">R</text><text x="34" y="19" class="heading">临时审查员</text><text x="34" y="37" class="tiny amber">计划外加入</text></g>
+
+        <circle cx="203" cy="155" r="5" class="dot-blue"/><circle cx="433" cy="231" r="5" class="dot-blue"/>
+        <rect x="164" y="135" width="42" height="18" rx="9" class="pill-blue"/><text x="175" y="148" class="tiny blue">3 条</text>
+        <rect x="422" y="286" width="52" height="18" rx="9" class="pill-amber"/><text x="429" y="299" class="tiny amber">计划外</text>
+
+        <g transform="translate(634,57)">
+          <rect width="162" height="335" rx="6" class="card"/>
+          <text x="12" y="23" class="heading">路线详情</text>
+          <line x1="0" y1="34" x2="162" y2="34" class="divider"/>
+          <text x="12" y="58" class="small blue">前端开发 → Team Lead</text>
+          <text x="12" y="79" class="tiny">状态</text><text x="65" y="79" class="tiny green">已发生</text>
+          <text x="12" y="98" class="tiny">计划目的</text><text x="65" y="98" class="tiny">返回界面方案</text>
+          <text x="12" y="117" class="tiny">消息次数</text><text x="65" y="117" class="tiny">3</text>
+          <text x="12" y="136" class="tiny">最近活动</text><text x="65" y="136" class="tiny">2 秒前</text>
+          <text x="12" y="155" class="tiny">关联任务</text><text x="65" y="155" class="tiny">交互设计</text>
+          <rect x="12" y="174" width="138" height="52" rx="5" class="muted-box"/>
+          <text x="22" y="193" class="tiny">摘要：已返回四个入口</text>
+          <text x="22" y="209" class="tiny">的信息密度与交互建议。</text>
+          <text x="12" y="250" class="heading">图例</text>
+          <path d="M12 270 H51" class="edge-plan"/><text x="61" y="274" class="tiny">计划中</text>
+          <path d="M12 290 H51" class="edge-live"/><text x="61" y="294" class="tiny">已发生</text>
+          <path d="M12 310 H51" class="edge-adhoc"/><text x="61" y="314" class="tiny">计划外</text>
+        </g>
+
+        <g transform="translate(12,404)">
+          <text x="0" y="14" class="tiny">09:42 接收</text><text x="190" y="14" class="tiny">09:46 计划 v2</text><text x="385" y="14" class="tiny blue">09:51 当前</text><text x="564" y="14" class="tiny">等待验收</text>
+          <line x1="0" y1="30" x2="782" y2="30" stroke="#ced7e5" stroke-width="4" stroke-linecap="round"/>
+          <line x1="0" y1="30" x2="468" y2="30" stroke="#3478f6" stroke-width="4" stroke-linecap="round"/>
+          <circle cx="0" cy="30" r="6" fill="#3478f6"/><circle cx="215" cy="30" r="6" fill="#3478f6"/><circle cx="468" cy="30" r="8" fill="#fff" stroke="#3478f6" stroke-width="3"/><circle cx="782" cy="30" r="6" fill="#ced7e5"/>
+        </g>
+      </g>
+    </g>
+  </g>
+</svg>

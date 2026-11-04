@@ -3,6 +3,7 @@ import { z } from "zod";
 
 import { AgentCommunicationTool } from "../agent/agent-communication-tool.js";
 import { SubagentTool } from "../agent/subagent-tool.js";
+import { QuickCoordinationTool } from "../agent/quick-coordination-tool.js";
 import type { ModelToolDefinition } from "../model/model-contracts.js";
 import { modelToolParameters } from "../model/tool-arguments.js";
 import { AgentDatabase } from "../storage/agent-database.js";
@@ -59,15 +60,16 @@ describe("model tool definitions", () => {
     const definitions = [
       ...new AgentCommunicationTool(database).getDefinitions(),
       ...new SubagentTool(database).getDefinitions(),
+      ...new QuickCoordinationTool(database).getDefinitions(),
       ...new ProjectToolRegistry(new ProjectRegistry()).getDefinitions(),
     ];
 
     const uuidParameters: Array<[string, string]> = [
       ["read_agent_conversation", "conversationId"],
-      ["send_agent_message", "conversationId"],
       ["wait_for_agent_message", "conversationId"],
       ["wait_for_project_operation", "operationId"],
       ["stop_command", "commandId"],
+      ["read_command_output", "commandId"],
     ];
     for (const [toolName, propertyName] of uuidParameters) {
       expect(property(definitions, toolName, propertyName)).toMatchObject({
@@ -76,12 +78,20 @@ describe("model tool definitions", () => {
       });
     }
 
-    expect(property(definitions, "wait_for_commands", "commandIds")).toMatchObject({
+    expect(definitions.some((tool) => tool.name === "wait_for_commands")).toBe(false);
+    expect(property(definitions, "send_agent_message", "conversationIds")).toMatchObject({
       items: { format: "uuid", type: "string" },
+      minItems: 1,
+      maxItems: 32,
     });
     expect(property(definitions, "wait_for_subagents", "taskIds")).toMatchObject({
       items: { format: "uuid", type: "string" },
     });
+    for (const [toolName, propertyName] of [["send_agent_message", "conversationIds"], ["claim_pending_messages", "pendingMessageIds"]]) {
+      expect(property(definitions, toolName!, propertyName!)).toMatchObject({
+        type: "array", minItems: 1, items: { format: "uuid", type: "string" },
+      });
+    }
     database.close();
   });
 
@@ -97,12 +107,35 @@ describe("model tool definitions", () => {
     expect(property(definitions, "send_agent_message", "content")).toMatchObject({
       maxLength: 20_000,
     });
+    expect(property(definitions, "send_agent_message", "replyInstruction")).toMatchObject({
+      maxLength: 1_000,
+    });
     expect(property(definitions, "spawn_subagent", "task")).toMatchObject({
       maxLength: 20_000,
     });
+    expect(property(definitions, "spawn_subagent", "name")).toMatchObject({
+      maxLength: 80,
+    });
+    const avatarIcons = property(definitions, "spawn_subagent", "icon").enum;
+    if (!Array.isArray(avatarIcons) || !avatarIcons.every((value) => typeof value === "string")) {
+      throw new Error("Missing spawn_subagent.icon enum.");
+    }
+    expect(avatarIcons).toEqual(expect.arrayContaining(["bot", "brain", "bug", "rocket"]));
     expect(property(definitions, "run_command", "command")).toMatchObject({
       maxLength: 4_000,
     });
+    expect(property(definitions, "run_command", "description")).toMatchObject({ type: "string", maxLength: 200 });
+    expect(definition(definitions, "run_command").parameters.required).not.toContain("description");
+    expect(property(definitions, "run_command", "mode")).toMatchObject({
+      default: "batch",
+      enum: ["batch", "service"],
+    });
+    expect(property(definitions, "run_command", "timeoutMs")).toMatchObject({
+      anyOf: [{ type: "integer", minimum: 1_000, maximum: 30 * 60_000 }, { type: "null" }],
+    });
+    expect(property(definitions, "read_command_output", "maxChars")).toMatchObject({ maximum: 32_000, default: 12_000 });
+    expect(property(definitions, "read_command_output", "yieldTimeMs")).toMatchObject({ maximum: 30_000, default: 10_000 });
+    expect(definition(definitions, "read_command_output").parameters.required).toEqual(["commandId"]);
     expect(property(definitions, "apply_patch", "patch")).toMatchObject({
       maxLength: 200_000,
     });
@@ -112,8 +145,15 @@ describe("model tool definitions", () => {
       throw new Error("Missing read_file.endLine description.");
     }
     expect(endLineDescription).toContain("400");
+    expect(property(definitions, "read_file", "lineCount")).toMatchObject({
+      anyOf: [{ type: "integer", minimum: 1, maximum: 400 }, { type: "null" }],
+    });
+    // A default here would inject lineCount even when the model chooses endLine.
+    expect(property(definitions, "read_file", "lineCount")).not.toHaveProperty("default");
+    expect(definition(definitions, "read_file").parameters.required).toEqual(["path"]);
+    expect(endLineDescription).toContain("lineCount");
 
-    const taskItems = property(definitions, "create_task_list", "tasks").items;
+    const taskItems = property(definitions, "update_task_list", "tasks").items;
     if (!isRecord(taskItems) || !isRecord(taskItems.properties)) {
       throw new Error("Missing task item schema.");
     }

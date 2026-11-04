@@ -1,6 +1,8 @@
 import { z } from "zod";
+import { modelReasoningPatternMatches } from "./model-reasoning-matcher.js";
 
-import { modelReasoningOptionSchema } from "./conversation.js";
+import { modelReasoningOptionSchema, isReasoningOptionSupportedByApiFormat, type ModelApiFormat, type ModelReasoningOption } from "./conversation.js";
+import { DEFAULT_MODEL_REASONING_PROVIDERS, DEFAULT_MODEL_REASONING_RULES, LEGACY_EXACT_MODEL_REASONING_RULES, modelReasoningProviderSchema, modelReasoningRuleSchema } from "./model-reasoning-catalog.js";
 
 const modelCatalogPatternSchema = z.string().trim().min(1).max(200);
 
@@ -15,35 +17,77 @@ export const modelCatalogRuleSchema = z.object({
 export const modelCatalogSchema = z.object({
   defaultContextWindow: z.number().int().min(1).max(10_000_000),
   models: z.array(modelCatalogRuleSchema).max(500),
+  reasoningProviders: z.array(modelReasoningProviderSchema).max(100)
+    .refine(providers => new Set(providers.map(provider => provider.id)).size === providers.length, "Provider IDs must be unique.").optional(),
+  reasoningRules: z.array(modelReasoningRuleSchema).max(500)
+    .refine(rules => new Set(rules.map(rule => rule.id)).size === rules.length, "Reasoning rule IDs must be unique.").optional(),
   version: z.literal(1),
-}).strict();
+}).strict().superRefine((catalog, context) => {
+  if (catalog.reasoningProviders === undefined) return;
+  const providers = new Set(catalog.reasoningProviders.map(provider => provider.id));
+  const keys = new Set<string>();
+  catalog.reasoningRules?.forEach((rule, index) => {
+    const key = JSON.stringify([rule.providerId, rule.modelKey, rule.apiFormat]);
+    if (!rule.providerId || !providers.has(rule.providerId) || !rule.modelKey || keys.has(key)) {
+      context.addIssue({ code: "custom", path: ["reasoningRules", index], message: "Unknown provider, missing model key, or duplicate model protocol." });
+    }
+    keys.add(key);
+  });
+});
 
 export type ModelCatalog = z.infer<typeof modelCatalogSchema>;
 export type ModelCatalogRule = z.infer<typeof modelCatalogRuleSchema>;
 
-const GPT_5_6_REASONING_OPTIONS = [
-  { displayName: "无", enabled: true, kind: "effort", value: "none" },
-  { displayName: "低", enabled: true, kind: "effort", value: "low" },
-  { displayName: "中", enabled: true, kind: "effort", value: "medium" },
-  { displayName: "高", enabled: true, kind: "effort", value: "high" },
-  { displayName: "极高", enabled: true, kind: "effort", value: "xhigh" },
-  { displayName: "最高", enabled: true, kind: "effort", value: "max" },
-] as const;
+/** Compact the complete previous default prefix, retaining edited exact overrides.
+ * Partial, reordered or rematched catalogs remain user-owned and are untouched.
+ */
+export function upgradeModelReasoningCatalog(catalog: ModelCatalog): ModelCatalog {
+  const rules = catalog.reasoningRules;
+  // Replace only the unchanged pre-Ultra built-in group; edited options remain user-owned.
+  const updatedRules = rules?.map(rule => {
+    const current = DEFAULT_MODEL_REASONING_RULES.find(candidate => candidate.modelKey === "gpt6" && candidate.id === rule.id);
+    if (current === undefined) return rule;
+    const previous = { ...current, options: current.options.filter(option => option.value !== "ultra"),
+      note: "直接 API 不支持 none/minimal；GPT-6.1 Sol 工具调用使用 Responses。Codex 的 Ultra 为子代理并行运行模式，不是 API effort 值。" };
+    return JSON.stringify(rule) === JSON.stringify(previous) ? structuredClone(current) : rule;
+  });
+  if (updatedRules?.some((rule, index) => rule !== rules?.[index])) {
+    return { ...catalog, reasoningRules: updatedRules };
+  }
+  const legacy = LEGACY_EXACT_MODEL_REASONING_RULES;
+  if (rules === undefined || rules.length < legacy.length) return catalog;
+  const prefix = rules.slice(0, legacy.length);
+  if (!prefix.every((rule, index) => {
+    const original = legacy[index]!;
+    return rule.id === original.id && rule.providerId === original.providerId && rule.modelKey === original.modelKey
+      && rule.matchMode === original.matchMode && JSON.stringify(rule.matches) === JSON.stringify(original.matches);
+  })) return catalog;
+  const overrides = prefix.filter((rule, index) => JSON.stringify(rule) !== JSON.stringify(legacy[index]));
+  const retained = [...overrides, ...rules.slice(legacy.length)];
+  const defaults = DEFAULT_MODEL_REASONING_RULES.filter(rule => !retained.some(override => override.id === rule.id
+    || (override.providerId === rule.providerId && override.modelKey === rule.modelKey && override.apiFormat === rule.apiFormat)));
+  const providers = catalog.reasoningProviders;
+  const missingProviders = providers === undefined ? [] : DEFAULT_MODEL_REASONING_PROVIDERS.filter(provider =>
+    defaults.some(rule => rule.providerId === provider.id) && !providers.some(existing => existing.id === provider.id));
+  return { ...catalog, ...(providers === undefined ? {} : { reasoningProviders: [...providers, ...structuredClone(missingProviders)] }),
+    reasoningRules: [...structuredClone(defaults), ...retained] };
+}
 
 /**
- * Seeded into the user-editable model-catalog.json on first desktop launch.
+ * Seeded into settings.jsonc/modelCatalog on first desktop launch.
  * Values are intentionally limited to mainstream text/chat model identifiers;
  * providers can expose additional models and users can add local rules.
  */
 export const DEFAULT_MODEL_CATALOG = modelCatalogSchema.parse({
   defaultContextWindow: 128_000,
+  reasoningRules: DEFAULT_MODEL_REASONING_RULES,
+  reasoningProviders: DEFAULT_MODEL_REASONING_PROVIDERS,
   models: [
     {
       contextWindow: 1_050_000,
       id: "openai-gpt-5.6",
       matches: ["gpt-5.6", "gpt-5.6-*"],
       name: "OpenAI GPT-5.6",
-      reasoningOptions: GPT_5_6_REASONING_OPTIONS,
     },
     {
       contextWindow: 1_050_000,
@@ -419,4 +463,19 @@ export function resolveModelCatalogRule(
 export function resolveModelContextWindow(catalog: ModelCatalog, modelId: string): number {
   return resolveModelCatalogRule(catalog, modelId)?.contextWindow
     ?? catalog.defaultContextWindow;
+}
+
+export function resolveModelReasoningOptions(catalog: ModelCatalog, apiFormat: ModelApiFormat, modelId: string): ModelReasoningOption[] {
+  const rules = catalog.reasoningRules ?? DEFAULT_MODEL_REASONING_RULES;
+  const rule = [...rules].reverse().find(candidate => candidate.apiFormat === apiFormat
+    && candidate.matches.some(pattern => modelReasoningPatternMatches(pattern, modelId, candidate.matchMode)));
+  const provider = catalog.reasoningProviders?.find(candidate => candidate.id === rule?.providerId);
+  if (provider !== undefined && !provider.apiFormats.includes(apiFormat)) return [];
+  // Legacy catalogs stored effort presets without a protocol dimension. Keep
+  // those OpenAI-compatible overrides, but never leak them into native Gemini.
+  const legacyOptions = apiFormat === "openai-chat-completions" || apiFormat === "openai-responses"
+    ? resolveModelCatalogRule(catalog, modelId)?.reasoningOptions : undefined;
+  const options = rule?.options ?? legacyOptions ?? [];
+  return options.filter(option => isReasoningOptionSupportedByApiFormat(apiFormat, option, modelId))
+    .map(option => ({ ...option }));
 }

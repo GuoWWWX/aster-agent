@@ -1,27 +1,21 @@
-import { ImageIcon, Loader2 } from "lucide-react";
+import { LoadingState } from "../ui/loading.js";
+import { ImageIcon } from "lucide-react";
 import { useEffect, useRef, useState, type WheelEvent } from "react";
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "../ui/dialog.js";
+import { Dialog, DialogContent, DialogDescription, DialogTitle } from "../ui/dialog.js";
 import { cn } from "../../lib/cn.js";
 import { svgDataUrl } from "../../lib/svg-image.js";
+import { ImagePreviewViewer } from "./image-preview-viewer.js";
+import { useWorkbenchOverlayBounds } from "../ui/use-workbench-modal-backdrop.js";
+import { mediaPreviewRequestEvent, type MediaPreviewImage, type MediaPreviewRequest } from "./media-preview-request.js";
+export { requestMediaPreview, useMediaPreview } from "./media-preview-request.js";
 
 export { svgDataUrl };
 
 const minZoom = 0.25;
 const maxZoom = 4;
-const mediaPreviewRequestEvent = "md-king:open-media-preview";
-
-type MediaPreviewRequest = {
-  src: string;
-  alt?: string;
-  title?: string;
-};
 
 function clampZoom(value: number) {
   return Math.min(maxZoom, Math.max(minZoom, value));
-}
-
-export function requestMediaPreview(request: MediaPreviewRequest) {
-  window.dispatchEvent(new CustomEvent<MediaPreviewRequest>(mediaPreviewRequestEvent, { detail: request }));
 }
 
 export function ImageViewer({ src, alt, className, paper = false }: { src: string; alt?: string; className?: string; paper?: boolean }) {
@@ -97,22 +91,80 @@ export function ImageDocumentViewer({ src, alt, path }: { src?: string; alt: str
       </header>
       {src ? <ImageViewer src={src} alt={alt} paper className="h-full flex-1" /> : (
         <div className="flex h-full min-h-0 flex-1 items-center justify-center bg-white text-slate-400 dark:bg-[#202020] dark:text-zinc-500">
-          <Loader2 className="size-5 animate-spin" aria-label="正在加载图片" />
+          <LoadingState label="正在加载图片" className="w-full" />
         </div>
       )}
     </section>
   );
 }
 
-export function MediaPreviewDialog({ open, onOpenChange, src, alt, title }: { open: boolean; onOpenChange: (open: boolean) => void; src?: string; alt?: string; title?: string }) {
+export function MediaPreviewDialog({ open, onOpenChange, src, alt, title, imageKey, images, loadImages }: {
+  open: boolean; onOpenChange: (open: boolean) => void; src?: string; alt?: string; title?: string;
+  imageKey?: string; images?: readonly MediaPreviewImage[]; loadImages?: (signal?: AbortSignal) => Promise<readonly MediaPreviewImage[]>;
+}) {
+  const bounds = useWorkbenchOverlayBounds(open);
+  const [selected, setSelected] = useState(() => ({ key: imageKey ?? src ?? "", src: src ?? "",
+    label: images?.find(image => image.key === imageKey)?.label ?? title ?? alt ?? "图片预览" }));
+  const [gallery, setGallery] = useState<readonly MediaPreviewImage[]>(() => images ?? []);
+  const [loading, setLoading] = useState(false);
+  const [findingImages, setFindingImages] = useState(Boolean(loadImages));
+  const [error, setError] = useState<string | null>(null);
+  const alive = useRef(false), navigating = useRef(false);
+  const entries = gallery.some(image => image.key === selected.key) ? gallery
+    : [...gallery, { key: selected.key, label: selected.label, load: () => Promise.resolve(selected.src) }];
+  const index = entries.findIndex(image => image.key === selected.key);
+  useEffect(() => {
+    const abort = new AbortController();
+    alive.current = open;
+    if (open && loadImages) void loadImages(abort.signal).then(value => { if (!abort.signal.aborted) setGallery(value); })
+      .catch(() => { if (!abort.signal.aborted) setError("部分历史图片无法读取，可关闭预览后重试。"); })
+      .finally(() => { if (!abort.signal.aborted) setFindingImages(false); });
+    return () => { alive.current = false; abort.abort(); };
+  }, [open, loadImages]);
+  const navigate = (next: number) => {
+    const entry = entries[next];
+    if (!entry || navigating.current) return;
+    navigating.current = true; setLoading(true); setError(null);
+    void entry.load().then(url => { if (alive.current) setSelected({ key: entry.key, src: url, label: entry.label }); })
+      .catch(() => { if (alive.current) setError("图片无法读取，可能已移动或删除。可再次点击翻页重试。"); })
+      .finally(() => { navigating.current = false; if (alive.current) setLoading(false); });
+  };
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="flex h-[85vh] w-[82vw] max-w-[1440px] flex-col gap-0 overflow-hidden p-0 sm:max-w-[1440px] max-[640px]:h-[90dvh] max-[640px]:w-[calc(100vw-1.5rem)]" aria-describedby={undefined}>
-        <DialogHeader className="shrink-0 border-b border-slate-200 px-4 py-3 pr-12 dark:border-zinc-800">
-          <DialogTitle className="truncate text-sm font-semibold">{title ?? alt ?? "图片预览"}</DialogTitle>
-          <DialogDescription className="sr-only">图片预览</DialogDescription>
-        </DialogHeader>
-        {src ? <ImageViewer src={src} {...(alt === undefined ? {} : { alt })} className="flex-1" /> : null}
+      <DialogContent
+        aria-describedby={undefined}
+        className="flex h-auto w-auto max-w-none translate-x-0 translate-y-0 flex-col overflow-hidden rounded-none bg-transparent p-0 shadow-none sm:max-w-none [&_[data-slot=dialog-close]]:right-4 [&_[data-slot=dialog-close]]:top-4 [&_[data-slot=dialog-close]]:z-30 [&_[data-slot=dialog-close]]:size-10 [&_[data-slot=dialog-close]]:rounded-full [&_[data-slot=dialog-close]]:bg-black/60 [&_[data-slot=dialog-close]]:text-zinc-200 [&_[data-slot=dialog-close]]:backdrop-blur-md [&_[data-slot=dialog-close]]:hover:bg-black/80 [&_[data-slot=dialog-close]]:hover:text-white"
+        style={bounds}
+        onKeyDown={event => {
+          if (event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey) return;
+          if (event.key === "ArrowLeft" && index > 0) { event.preventDefault(); navigate(index - 1); }
+          if (event.key === "ArrowRight" && index < entries.length - 1) { event.preventDefault(); navigate(index + 1); }
+        }}
+        onClickCapture={event => {
+          const target = event.target as Element;
+          if (typeof target.closest === "function" && target.closest("img, button, input, select, textarea") === null) onOpenChange(false);
+        }}
+      >
+        <DialogTitle className="sr-only">{selected.label}</DialogTitle>
+        <DialogDescription className="sr-only">滚轮上下移动，Shift 加滚轮左右移动，Ctrl 加滚轮缩放，左右箭头切换图片</DialogDescription>
+        {loading || findingImages || error ? <div className="pointer-events-none absolute inset-x-14 top-4 z-30 text-center text-[length:var(--app-font-size-body)]" role={error ? "alert" : "status"}>
+          <span className="inline-block rounded-[var(--app-radius)] bg-[var(--app-panel)] px-3 py-2 text-[var(--app-foreground)] shadow-sm">{error ?? (loading ? "正在读取图片…" : "正在查找对话图片…")}</span>
+        </div> : null}
+        {src ? (
+          <ImagePreviewViewer
+            key={selected.key}
+            appearance="overlay"
+            currentIndex={index}
+            dataUrl={selected.src}
+            fileName={selected.label}
+            hasNext={index < entries.length - 1}
+            hasPrevious={index > 0}
+            navigationPending={loading}
+            total={entries.length}
+            onNext={() => navigate(index + 1)}
+            onPrevious={() => navigate(index - 1)}
+          />
+        ) : null}
       </DialogContent>
     </Dialog>
   );
@@ -127,5 +179,5 @@ export function MediaPreviewDialogHost() {
     return () => window.removeEventListener(mediaPreviewRequestEvent, open);
   }, []);
 
-  return <MediaPreviewDialog open={Boolean(request)} onOpenChange={(open) => { if (!open) setRequest(undefined); }} {...request} />;
+  return request ? <MediaPreviewDialog key={`${request.imageKey ?? request.src}`} open onOpenChange={(open) => { if (!open) setRequest(undefined); }} {...request} /> : null;
 }

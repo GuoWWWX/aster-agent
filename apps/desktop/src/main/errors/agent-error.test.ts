@@ -10,6 +10,12 @@ import {
 } from "./agent-error.js";
 
 describe("main agent errors", () => {
+  it("does not infer a missing workspace from a filename in diagnostics", () => {
+    expect(toMainAgentError(new Error("error parsing glob 'pnpm-workspace.yaml': unclosed group"),
+      { operation: "tool:find_files" }).code).not.toBe("WORKSPACE_REQUIRED");
+    expect(toMainAgentError(new Error("A workspace is required for file inspection."),
+      { operation: "tool:read_file" }).code).toBe("WORKSPACE_REQUIRED");
+  });
   it("maps provider failures to a stable retryable error", () => {
     const error = toMainAgentError(
       new ModelRequestError(503, "Model request failed (503): upstream unavailable"),
@@ -51,8 +57,57 @@ describe("main agent errors", () => {
       toMainAgentError(
         new Error("Error while decrypting the ciphertext provided to safeStorage.decryptString."),
         { operation: "model.get_api_key" },
-      ).code,
-    ).toBe("MODEL_CONFIGURATION_INVALID");
+      ),
+    ).toMatchObject({
+      code: "MODEL_CONFIGURATION_INVALID",
+      message: "API Key 无法解密。请在模型设置中重新输入一次，并保持软件使用同一个数据目录。",
+      retryable: false,
+    });
+  });
+
+  it("keeps terminal startup failures actionable instead of treating them as missing artifacts", () => {
+    const error = Object.assign(
+      new Error("无法启动PWSH（PowerShell 7）。请检查设置中的终端启动路径和项目目录。"),
+      { code: "TERMINAL_LAUNCH_FAILED" },
+    );
+
+    expect(toMainAgentError(error, { operation: "ipc:terminal.session_open" })).toMatchObject({
+      code: "PROCESS_FAILED",
+      message: "无法启动PWSH（PowerShell 7）。请检查设置中的终端启动路径和项目目录。",
+      retryable: false,
+    });
+  });
+
+  it("keeps model transport timeouts separate from command timeouts", () => {
+    expect(toMainAgentError(
+      new Error("Command execution timed out."),
+      { operation: "agent.run" },
+    )).toMatchObject({
+      code: "MODEL_TIMEOUT",
+      message: "模型请求超时，请检查网络后重试。",
+      retryable: true,
+    });
+    expect(toMainAgentError(
+      new Error("Command execution timed out."),
+      { operation: "tool:run_command" },
+    )).toMatchObject({
+      code: "PROCESS_TIMEOUT",
+      message: "命令执行超时。",
+      retryable: true,
+    });
+  });
+
+  it("classifies an ended or restarted terminal as a recoverable conflict", () => {
+    const error = Object.assign(
+      new Error("终端会话已结束或桌面服务已重启，请重新打开终端后重试。"),
+      { code: "TERMINAL_UNAVAILABLE" },
+    );
+
+    expect(toMainAgentError(error, { operation: "tool:execute_terminal_command" })).toMatchObject({
+      code: "CONFLICT",
+      message: "终端会话已结束或桌面服务已重启，请重新打开终端后重试。",
+      retryable: true,
+    });
   });
 
   it("keeps a safe network technical detail without exposing a stack", () => {
@@ -66,6 +121,17 @@ describe("main agent errors", () => {
     expect(error.code).toBe("NETWORK_UNAVAILABLE");
     expect(error.details).toMatchObject({
       technicalMessage: "TypeError: fetch failed | ECONNRESET | socket closed",
+    });
+  });
+
+  it("classifies a plain Undici socket error as a retryable network failure", () => {
+    expect(toMainAgentError(
+      new Error("Connection error. | UND_ERR_SOCKET"),
+      { operation: "agent.run" },
+    )).toMatchObject({
+      code: "NETWORK_UNAVAILABLE",
+      message: "网络连接失败，请检查网络和模型服务地址。",
+      retryable: true,
     });
   });
 
@@ -100,9 +166,93 @@ describe("main agent errors", () => {
     );
 
     expect(toMainAgentError(error, { operation: "agent.run" })).toMatchObject({
+      code: "MODEL_RUN_LIMIT_REACHED",
+      message: "已达到本轮运行保护上限，自动继续已暂停。当前结果和未处理的消息已保留，可发送“继续”接着处理。",
+      retryable: false,
+    });
+  });
+
+  it("classifies a lost nested SSH shell separately from a dead PTY", () => {
+    const error = Object.assign(
+      new Error("The terminal is alive, but the requested SSH shell is not connected."),
+      { code: "TERMINAL_CONTEXT_MISMATCH" },
+    );
+
+    expect(toMainAgentError(error, { operation: "tool:terminal_control" })).toMatchObject({
+      code: "CONFLICT",
+      message: "终端仍在运行，但目标 SSH 会话未连接。请重新连接并确认远程提示符后再发送命令。",
+      retryable: true,
+    });
+  });
+
+  it("classifies an oversized tool batch as an invalid model response", () => {
+    const error = Object.assign(new Error("Too many tool calls."), {
+      code: "TOOL_CALL_LIMIT_EXCEEDED",
+    });
+
+    expect(toMainAgentError(error, { operation: "agent.run" })).toMatchObject({
       code: "MODEL_RESPONSE_INVALID",
       retryable: true,
     });
+  });
+
+  it("treats depleted model balance as a deterministic failure", () => {
+    expect(toMainAgentError(
+      new ModelRequestError(402, "Insufficient Balance"),
+      { operation: "agent.run" },
+    )).toMatchObject({
+      code: "MODEL_RATE_LIMITED",
+      message: "模型额度或余额不足，请充值、切换模型或更换供应商后再试。",
+      retryable: false,
+    });
+  });
+
+  it("preserves a provider's non-retryable plan limit and usage guidance", () => {
+    expect(toMainAgentError(
+      new ModelRequestError(429, "ChatGPT 套餐用量达到限制，请通过管理用量查看。", false),
+      { operation: "agent.run" },
+    )).toMatchObject({
+      code: "MODEL_RATE_LIMITED", retryable: false, message: "ChatGPT 套餐用量达到限制，请通过管理用量查看。",
+    });
+  });
+
+  it("classifies provider status through a framework error cause chain", () => {
+    const wrapped = new Error("Middleware execution failed", {
+      cause: new ModelRequestError(429, "Too Many Requests"),
+    });
+
+    expect(toMainAgentError(wrapped, { operation: "agent.run" })).toMatchObject({
+      code: "MODEL_RATE_LIMITED",
+      retryable: true,
+    });
+  });
+
+  it("does not expose an internal Chinese error as the user-facing message", () => {
+    expect(toMainAgentError(
+      new Error("软件内部错误：Graph executor state was corrupted."),
+      { operation: "agent.run" },
+    )).toMatchObject({
+      code: "INTERNAL_ERROR",
+      message: "软件内部发生错误，请重试。",
+      retryable: false,
+    });
+  });
+
+  it("keeps an expired approval separate from a stale file change", () => {
+    const expired = Object.assign(new Error("This tool approval is no longer pending."), {
+      code: "APPROVAL_EXPIRED",
+    });
+
+    expect(toMainAgentError(expired, { operation: "conversation.approve_tool_change" }))
+      .toMatchObject({
+        code: "APPROVAL_EXPIRED",
+        message: "该审批已失效，请查看工具的最新状态。",
+        retryable: false,
+      });
+    expect(toMainAgentError(
+      Object.assign(new Error("The file was changed."), { code: "FILE_CHANGED" }),
+      { operation: "tool:write_file" },
+    ).code).toBe("FILE_CHANGED");
   });
 
   it("includes a safe field path for schema validation failures", () => {

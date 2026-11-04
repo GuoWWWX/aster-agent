@@ -1,4 +1,4 @@
-/* CSS trigger 2: table wrapper and cell selectors need structural selectors. */
+/* CSS triggers 1/2/3: parser-generated Markdown classes, structural selectors and inherited callout colors. */
 .agent-markdown {
   --agent-md-heading-strong: #0f172a;
   --agent-md-heading: #1e293b;
@@ -152,6 +152,22 @@
   padding-left: 22px;
 }
 
+.agent-markdown ul {
+  list-style-type: disc;
+}
+
+.agent-markdown ol {
+  list-style-type: decimal;
+}
+
+.agent-markdown :is(ul, ol) ul {
+  list-style-type: circle;
+}
+
+.agent-markdown :is(ul, ol) :is(ul, ol) ul {
+  list-style-type: square;
+}
+
 .agent-markdown ul ul,
 .agent-markdown ul ol,
 .agent-markdown ol ul,
@@ -164,7 +180,7 @@
 }
 
 .agent-markdown li::marker {
-  color: var(--agent-md-marker);
+  color: currentColor;
 }
 
 .agent-markdown__task-item {
@@ -214,29 +230,75 @@
 }
 
 .agent-markdown__code-block {
-  position: relative;
-  overflow: auto;
-  padding: 28px 12px 12px;
-  border: 1px solid var(--agent-md-code-border);
+  margin: 0 0 10px;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--app-border);
   border-radius: var(--app-radius);
-  background: var(--agent-md-code-bg);
-  color: var(--agent-md-code-text);
+  background: var(--app-muted);
+  color: var(--app-foreground);
+}
+
+.agent-markdown__code-block pre {
+  margin: 0;
+  max-height: var(--app-code-block-max-height);
+  overflow: auto;
+  scrollbar-gutter: stable;
+  padding: 8px 9px;
   font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
-  font-size: 0.88em;
-  line-height: 1.6;
+  font-size: var(--app-font-size-body);
+  font-weight: 400;
+  line-height: 1.55;
+  white-space: pre;
   tab-size: 2;
 }
 
-.agent-markdown__code-block::before {
-  position: absolute;
-  top: 7px;
-  left: 10px;
+.agent-markdown__code-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 32px;
+  gap: 5px;
+  padding: 0 2px 0 9px;
+  border-bottom: 1px solid var(--app-border);
+  background: var(--app-panel);
+  color: var(--app-muted-foreground);
+  font-family: var(--app-font, Geist, sans-serif);
+  font-size: var(--app-font-size-body);
+  font-weight: 400;
+}
+
+.agent-markdown__code-header > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-markdown__code-copy {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  flex-shrink: 0;
+  height: 28px;
+  border: 0;
+  border-radius: var(--app-radius);
+  outline: none;
+  background: transparent;
   color: var(--agent-md-code-label);
-  content: attr(data-language);
+  padding: 0;
+  font: inherit;
   font-family: var(--app-font, Geist, sans-serif);
   font-size: var(--app-font-size-auxiliary);
-  font-weight: 600;
-  text-transform: uppercase;
+}
+
+.agent-markdown__code-copy:hover {
+  background: var(--app-hover);
+  color: var(--agent-md-code-text);
+}
+
+.agent-markdown__code-copy:focus-visible {
+  outline: 2px solid var(--app-focus-ring);
+  outline-offset: -2px;
 }
 
 .agent-markdown__code-block code {
@@ -244,6 +306,16 @@
   min-width: max-content;
   font: inherit;
 }
+
+.agent-markdown__shell-command { color: var(--app-accent); }
+.agent-markdown__shell-parameter { color: var(--agent-md-code-keyword); }
+.agent-markdown__shell-string,
+.agent-markdown__shell-path { color: var(--app-status-success-fg); }
+.agent-markdown__shell-variable,
+.agent-markdown__shell-address { color: var(--agent-md-code-function); }
+.agent-markdown__shell-number { color: var(--agent-md-code-number); }
+.agent-markdown__shell-comment,
+.agent-markdown__shell-operator { color: var(--app-muted-foreground); }
 
 .agent-markdown__code-block .hljs-comment,
 .agent-markdown__code-block .hljs-quote {
@@ -289,6 +361,43 @@
   color: var(--agent-md-code-operator);
 }
 
+.agent-markdown__file-link {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 0.28em;
+}
+
+.agent-markdown a.agent-markdown__file-link {
+  text-decoration: none;
+}
+
+.agent-markdown__file-label {
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+}
+
+.agent-markdown__file-icon {
+  display: inline-block;
+  flex: 0 0 auto;
+  vertical-align: -0.125em;
+}
+
+.agent-markdown__file-icon--java {
+  align-items: center;
+  justify-content: center;
+  border: 1.5px solid var(--agent-markdown-file-icon-color);
+  border-radius: 50%;
+  box-sizing: border-box;
+  color: var(--agent-markdown-file-icon-color);
+  display: inline-flex;
+  font-family: Arial, sans-serif;
+  font-size: 8px;
+  font-weight: 700;
+  line-height: 1;
+}
+
 .agent-markdown blockquote {
   padding: 7px 10px 7px 14px;
   border: 0;
@@ -322,7 +431,7 @@
   padding: 6px 10px;
   border: 1px solid var(--agent-md-table-border);
   overflow-wrap: anywhere;
-  vertical-align: top;
+  vertical-align: middle;
   word-break: break-word;
 }
 
@@ -381,4 +490,104 @@
   height: auto;
   border: 1px solid var(--agent-md-table-border);
   border-radius: var(--app-radius);
+  cursor: zoom-in;
 }
+
+.agent-markdown__labeled-divider {
+  display: grid;
+  grid-template-columns: minmax(16px, 1fr) auto minmax(16px, 1fr);
+  align-items: center;
+  gap: 9px;
+  margin: 13px 0;
+  color: var(--agent-md-muted);
+  font-size: var(--app-font-size-control);
+  line-height: 18px;
+  text-align: center;
+}
+
+.agent-markdown__labeled-divider::before,
+.agent-markdown__labeled-divider::after {
+  height: 1px;
+  background: var(--agent-md-divider);
+  content: "";
+}
+
+.agent-markdown__labeled-divider > span {
+  overflow-wrap: anywhere;
+}
+
+.agent-markdown img:focus-visible {
+  outline: 2px solid var(--app-focus-ring);
+  outline-offset: 2px;
+}
+
+.agent-markdown__math-block {
+  max-width: 100%;
+  margin: 10px 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.agent-markdown__callout {
+  --agent-callout-accent: var(--agent-md-link);
+  margin: 0 0 10px;
+  padding: 9px 12px;
+  border-radius: var(--app-radius);
+  border-inline-start: 3px solid var(--agent-callout-accent);
+  background: color-mix(in srgb, var(--agent-callout-accent) 8%, var(--app-panel));
+}
+
+.agent-markdown__callout[data-tone="amber"] { --agent-callout-accent: var(--app-status-warning-fg); }
+.agent-markdown__callout[data-tone="red"] { --agent-callout-accent: var(--app-status-danger-fg); }
+.agent-markdown__callout[data-tone="green"] { --agent-callout-accent: var(--app-status-success-fg); }
+.agent-markdown__callout[data-tone="slate"] { --agent-callout-accent: var(--app-muted-foreground); }
+.agent-markdown__callout[data-tone="cyan"] { --agent-callout-accent: var(--agent-md-code-function); }
+.agent-markdown__callout[data-tone="purple"] { --agent-callout-accent: var(--agent-md-code-keyword); }
+.agent-markdown__callout-title {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  margin-bottom: 5px;
+  color: var(--agent-callout-accent);
+  font-weight: 600;
+}
+.agent-markdown__callout-title svg { flex-shrink: 0; align-self: center; }
+.agent-markdown__callout-title :is(strong, em, code) { color: inherit; }
+.agent-markdown details > summary { cursor: pointer; }
+.agent-markdown__callout > :last-child { margin-bottom: 0; }
+.agent-markdown__callout:not([open]) > summary { margin-bottom: 0; }
+
+.agent-markdown__mermaid {
+  margin: 0 0 10px;
+  min-width: 0;
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius);
+  overflow: hidden;
+  background: var(--app-panel);
+}
+.agent-markdown__mermaid .agent-markdown__code-header > div { display: flex; gap: 5px; }
+.agent-markdown__mermaid button {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--app-radius);
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+.agent-markdown__mermaid button:hover { background: var(--app-hover); color: var(--app-foreground); }
+.agent-markdown__mermaid button:focus-visible { outline: 2px solid var(--app-focus-ring); outline-offset: -2px; }
+.agent-markdown__mermaid-canvas { padding: 10px; overflow: auto; scrollbar-gutter: stable; color: var(--app-muted-foreground); user-select: text; }
+.agent-markdown__mermaid-canvas svg { display: block; width: 100%; height: auto; max-width: 100%; margin-inline: auto; }
+.agent-markdown__mermaid-canvas[data-error] { color: var(--app-status-danger-fg); }
+.agent-markdown__mermaid pre:not([hidden]) { margin: 0; padding: 9px; overflow: auto; scrollbar-gutter: stable; background: var(--app-muted); }
+.agent-markdown__mermaid pre[hidden] { display: none; }
+.agent-markdown__mermaid pre code { background: transparent; padding: 0; border: 0; }
+.agent-markdown__mermaid-caption,
+.agent-markdown figcaption,
+.agent-markdown caption { margin: 5px 0; color: var(--app-muted-foreground); text-align: center; font-size: var(--app-font-size-control); }
+.agent-markdown figure { margin: 0 0 10px; }
+.agent-markdown kbd { border: 1px solid var(--app-border); border-radius: var(--app-radius-small); padding: 1px 4px; background: var(--app-muted); color: var(--app-foreground); font-family: ui-monospace, monospace; font-size: 0.88em; }

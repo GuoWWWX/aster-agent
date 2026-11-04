@@ -1,10 +1,13 @@
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+import { DEFAULT_TERMINAL_CONFIGURATION } from "@agent/protocol";
 
 import { ProjectRegistry } from "../projects/project-registry.js";
-import { decodeTerminalOutput, ProjectToolRegistry } from "./project-tool-registry.js";
+import { commandEnvironmentWithBundledRipgrep, decodeTerminalOutput, ProjectToolRegistry } from "./project-tool-registry.js";
+import type { CommandOutputEvent } from "./project-tool-registry.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -48,6 +51,382 @@ async function createLargeFixture(fileCount = 400) {
 }
 
 describe("ProjectToolRegistry", () => {
+  it("loads Windows PowerShell built-ins when launched from a PowerShell 7 environment", async () => {
+    if (process.platform !== "win32") return;
+    const { project, tools } = await createFixture();
+    const signal = new AbortController().signal;
+    vi.stubEnv("PSModulePath", path.join(process.env.ProgramFiles ?? "C:/Program Files", "PowerShell", "7", "Modules"));
+    try {
+      const proposal = await tools.execute("run_command", JSON.stringify({
+        command: "Get-FileHash -Algorithm SHA256 -LiteralPath src/index.ts | Select-Object -ExpandProperty Hash",
+      }), project.id, signal);
+      if (proposal.kind !== "command") throw new Error(proposal.content);
+      const result = await tools.executePreparedCommand(proposal.command, project.id, signal);
+      expect(result.isError).toBe(false);
+      expect(JSON.parse(result.content)).toMatchObject({ value: { exitCode: 0 } });
+      expect(result.content).toMatch(/[A-F0-9]{64}/u);
+    } finally {
+      vi.unstubAllEnvs();
+      await tools.dispose();
+    }
+  });
+
+  it("preserves inherited module paths and only prioritizes built-ins for Windows PowerShell", () => {
+    if (process.platform !== "win32") return;
+    const environment = { SystemRoot: "C:\\Windows", PSModulePath: "C:\\PowerShell7\\Modules;D:\\CustomModules" };
+    const expected = "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\Modules";
+    expect(commandEnvironmentWithBundledRipgrep(environment, "powershell").PSModulePath)
+      .toBe(`${expected};${environment.PSModulePath}`);
+    expect(commandEnvironmentWithBundledRipgrep(environment, "pwsh").PSModulePath).toBe(environment.PSModulePath);
+    expect(commandEnvironmentWithBundledRipgrep(environment, "cmd").PSModulePath).toBe(environment.PSModulePath);
+    expect(environment.PSModulePath).toBe("C:\\PowerShell7\\Modules;D:\\CustomModules");
+    const alreadyConfigured = { SystemRoot: "C:\\Windows", PSMODULEPATH: `${expected.toLowerCase()};D:\\CustomModules` };
+    const result = commandEnvironmentWithBundledRipgrep(alreadyConfigured, "powershell");
+    expect(result.PSMODULEPATH?.split(";")).toHaveLength(2);
+    expect(result.PSModulePath).toBeUndefined();
+  });
+
+  it.each(["replace_in_file", "apply_patch"])("edits a bounded large source file through %s with a reviewable diff", async (toolName) => {
+    const { project, tools } = await createFixture();
+    const content = `${"// existing source\n".repeat(18_000)}const marker = 1;\n`;
+    const filePath = path.join(project.rootPath, "src", "large.ts");
+    await writeFile(filePath, content, "utf8");
+    const signal = new AbortController().signal;
+    const argumentsValue = toolName === "replace_in_file"
+      ? { path: "src/large.ts", oldText: "const marker = 1;", newText: "const marker = 2;" }
+      : { patch: "*** Begin Patch\n*** Update File: src/large.ts\n@@\n-const marker = 1;\n+const marker = 2;\n*** End Patch" };
+    const result = await tools.execute(toolName, JSON.stringify(argumentsValue), project.id, signal);
+    expect(result.kind).toBe("change");
+    if (result.kind !== "change") throw new Error(result.content);
+    expect(result.change.diff).toContain("-const marker = 1;");
+    expect(result.change.diff).toContain("+const marker = 2;");
+    expect(await readFile(filePath, "utf8")).toBe(content);
+    await tools.applyPreparedChange(result.change, project.id, signal);
+    expect(await readFile(filePath, "utf8")).toBe(content.replace("const marker = 1;", "const marker = 2;"));
+  });
+
+  it("explains an unsupported source file size instead of returning empty validation issues", async () => {
+    const { project, tools } = await createFixture();
+    const content = "x".repeat(2 * 1024 * 1024 + 1);
+    await writeFile(path.join(project.rootPath, "oversize.txt"), content, "utf8");
+    const result = await tools.execute("replace_in_file", JSON.stringify({
+      path: "oversize.txt", oldText: "x", newText: "y",
+    }), project.id, new AbortController().signal);
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content)).toMatchObject({
+      agentError: { code: "VALIDATION_FAILED" },
+      recovery: { issues: [expect.objectContaining({ path: ["path"] })] },
+    });
+    expect(result.content).toContain("2097152");
+    expect(await readFile(path.join(project.rootPath, "oversize.txt"), "utf8")).toBe(content);
+  });
+
+  it("keeps the model edit payload bounded even when the existing file can be larger", async () => {
+    const { project, tools } = await createFixture();
+    const result = await tools.execute("write_file", JSON.stringify({
+      path: "oversize-input.txt", content: "x".repeat(200_001),
+    }), project.id, new AbortController().signal);
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content)).toMatchObject({
+      recovery: { issues: [expect.objectContaining({ path: ["content"] })] },
+    });
+  });
+
+  it("rejects a localized replacement that would grow the resulting file past the editable bound", async () => {
+    const { project, tools } = await createFixture();
+    const content = `${"x".repeat(2 * 1024 * 1024 - 10)}marker`;
+    await writeFile(path.join(project.rootPath, "near-limit.txt"), content, "utf8");
+    const result = await tools.execute("replace_in_file", JSON.stringify({
+      path: "near-limit.txt", oldText: "marker", newText: "y".repeat(100),
+    }), project.id, new AbortController().signal);
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content)).toMatchObject({
+      recovery: { issues: [expect.objectContaining({ path: ["path"] })] },
+    });
+    expect(result.content).toContain("2097152");
+    expect(await readFile(path.join(project.rootPath, "near-limit.txt"), "utf8")).toBe(content);
+  });
+
+  it("retires list_directory from the manifest and rejects stale model calls", async () => {
+    const { project, projects, tools } = await createFixture();
+    expect(tools.getDefinitions().map((tool) => tool.name)).not.toContain("list_directory");
+    expect(tools.getDefinitions().map((tool) => tool.name)).not.toContain("wait_for_commands");
+    expect(() => tools.getExecutionPolicy("list_directory", "{}", false)).toThrow("Unknown project tool");
+    const result = await tools.execute("list_directory", "{}", project.id, new AbortController().signal);
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("Unknown tool: list_directory");
+    await expect(projects.listEntries({ directoryPath: "src", projectId: project.id }))
+      .resolves.toMatchObject({ entries: [expect.objectContaining({ name: "index.ts" })] });
+  });
+
+  it("lists a requested directory through an approved shell command", async () => {
+    const { project, tools } = await createFixture();
+    const signal = new AbortController().signal;
+    const proposal = await tools.execute("run_command", JSON.stringify({
+      command: "Get-ChildItem -LiteralPath src -Name",
+    }), project.id, signal);
+    if (proposal.kind !== "command") throw new Error(proposal.content);
+    const result = await tools.executePreparedCommand(proposal.command, project.id, signal);
+    expect(result.isError).toBe(false);
+    expect(result.content).toContain("index.ts");
+    await tools.dispose();
+  }, 20_000);
+
+  it("waits for owned batch and service process trees during disposal", async () => {
+    if (process.platform !== "win32") return;
+    const { project, tools } = await createFixture();
+    const signal = new AbortController().signal;
+    const owner = { conversationId: crypto.randomUUID(), conversationTitle: "退出清理", runId: crypto.randomUUID() };
+    const executions = ["batch", "service"].map(async (mode) => {
+      const proposal = await tools.execute("run_command", JSON.stringify({
+        command: `$cleanupChild = Start-Process -FilePath powershell.exe -WindowStyle Hidden -ArgumentList '-NoProfile','-Command','Start-Sleep -Seconds 60' -PassThru; Set-Content -LiteralPath ${mode}.pid -Encoding ascii -Value $cleanupChild.Id; Start-Sleep -Seconds 60`,
+        mode, parallel: true, serviceName: mode === "service" ? "cleanup fixture" : undefined,
+        timeoutMs: 90_000, yieldTimeMs: 0,
+      }), project.id, signal, owner);
+      if (proposal.kind !== "command") throw new Error(proposal.content);
+      return tools.executePreparedCommand(proposal.command, project.id, signal, owner);
+    });
+    try {
+      const pids: number[] = [];
+      await vi.waitFor(async () => {
+        const values = await Promise.all(["batch", "service"].map(async (mode) =>
+          Number((await readFile(path.join(project.rootPath, `${mode}.pid`), "utf8")).trim())));
+        expect(values.every((pid) => pid > 0)).toBe(true);
+        pids.splice(0, pids.length, ...values);
+      }, { timeout: 8_000 });
+      await tools.dispose();
+      for (const pid of pids) expect(() => process.kill(pid, 0)).toThrow();
+      expect(tools.listConversationCommands([owner.conversationId])).toEqual([]);
+      await expect(Promise.all(executions)).resolves.toHaveLength(2);
+    } finally {
+      await tools.dispose();
+      await Promise.all(executions);
+    }
+  }, 20_000);
+
+  it("creates nested parents only when a prepared new-file change is applied", async () => {
+    const { project, tools } = await createFixture();
+    const signal = new AbortController().signal;
+    try {
+      const proposal = await tools.execute("write_file", JSON.stringify({ path: "new/deeper/note.txt", content: "中文内容\n" }), project.id, signal);
+      expect(proposal.kind).toBe("change");
+      if (proposal.kind !== "change") throw new Error(proposal.content);
+      await expect(lstat(path.join(project.rootPath, "new"))).rejects.toMatchObject({ code: "ENOENT" });
+      const aborted = new AbortController(); aborted.abort();
+      await expect(tools.applyPreparedChange(proposal.change, project.id, aborted.signal)).rejects.toThrow();
+      await expect(lstat(path.join(project.rootPath, "new"))).rejects.toMatchObject({ code: "ENOENT" });
+      const applied = await tools.applyPreparedChange(proposal.change, project.id, signal);
+      expect(applied.isError).toBe(false);
+      expect(await readFile(path.join(project.rootPath, "new", "deeper", "note.txt"), "utf8")).toBe("中文内容\n");
+      expect((await tools.execute("write_file", JSON.stringify({ path: "new/deeper/note.txt", content: "overwrite" }), project.id, signal)).isError).toBe(true);
+    } finally { await tools.dispose(); }
+  });
+  it("rejects a parent replaced with an outside symlink after new-file approval is prepared", async () => {
+    const { project, tools } = await createFixture(); const signal = new AbortController().signal;
+    const outside = await mkdtemp(path.join(os.tmpdir(), "agent-write-outside-")); temporaryDirectories.push(outside);
+    try {
+      const proposal = await tools.execute("write_file", JSON.stringify({ path: "new/deeper/note.txt", content: "must stay inside" }), project.id, signal);
+      expect(proposal.kind).toBe("change"); if (proposal.kind !== "change") throw new Error(proposal.content);
+      try { await symlink(outside, path.join(project.rootPath, "new"), "junction"); }
+      catch (error) { expect((error as NodeJS.ErrnoException).code).toMatch(/EPERM|EACCES/); return; }
+      await expect(tools.applyPreparedChange(proposal.change, project.id, signal)).rejects.toThrow(/outside .*root/i);
+      await expect(lstat(path.join(outside, "deeper"))).rejects.toMatchObject({ code: "ENOENT" });
+    } finally { await tools.dispose(); }
+  });
+  it("reads completed output with Unicode, stderr, failure status and a bounded recent tail", async () => {
+    const { project, tools } = await createFixture(); const conversationId = crypto.randomUUID();
+    const owner = { conversationId, conversationTitle: "输出检查", runId: crypto.randomUUID() };
+    const signal = new AbortController().signal;
+    try {
+      const prepared = await tools.execute("run_command", JSON.stringify({ command: "node -e \"process.stdout.write('后台输出中文\\nabcdefghijklmnopqrstuvwxyz\\n'); process.stderr.write('problem\\n'); process.exit(3)\"" }), project.id, signal, owner);
+      if (prepared.kind !== "command") throw new Error("Expected command proposal.");
+      const result = await tools.executePreparedCommand(prepared.command, project.id, signal, owner);
+      const commandId = (JSON.parse(result.content) as { value: { commandId: string } }).value.commandId;
+      const full = tools.readConversationCommand(commandId, [conversationId]);
+      expect(full.stdout).toContain("后台输出中文"); expect(full.stderr).toContain("problem");
+      expect(full.command.status).toBe("failed"); expect(full.command.exitCode).toBeGreaterThan(0);
+      const tail = tools.readConversationCommand(commandId, [conversationId], 8);
+      expect(tail.stdout.length).toBeLessThanOrEqual(8); expect(tail.stdout).toBe(full.stdout.slice(-8));
+      expect(tail.truncated).toBe(true);
+    } finally { await tools.dispose(); }
+  });
+  it("exposes owned programs to the UI, rejects another conversation's stop and terminates a child process tree", async () => {
+    if (process.platform !== "win32") return;
+    const { project, tools } = await createFixture(); const conversationId = crypto.randomUUID(); const otherId = crypto.randomUUID();
+    const owner = { conversationId, conversationTitle: "网关服务", runId: crypto.randomUUID() }; const signal = new AbortController().signal;
+    let commandId: string | undefined;
+    try {
+      const prepared = await tools.execute("run_command", JSON.stringify({
+        command: "$taskChild = Start-Process -FilePath powershell.exe -WindowStyle Hidden -ArgumentList '-NoProfile','-Command','Start-Sleep -Seconds 60' -PassThru; Set-Content -LiteralPath child.pid -Encoding ascii -Value $taskChild.Id; Start-Sleep -Seconds 60",
+        mode: "service", serviceName: "Spring Boot fixture", yieldTimeMs: 0, timeoutMs: 90_000,
+      }), project.id, signal, owner);
+      if (prepared.kind !== "command") throw new Error("Expected command proposal");
+      const started = await tools.executePreparedCommand(prepared.command, project.id, signal, owner);
+      commandId = (JSON.parse(started.content) as { value: { commandId: string } }).value.commandId;
+      expect(tools.listConversationCommands([conversationId])).toContainEqual(expect.objectContaining({ commandId, serviceName: "Spring Boot fixture", status: "running" }));
+      expect(tools.listConversationCommands([otherId])).toEqual([]);
+      expect(() => tools.readConversationCommand(commandId!, [otherId])).toThrow("当前对话");
+      expect(tools.readConversationCommand(commandId, [conversationId])).toMatchObject({ command: { commandId, status: "running" }, stdout: "", stderr: "" });
+      await expect(tools.stopConversationCommand(commandId, [otherId])).rejects.toThrow("当前对话");
+      let childPid = 0;
+      await vi.waitFor(async () => { childPid = Number((await readFile(path.join(project.rootPath, "child.pid"), "utf8")).trim()); expect(childPid).toBeGreaterThan(0); }, { timeout: 8000 });
+      expect(() => process.kill(childPid, 0)).not.toThrow();
+      await expect(tools.stopConversationCommand(commandId, [conversationId])).resolves.toMatchObject({ status: "cancelled" });
+      await vi.waitFor(() => { expect(() => process.kill(childPid, 0)).toThrow(); }, { timeout: 5000 });
+      const completed = tools.listConversationCommands([conversationId]).find((item) => item.commandId === commandId);
+      expect(completed?.status).toBe("cancelled"); expect(typeof completed?.completedAt).toBe("string");
+    } finally { try { if (commandId !== undefined) await tools.stopConversationCommand(commandId, [conversationId]); } finally { await tools.dispose(); } }
+  }, 20_000);
+  it("views a workspace image as visual input without persisting image bytes in tool text", async () => {
+    const { project, tools } = await createFixture();
+    const data = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=";
+    await writeFile(path.join(project.rootPath, "src", "pixel.png"), Buffer.from(data, "base64"));
+    const result = await tools.execute("view_image", JSON.stringify({ path: "src/pixel.png" }), project.id, new AbortController().signal);
+    expect(result.isError).toBe(false);
+    expect(result.content).not.toContain(data);
+    expect(JSON.parse(result.content)).toMatchObject({ ok: true, value: { image: { path: "src/pixel.png", projectId: project.id } } });
+    if (result.kind !== "completed") throw new Error("Expected image result");
+    expect(result.modelAttachments).toEqual([expect.objectContaining({ kind: "image", source: "project", data, projectPath: "src/pixel.png" })]);
+    expect(tools.getExecutionPolicy("view_image", "{}", false)).toEqual({ group: "read", kind: "parallel" });
+  });
+
+  it.each(["../pixel.png", "C:/pixel.png", "https://example.com/image.png", "src/index.ts", "missing.png", "src/pixel.png?x.png"])("rejects unsafe or unavailable image path %s", async (imagePath) => {
+    const { project, tools } = await createFixture();
+    const result = await tools.execute("view_image", JSON.stringify({ path: imagePath }), project.id, new AbortController().signal);
+    expect(result.isError).toBe(true);
+  });
+  it("reads identical ranges using a line count or an inclusive end line", async () => {
+    const { project, tools } = await createFixture();
+    await writeFile(path.join(project.rootPath, "lines.txt"),
+      Array.from({ length: 1000 }, (_, index) => `line ${index + 1}`).join("\n"));
+    const read = (args: Record<string, unknown>) => tools.execute("read_file", JSON.stringify({
+      path: "lines.txt", startLine: 650, ...args,
+    }), project.id, new AbortController().signal);
+    const count = await read({ lineCount: 220 });
+    const end = await read({ endLine: 869 });
+    expect(count.isError).toBe(false);
+    expect(count.content).toBe(end.content);
+    expect(JSON.parse(count.content)).toMatchObject({ value: { startLine: 650, endLine: 869, nextStartLine: 870 } });
+    const defaults = await read({});
+    expect(defaults.isError).toBe(false);
+    expect(JSON.parse(defaults.content)).toMatchObject({ value: { endLine: 1000, nextStartLine: null } });
+    for (const lineCount of [1, 400]) {
+      const result = await read({ startLine: 1, lineCount });
+      expect(result.isError).toBe(false);
+      expect(JSON.parse(result.content)).toMatchObject({ value: { startLine: 1, endLine: lineCount, nextStartLine: lineCount + 1 } });
+    }
+    const firstPage = await tools.execute("read_file", JSON.stringify({ path: "lines.txt" }),
+      project.id, new AbortController().signal);
+    expect(JSON.parse(firstPage.content)).toMatchObject({ value: { startLine: 1, endLine: 400, nextStartLine: 401 } });
+  });
+
+  it.each([0, -1, 1.5, 401])("rejects invalid lineCount %s with a field issue", async (lineCount) => {
+    const { project, tools } = await createFixture();
+    const result = await tools.execute("read_file", JSON.stringify({ path: "src/index.ts", lineCount }),
+      project.id, new AbortController().signal);
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content)).toMatchObject({ recovery: { issues: [expect.objectContaining({ path: ["lineCount"] })] } });
+  });
+
+  it("rejects simultaneous count and end-line limits instead of silently choosing one", async () => {
+    const { project, tools } = await createFixture();
+    const result = await tools.execute("read_file", JSON.stringify({
+      path: "src/index.ts", startLine: 1, lineCount: 2, endLine: 3,
+    }), project.id, new AbortController().signal);
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("Choose either lineCount or endLine");
+  });
+
+  it.each([{ startLine: 1, lineCount: 400, endLine: 400 }, { startLine: 2, lineCount: 2, endLine: 3 }, { lineCount: 2, endLine: null }, { lineCount: null, endLine: 2 }, { lineCount: null, endLine: null }])("accepts equivalent or null range limits: %j", async (range) => {
+    const { project, tools } = await createFixture();
+    const result = await tools.execute("read_file", JSON.stringify({ path: "src/index.ts", ...range }), project.id, new AbortController().signal);
+    expect(result.isError).toBe(false);
+  });
+
+  it("reports the count field when a count-based read exceeds the byte limit", async () => {
+    const { project, tools } = await createFixture();
+    await writeFile(path.join(project.rootPath, "huge-line.txt"), "x".repeat(260_000));
+    const result = await tools.execute("read_file", JSON.stringify({ path: "huge-line.txt", lineCount: 1 }),
+      project.id, new AbortController().signal);
+    expect(JSON.parse(result.content)).toMatchObject({ recovery: { issues: [expect.objectContaining({ path: ["lineCount"] })] } });
+  });
+
+  it("reads a small range from a large file without rejecting its total size", async () => {
+    const { project, tools } = await createFixture();
+    await writeFile(path.join(project.rootPath, "large.rs"),
+      Array.from({ length: 8000 }, (_, index) => `${index + 1}: ${"源码".repeat(12)}`).join("\r\n"));
+    const result = await tools.execute("read_file", JSON.stringify({
+      path: "large.rs", startLine: 7495, endLine: 7540,
+    }), project.id, new AbortController().signal);
+    expect(result.isError).toBe(false);
+    expect(JSON.parse(result.content)).toMatchObject({ value: {
+      startLine: 7495, endLine: 7540, totalLines: null, nextStartLine: 7541,
+      content: Array.from({ length: 46 }, (_, index) => `${index + 7495}: ${"源码".repeat(12)}`).join("\n"),
+    } });
+  });
+
+  it("resolves find_files patterns relative to the selected directory", async () => {
+    const { project, tools } = await createFixture();
+    await mkdir(path.join(project.rootPath, "src", "icons"));
+    await writeFile(path.join(project.rootPath, "src", "icons", "icon.ico"), "icon");
+    const result = await tools.execute("find_files", JSON.stringify({
+      path: "src", pattern: "icons/icon.ico",
+    }), project.id, new AbortController().signal);
+    expect(JSON.parse(result.content)).toMatchObject({ ok: true, value: { matches: ["src/icons/icon.ico"] } });
+  });
+
+  it("reports malformed workspace-named globs as pattern errors, not missing projects", async () => {
+    const { project, tools } = await createFixture();
+    const result = await tools.execute("find_files", JSON.stringify({
+      pattern: "{README*,pnpm-workspace.yaml",
+    }), project.id, new AbortController().signal);
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content)).toMatchObject({
+      agentError: { code: "VALIDATION_FAILED" },
+      recovery: { issues: [expect.objectContaining({ path: ["pattern"] })] },
+    });
+    expect(result.content).toContain("glob");
+  });
+
+  it("keeps parent ignore rules and project-relative results when searching a subdirectory", async () => {
+    const { project, tools } = await createFixture();
+    await writeFile(path.join(project.rootPath, ".gitignore"), "src/ignored/\n");
+    await mkdir(path.join(project.rootPath, "src", "ignored"));
+    await writeFile(path.join(project.rootPath, "src", "ignored", "hidden.ts"), "hidden");
+    const result = await tools.execute("find_files", JSON.stringify({ path: "src", pattern: "**/*.ts" }),
+      project.id, new AbortController().signal);
+    expect(JSON.parse(result.content)).toMatchObject({ ok: true, value: { matches: ["src/index.ts"] } });
+  });
+
+  it.each([
+    { includeGlobs: ["{pnpm-workspace.yaml"], query: "alpha", field: "includeGlobs" },
+    { mode: "regex", query: "[", field: "query" },
+  ])("returns actionable search syntax errors: $field", async ({ field, ...args }) => {
+    const { project, tools } = await createFixture();
+    const result = await tools.execute("search_text", JSON.stringify(args), project.id, new AbortController().signal);
+    expect(JSON.parse(result.content)).toMatchObject({
+      agentError: { code: "VALIDATION_FAILED" },
+    });
+    expect(result.content).toContain(JSON.stringify([field]));
+  });
+
+  it("keeps the one-shot command shell independent from side-terminal preferences", () => {
+    const projects = new ProjectRegistry();
+    const tools = new ProjectToolRegistry(projects, {
+      getConfiguration: () => ({
+        ...DEFAULT_TERMINAL_CONFIGURATION,
+        outputEncoding: "gbk",
+        shell: process.platform === "win32" ? "pwsh" : "bash",
+      }),
+    });
+
+    expect(tools.getCommandEnvironmentDescription()).toContain(
+      process.platform === "win32" ? "Windows PowerShell" : "PWSH（PowerShell 7）",
+    );
+    expect(tools.getCommandEnvironmentDescription()).not.toContain("output decoding: auto");
+    expect(tools.getCommandEnvironmentDescription()).toContain("output decoding: GBK");
+  });
+
   it("writes an editor file atomically and rejects stale content", async () => {
     const { project, projects, tools } = await createFixture();
     const signal = new AbortController().signal;
@@ -131,6 +510,20 @@ describe("ProjectToolRegistry", () => {
   it("declares safe read, file preparation, and command policies", async () => {
     const { tools } = await createFixture();
 
+    const runCommand = tools.getDefinitions().find((tool) => tool.name === "run_command");
+    expect(runCommand?.description).toContain("default choice for ordinary commands");
+    expect(runCommand?.description).toContain("does not open a visible terminal tab");
+    expect(runCommand?.description).toContain("terminal_control");
+    expect(runCommand?.description).toContain("nonzero final exit code marks the command failed");
+    expect(tools.getDefinitions().find((tool) => tool.name === "search_text")?.description)
+      .toContain("successful empty result when nothing matches");
+    expect(tools.getDefinitions().find((tool) => tool.name === "apply_patch")?.description)
+      .toContain("Update hunks require exact, unique source context");
+    expect(tools.getDefinitions().find((tool) => tool.name === "apply_patch")?.description)
+      .toContain("standard ---/+++ unified diff");
+    expect(tools.getDefinitions().find((tool) => tool.name === "replace_in_file")?.description)
+      .toContain("Preferred editor for one exact change");
+
     expect(tools.getExecutionPolicy("read_file", JSON.stringify({ path: "src/index.ts" }), false))
       .toEqual({ group: "read", kind: "parallel" });
     expect(tools.getExecutionPolicy("replace_in_file", "{}", false))
@@ -168,7 +561,8 @@ describe("ProjectToolRegistry", () => {
     };
 
     expect(tools.getCommandDefinitions().map((tool) => tool.name)).toEqual([
-      "wait_for_commands",
+      "list_background_commands",
+      "read_command_output",
       "stop_command",
       "run_command",
     ]);
@@ -206,7 +600,7 @@ describe("ProjectToolRegistry", () => {
     const { project, tools } = await createFixture();
     const signal = new AbortController().signal;
 
-    const listing = await tools.execute("list_directory", JSON.stringify({ path: "src" }), project.id, signal);
+    const listing = await tools.execute("find_files", JSON.stringify({ path: "src", pattern: "*" }), project.id, signal);
     expect(listing.isError).toBe(false);
     expect(listing.content).toContain("index.ts");
 
@@ -304,9 +698,9 @@ describe("ProjectToolRegistry", () => {
     expect(tools.getDefinitions().map((tool) => tool.name)).toEqual([
       "list_project_operations",
       "wait_for_project_operation",
-      "wait_for_commands",
+      "list_background_commands",
+      "read_command_output",
       "stop_command",
-      "list_directory",
       "read_file",
       "read_external_file",
       "search_text",
@@ -363,7 +757,7 @@ describe("ProjectToolRegistry", () => {
   }> = [
     {
       input: { endLine: 1, path: "src/index.ts", startLine: 2 },
-      message: "endLine must be greater than or equal to startLine.",
+      message: "endLine is an absolute line number, not a count",
     },
     {
       input: { endLine: 402, path: "src/index.ts", startLine: 1 },
@@ -401,6 +795,29 @@ describe("ProjectToolRegistry", () => {
     expect(result.isError).toBe(false);
     expect(result.content).toContain('"line":1');
     expect(result.content).toContain('"line":2');
+  });
+
+  it("searches a single file without including neighboring files", async () => {
+    const { project, tools } = await createFixture();
+    await writeFile(path.join(project.rootPath, "src", "neighbor.ts"), "alpha\n", "utf8");
+    const result = await tools.execute("search_text", JSON.stringify({ path: "src/index.ts", query: "alpha" }),
+      project.id, new AbortController().signal);
+    expect(result.isError).toBe(false);
+    expect(JSON.parse(result.content)).toMatchObject({ value: { matches: [
+      { path: "src/index.ts", line: 1 }, { path: "src/index.ts", line: 2 },
+    ] } });
+    const empty = await tools.execute("search_text", JSON.stringify({ path: "src/index.ts", query: "not-present" }),
+      project.id, new AbortController().signal);
+    expect(empty.isError).toBe(false);
+    expect(JSON.parse(empty.content)).toMatchObject({ value: { matches: [] } });
+  });
+
+  it.each(["missing.ts", "../outside.ts"])("rejects invalid search path %s without an internal error", async (searchPath) => {
+    const { project, tools } = await createFixture();
+    const result = await tools.execute("search_text", JSON.stringify({ path: searchPath, query: "alpha" }),
+      project.id, new AbortController().signal);
+    expect(result.isError).toBe(true);
+    expect(result.content).not.toContain('"code":"INTERNAL_ERROR"');
   });
 
   it("uses literal ripgrep search and respects project ignore files", async () => {
@@ -662,6 +1079,120 @@ describe("ProjectToolRegistry", () => {
     );
   });
 
+  it("accepts a standard unified diff with GPT/Codex wrapper markers", async () => {
+    const { project, tools } = await createFixture();
+    const proposal = await tools.execute(
+      "apply_patch",
+      JSON.stringify({
+        patch: [
+          "*** Begin Patch",
+          "--- a/src/index.ts",
+          "+++ b/src/index.ts",
+          "@@ -1,2 +1,2 @@",
+          "-alpha",
+          "+first",
+          " beta alpha",
+          "*** End Patch",
+        ].join("\n"),
+      }),
+      project.id,
+      new AbortController().signal,
+    );
+
+    if (proposal.kind !== "change") throw new Error(proposal.content);
+    await tools.applyPreparedChange(proposal.change, project.id, new AbortController().signal);
+    await expect(readFile(path.join(project.rootPath, "src", "index.ts"), "utf8")).resolves.toBe(
+      "first\nbeta alpha\n",
+    );
+  });
+
+  it("repairs GPT-generated hunk counts when the patch body and file context are valid", async () => {
+    const { project, tools } = await createFixture();
+    const proposal = await tools.execute(
+      "apply_patch",
+      JSON.stringify({
+        patch: [
+          "*** Begin Patch",
+          "--- a/src/index.ts",
+          "+++ b/src/index.ts",
+          "@@ -1,20 +1,40 @@",
+          "-alpha",
+          "+first",
+          " beta alpha",
+          "*** End Patch",
+        ].join("\n"),
+      }),
+      project.id,
+      new AbortController().signal,
+    );
+
+    if (proposal.kind !== "change") throw new Error(proposal.content);
+    await tools.applyPreparedChange(proposal.change, project.id, new AbortController().signal);
+    await expect(readFile(path.join(project.rootPath, "src", "index.ts"), "utf8")).resolves.toBe(
+      "first\nbeta alpha\n",
+    );
+  });
+
+  it("prepares a Codex Update patch without writing before approval", async () => {
+    const { project, tools } = await createFixture();
+    const result = await tools.execute(
+      "apply_patch",
+      JSON.stringify({
+        patch: [
+          "*** Begin Patch",
+          "*** Update File: src/index.ts",
+          "@@",
+          "-alpha",
+          "+first",
+          "*** End Patch",
+        ].join("\n"),
+      }),
+      project.id,
+      new AbortController().signal,
+    );
+
+    expect(result.isError).toBe(false);
+    expect(result).toMatchObject({ kind: "change", change: {
+      content: "first\nbeta alpha\n", expectedContent: "alpha\nbeta alpha\n",
+    } });
+    expect(await readFile(path.join(project.rootPath, "src/index.ts"), "utf8"))
+      .toBe("alpha\nbeta alpha\n");
+  });
+
+  it.each(["../outside.ts", "src/missing.ts"])("rejects unsafe or absent Update target %s", async (target) => {
+    const { project, tools } = await createFixture();
+    const result = await tools.execute("apply_patch", JSON.stringify({
+      patch: `*** Begin Patch\n*** Update File: ${target}\n@@\n-alpha\n+first\n*** End Patch`,
+    }), project.id, new AbortController().signal);
+    expect(result.isError).toBe(true);
+    expect(result.kind).toBe("completed");
+  });
+
+  it("reports a mismatched GPT-generated hunk instead of blaming file headers", async () => {
+    const { project, tools } = await createFixture();
+    const result = await tools.execute(
+      "apply_patch",
+      JSON.stringify({
+        patch: [
+          "--- a/src/index.ts",
+          "+++ b/src/index.ts",
+          "@@ -1,2 +1,2 @@",
+          "-alpha",
+          "+first",
+          " missing context",
+          "*** End Patch",
+        ].join("\n"),
+      }),
+      project.id,
+      new AbortController().signal,
+    );
+
+    expect(result.kind).toBe("completed");
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("@@ 块的行数声明或上下文");
+    expect(result.content).not.toContain("文件头开头");
+  });
+
   it("directs Codex-style new-file patches to write_file", async () => {
     const { project, tools } = await createFixture();
     const result = await tools.execute(
@@ -701,13 +1232,14 @@ describe("ProjectToolRegistry", () => {
     const { project, tools } = await createFixture();
     const proposal = await tools.execute(
       "run_command",
-      JSON.stringify({ command: "Write-Output agent-command-ok", timeoutMs: 10_000 }),
+      JSON.stringify({ command: "Write-Output agent-command-ok", description: "检查命令执行通路", timeoutMs: 10_000 }),
       project.id,
       new AbortController().signal
     );
 
     if (proposal.kind !== "command") throw new Error(proposal.content);
     expect(proposal.content).toContain("awaiting_approval");
+    expect(proposal.command.description).toBe("检查命令执行通路");
     const result = await tools.executePreparedCommand(
       proposal.command,
       project.id,
@@ -722,6 +1254,111 @@ describe("ProjectToolRegistry", () => {
     expect(payload.value.workingDirectory).toBe(project.rootPath);
   });
 
+  it.each([undefined, null])("yields a batch command with timeoutMs=%s and reads its final output", async (timeoutMs) => {
+    if (process.platform !== "win32") return;
+
+    const { project, tools } = await createFixture();
+    const signal = new AbortController().signal;
+    const proposal = await tools.execute(
+      "run_command",
+      JSON.stringify({
+        command: 'Write-Output "batch-start"; Start-Sleep -Milliseconds 250; Write-Output "batch-finished"',
+        timeoutMs,
+        yieldTimeMs: 0,
+      }),
+      project.id,
+      signal,
+    );
+    if (proposal.kind !== "command") throw new Error(proposal.content);
+
+    const result = await tools.executePreparedCommand(proposal.command, project.id, signal);
+    const payload = JSON.parse(result.content) as {
+      value: { commandId: string; mode?: unknown; status?: unknown; stdout?: unknown; timeoutMs?: unknown };
+    };
+
+    expect(result.isError).toBe(false);
+    expect(payload.value).toMatchObject({
+      mode: "batch",
+      status: "running",
+      timeoutMs: timeoutMs === undefined ? 30 * 60_000 : null,
+    });
+    const read = await tools.execute("read_command_output", JSON.stringify({
+      commandId: payload.value.commandId, yieldTimeMs: 10_000,
+    }), project.id, signal);
+    expect(read.kind).toBe("completed");
+    expect(JSON.parse(read.content)).toMatchObject({ value: {
+      status: "completed", exitCode: 0,
+    } });
+    expect(read.content).toContain("batch-start");
+    expect(read.content).toContain("batch-finished");
+    await tools.dispose();
+  });
+
+  it("retains a yielded batch lock, permits independent commands and paginates owned logs", async () => {
+    const { project, tools } = await createFixture();
+    const signal = new AbortController().signal;
+    const owner = { conversationId: "yield-owner", conversationTitle: "Yield", runId: "yield-run" };
+    try {
+      const proposal = await tools.execute("run_command", JSON.stringify({
+        command: 'Write-Output "first-中文"; Start-Sleep -Milliseconds 1200; [Console]::Error.WriteLine("last-error"); exit 7',
+        yieldTimeMs: 0,
+      }), project.id, signal, owner);
+      if (proposal.kind !== "command") throw new Error(proposal.content);
+      const result = await tools.executePreparedCommand(proposal.command, project.id, signal, owner);
+      const { value: { commandId } } = JSON.parse(result.content) as { value: { commandId: string } };
+      expect(result.commandCompletion).toBeDefined();
+      const conflict = await tools.executePreparedCommand({ ...proposal.command, parallel: false }, project.id, signal, owner);
+      expect(conflict.content).toContain("conflict");
+      const other = await tools.executePreparedCommand({ ...proposal.command, command: 'Write-Output "independent"', yieldTimeMs: 10_000 }, project.id, signal, owner);
+      expect(other.content).toContain("independent");
+      const denied = await tools.execute("read_command_output", JSON.stringify({ commandId, yieldTimeMs: 0 }), project.id, signal, { ...owner, conversationId: "other" });
+      expect(denied.isError).toBe(true);
+      const final = await tools.execute("read_command_output", JSON.stringify({ commandId, maxChars: 5 }), project.id, signal, owner);
+      const payload = JSON.parse(final.content) as { value: { stdout: string; stderr: string; nextStdoutOffset: number; nextStderrOffset: number } };
+      expect(JSON.parse(final.content)).toMatchObject({ value: { status: "failed", exitCode: 7, hasMoreOutput: true } });
+      const next = await tools.execute("read_command_output", JSON.stringify({ commandId, stdoutOffset: payload.value.nextStdoutOffset, stderrOffset: payload.value.nextStderrOffset, yieldTimeMs: 0 }), project.id, signal, owner);
+      const page = JSON.parse(next.content) as { value: { stdout: string; stderr: string } };
+      expect(payload.value.stdout + page.value.stdout).toContain("first-中文");
+      expect(payload.value.stderr + page.value.stderr).toContain("last-error");
+      const empty = await tools.execute("read_command_output", JSON.stringify({ commandId, stdoutOffset: 99999, stderrOffset: 99999, yieldTimeMs: 0 }), project.id, signal, owner);
+      expect(JSON.parse(empty.content)).toMatchObject({ value: { stdout: "", stderr: "", status: "failed" } });
+      await expect(result.commandCompletion).resolves.toMatchObject({ isError: true });
+    } finally { await tools.dispose(); }
+  });
+
+  it.each(["batch", "service"] as const)("observes %s output until exit or the requested yield window", async (mode) => {
+    const { project, tools } = await createFixture();
+    const signal = new AbortController().signal;
+    try {
+      const proposal = await tools.execute("run_command", JSON.stringify({
+        command: 'Write-Output "observed"', mode, yieldTimeMs: 10_000,
+      }), project.id, signal);
+      if (proposal.kind !== "command") throw new Error(proposal.content);
+      const result = await tools.executePreparedCommand(proposal.command, project.id, signal);
+      expect(JSON.parse(result.content)).toMatchObject({ value: { status: "completed" } });
+      expect(result.content).toContain("observed");
+      expect(result.commandCompletion).toBeUndefined();
+    } finally { await tools.dispose(); }
+  });
+
+  it.each([false, true])("returns cancellation/timeout after yielding without using a wait tool (timeout=%s)", async (timedOut) => {
+    const { project, tools } = await createFixture();
+    const controller = new AbortController();
+    try {
+      const proposal = await tools.execute("run_command", JSON.stringify({
+        command: 'Start-Sleep -Seconds 20', yieldTimeMs: 0, timeoutMs: timedOut ? 1000 : 20_000,
+      }), project.id, controller.signal);
+      if (proposal.kind !== "command") throw new Error(proposal.content);
+      const result = await tools.executePreparedCommand(proposal.command, project.id, controller.signal);
+      if (!timedOut) controller.abort();
+      const final = await result.commandCompletion;
+      if (final === undefined) throw new Error("Expected yielded completion.");
+      expect(final.isError).toBe(true);
+      expect(JSON.parse(final.content)).toMatchObject({ value: { status: timedOut ? "failed" : "cancelled", timedOut } });
+      expect(final.content).not.toContain('"completedAt":null');
+    } finally { await tools.dispose(); }
+  });
+
   it("streams command output before the command completes", async () => {
     const { project, tools } = await createFixture();
     const signal = new AbortController().signal;
@@ -734,6 +1371,7 @@ describe("ProjectToolRegistry", () => {
       "run_command",
       JSON.stringify({
         command: 'Write-Output "stream-first"; Start-Sleep -Milliseconds 1000; [Console]::Error.WriteLine("stream-error")',
+        mode: "service",
         timeoutMs: 10_000,
         yieldTimeMs: 0,
       }),
@@ -743,7 +1381,7 @@ describe("ProjectToolRegistry", () => {
     );
     if (proposal.kind !== "command") throw new Error(proposal.content);
 
-    const outputEvents: Array<{ delta: string; done: boolean; stream: string }> = [];
+    const outputEvents: CommandOutputEvent[] = [];
     let resolveFirstOutput: (() => void) | undefined;
     const firstOutput = new Promise<void>((resolve) => {
       resolveFirstOutput = resolve;
@@ -753,8 +1391,9 @@ describe("ProjectToolRegistry", () => {
       project.id,
       signal,
       owner,
-      ({ delta, done, stream }) => {
-        outputEvents.push({ delta, done, stream });
+      (event) => {
+        const { delta, stream } = event;
+        outputEvents.push(event);
         if (stream === "stdout" && delta.includes("stream-first")) resolveFirstOutput?.();
       },
     );
@@ -784,6 +1423,9 @@ describe("ProjectToolRegistry", () => {
     expect(outputEvents.some((event) => event.stream === "stderr" && event.delta.includes("stream-error")))
       .toBe(true);
     expect(outputEvents.some((event) => event.done)).toBe(true);
+    expect(outputEvents[0]).toMatchObject({ delta: "", status: "running", completedAt: null });
+    expect(Number.isFinite(Date.parse(outputEvents[0]?.startedAt ?? ""))).toBe(true);
+    expect(outputEvents.filter(event => event.done).every(event => event.completedAt !== null)).toBe(true);
   });
 
   it("makes the bundled ripgrep executable available to shell commands", async () => {
@@ -811,6 +1453,34 @@ describe("ProjectToolRegistry", () => {
     expect(result.content).toContain("src/index.ts:1:alpha");
   });
 
+  it("keeps UTF-8 ripgrep output intact through a PowerShell pipeline", async () => {
+    if (process.platform !== "win32") return;
+
+    const { project, tools } = await createFixture();
+    await writeFile(path.join(project.rootPath, "中文文件.txt"), "命中内容\n", "utf8");
+    const proposal = await tools.execute(
+      "run_command",
+      JSON.stringify({
+        command: 'rg -n "命中内容" . | Select-Object -First 1',
+      }),
+      project.id,
+      new AbortController().signal,
+    );
+    if (proposal.kind !== "command") throw new Error(proposal.content);
+
+    const result = await tools.executePreparedCommand(
+      proposal.command,
+      project.id,
+      new AbortController().signal,
+    );
+
+    // Depending on PowerShell and rg versions, Select-Object may either let rg
+    // exit cleanly or close the pipe early. In both cases, retained UTF-8 output
+    // must not be mojibake.
+    expect(result.content).toContain("中文文件.txt:1:命中内容");
+    expect(result.content).not.toContain("涓");
+  });
+
   it("decodes native Windows terminal output with the default terminal", async () => {
     if (process.platform !== "win32") return;
 
@@ -818,7 +1488,7 @@ describe("ProjectToolRegistry", () => {
     const proposal = await tools.execute(
       "run_command",
       JSON.stringify({
-        command: 'Write-Output "中文终端"; ping 127.0.0.1 -n 1',
+        command: 'Write-Output "中文终端"; ping -?',
         timeoutMs: 10_000,
       }),
       project.id,
@@ -853,6 +1523,7 @@ describe("ProjectToolRegistry", () => {
         "run_command",
         JSON.stringify({
           command: "Start-Sleep -Milliseconds 150; Write-Output command-one",
+          mode: "service",
           parallel: true,
           timeoutMs: 10_000,
           yieldTimeMs: 0,
@@ -865,6 +1536,7 @@ describe("ProjectToolRegistry", () => {
         "run_command",
         JSON.stringify({
           command: "Start-Sleep -Milliseconds 100; Write-Output command-two",
+          mode: "service",
           parallel: true,
           timeoutMs: 10_000,
           yieldTimeMs: 0,
@@ -916,6 +1588,7 @@ describe("ProjectToolRegistry", () => {
       "run_command",
       JSON.stringify({
         command: "Start-Sleep -Seconds 5; Write-Output should-not-complete",
+        mode: "service",
         timeoutMs: 10_000,
         yieldTimeMs: 0,
       }),
@@ -942,8 +1615,148 @@ describe("ProjectToolRegistry", () => {
     );
 
     expect(stopped.content).toContain('"status":"cancelled"');
+    const receipt = JSON.parse(stopped.content) as { value: { command: Record<string, unknown> } };
+    expect(Object.keys(receipt.value.command).sort()).toEqual([
+      "commandId", "completedAt", "error", "exitCode", "status",
+    ]);
+    expect(stopped.content).not.toContain("stdout");
+    expect(stopped.content).not.toContain("stderr");
+    expect(stopped.content).not.toContain("should-not-complete");
     expect(waited.content).toContain('"waitStatus":"finished"');
     expect(waited.content).toContain('"status":"cancelled"');
+  });
+
+  it("lists active background services with names and command ids for their owning conversation", async () => {
+    if (process.platform !== "win32") return;
+
+    const { project, tools } = await createFixture();
+    const signal = new AbortController().signal;
+    const owner = {
+      conversationId: "conversation-background-services",
+      conversationTitle: "后台服务",
+      runId: "run-background-services",
+    };
+    const proposal = await tools.execute(
+      "run_command",
+      JSON.stringify({
+        command: "Start-Sleep -Seconds 30",
+        serviceName: "Vite development server",
+        timeoutMs: 60_000,
+        yieldTimeMs: 0,
+      }),
+      project.id,
+      signal,
+      owner,
+    );
+    if (proposal.kind !== "command") throw new Error("Expected a prepared command.");
+    const started = await tools.executePreparedCommand(proposal.command, project.id, signal, owner);
+    const startedPayload = JSON.parse(started.content) as {
+      value?: { commandId?: unknown };
+    };
+    const commandId = startedPayload.value?.commandId;
+    if (typeof commandId !== "string") throw new Error("Background command id was not returned.");
+
+    const active = await tools.execute(
+      "list_background_commands",
+      JSON.stringify({}),
+      project.id,
+      signal,
+      owner,
+    );
+    const otherConversation = await tools.execute(
+      "list_background_commands",
+      JSON.stringify({}),
+      project.id,
+      signal,
+      { ...owner, conversationId: "other-conversation" },
+    );
+    await tools.execute(
+      "stop_command",
+      JSON.stringify({ commandId }),
+      project.id,
+      signal,
+      owner,
+    );
+    const afterStop = await tools.execute(
+      "list_background_commands",
+      JSON.stringify({}),
+      project.id,
+      signal,
+      owner,
+    );
+
+    expect(JSON.parse(active.content)).toMatchObject({
+      ok: true,
+      value: {
+        commands: [{
+          command: "Start-Sleep -Seconds 30",
+          commandId,
+          mode: "service",
+          serviceName: "Vite development server",
+          status: "running",
+          timeoutMs: 60_000,
+          workingDirectory: project.rootPath,
+        }],
+      },
+    });
+    expect(JSON.parse(otherConversation.content)).toMatchObject({
+      ok: true,
+      value: { commands: [] },
+    });
+    // Stop is an acknowledgement; wait for process exit before removing its working directory.
+    await tools.execute("wait_for_commands", JSON.stringify({ commandIds: [commandId], timeoutMs: 5000 }), project.id, signal, owner);
+    expect(JSON.parse(afterStop.content)).toMatchObject({
+      ok: true,
+      value: { commands: [] },
+    });
+  });
+
+  it("releases the project operation lock after a service starts", async () => {
+    if (process.platform !== "win32") return;
+
+    const { project, tools } = await createFixture();
+    const signal = new AbortController().signal;
+    const owner = {
+      conversationId: "conversation-service-lock",
+      conversationTitle: "后台服务不占锁",
+      runId: "run-service-lock",
+    };
+    const proposal = await tools.execute(
+      "run_command",
+      JSON.stringify({
+        command: "Start-Sleep -Seconds 30",
+        mode: "service",
+        serviceName: "test service",
+        yieldTimeMs: 0,
+      }),
+      project.id,
+      signal,
+      owner,
+    );
+    if (proposal.kind !== "command") throw new Error(proposal.content);
+    const started = await tools.executePreparedCommand(proposal.command, project.id, signal, owner);
+    const payload = JSON.parse(started.content) as {
+      value?: { commandId?: unknown; status?: unknown; timeoutMs?: unknown };
+    };
+    if (typeof payload.value?.commandId !== "string") throw new Error("Expected a service ID.");
+
+    expect(payload.value).toMatchObject({ status: "running", timeoutMs: null });
+    await expect(tools.writeUserFile({
+      content: "written while service is active\n",
+      expectedContent: null,
+      path: "service-write.txt",
+      projectId: project.id,
+    }, signal)).resolves.toMatchObject({ path: "service-write.txt" });
+    await tools.execute(
+      "stop_command",
+      JSON.stringify({ commandId: payload.value.commandId }),
+      project.id,
+      signal,
+      owner,
+    );
+    // stop_command returns a receipt before exit; wait before removing the working directory.
+    await tools.execute("wait_for_commands", JSON.stringify({ commandIds: [payload.value.commandId], timeoutMs: 5000 }), project.id, signal, owner);
+    await tools.dispose();
   });
 
   it("keeps independent read tools responsive on a large workspace", async () => {

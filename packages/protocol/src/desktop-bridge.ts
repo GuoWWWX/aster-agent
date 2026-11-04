@@ -1,18 +1,32 @@
+import type { TaskContextScope, TaskCompletionPolicy, SetTaskCompletionPolicyInput, ResolveChatReferencesInput, ChatReference, ListTaskContextsInput, TaskContextPage, TaskContextDetail, UpdateTaskContextInput, TaskContext, LinkTaskContextInput, MergeTaskContextsInput } from "./task-context.js";
+import type { ChatGptConnection, ChatGptConnectResult } from "./chatgpt-plan.js";
+import type { AppUpdateState } from "./app-update.js";
+import type { ReadTeamChatInput, TeamChatPage, PostTeamChatInput, TeamChatMessage, TeamChatMember, MarkTeamChatReadInput } from "./team-chat.js";
+import type { HtmlPreview, HtmlPreviewRequest } from "./html-preview.js";
+import type { AnswerUserQuestionInput, UserQuestion } from "./user-question.js";
+import type { BackgroundCommand, StopBackgroundCommandInput, BackgroundCommandOutput, ReadBackgroundCommandInput } from "./background-command.js";
+import type { ScheduledTask, SaveScheduledTaskInput, ScheduledTaskReference } from "./scheduled-task.js";
 import type {
   ApproveToolChangeInput,
   CancelRunInput,
   ConversationContextUsage,
   ConversationContextUsageInput,
   ConversationAttachment,
+  ConversationAttachmentPreview,
   ConversationMessageSubmission,
   ConversationPendingMessage,
   ConversationReferenceInput,
+  ConversationSearchInput,
+  ConversationSearchResult,
   ForkConversationInput,
   ConversationRunEvent,
   ConversationSummary,
   ConversationTaskList,
   ConversationTimelineItem,
+  ConversationTimelinePage,
+  ConversationTimelinePageInput,
   CreateConversationInput,
+  EnsureTeamMemberConversationInput,
   DiscoverModelsInput,
   DiscoveredModel,
   ModelConnectionTestResult,
@@ -25,11 +39,14 @@ import type {
   RemoveConversationAttachmentInput,
   PendingConversationMessageReferenceInput,
   ReorderPendingConversationMessagesInput,
+  ReadConversationAttachmentPreviewInput,
   SetConversationArchivedInput,
   SetConversationModelSelectionInput,
+  SetConversationPermissionModeInput,
   SetConversationProjectInput,
   SetConversationPinnedInput,
   SetTeamCoordinatorInput,
+  TeamMemberConversationView,
   SaveModelConfigurationInput,
   TestModelConnectionInput,
   SetDefaultModelInput,
@@ -40,6 +57,7 @@ import type {
 import type { PluginCatalogEntry, SetPluginEnabledInput } from "./plugin.js";
 import type { ContextCompressionConfiguration } from "./context-compression.js";
 import type { ApplicationSettings } from "./application-settings.js";
+import type { ApplicationStorageLocation } from "./application-storage.js";
 import type { ModelCatalog } from "./model-catalog.js";
 import type {
   CreateProjectEntryInput,
@@ -54,13 +72,44 @@ import type {
   RenameProjectInput,
   ReorderProjectsInput,
   SetProjectPinnedInput,
+  SetProjectTeamsInNavigatorInput,
   ProjectSummary,
   WriteProjectFileInput
 } from "./project.js";
 import type { RuntimeInfo } from "./runtime.js";
 import type { WindowState } from "./window.js";
 import type { IntegrationConfiguration } from "./integration.js";
+import type { BrowserConfiguration, BrowserSavedPassword, BrowserPasswordReference } from "./browser.js";
 import type { TerminalConfiguration } from "./terminal.js";
+import type {
+  GitFileDiff,
+  GitFileDiffInput,
+  GitOperationInput,
+  GitReviewInput,
+  GitReviewSnapshot,
+  ManagedBrowserBoundsInput,
+  ManagedBrowserCommandInput,
+  ManagedBrowserEvent,
+  ManagedBrowserNavigateInput,
+  ManagedBrowserOpenInput,
+  ManagedBrowserReferenceInput,
+  ManagedBrowserSession,
+  ManagedBrowserSnapshot,
+  TerminalSession,
+  TerminalSessionEvent,
+  TerminalSessionOpenInput,
+  TerminalSessionOutput,
+  TerminalSessionOutputInput,
+  TerminalSessionReferenceInput,
+  TerminalSessionResizeInput,
+  TerminalSessionWriteInput,
+  WorkspaceTerminalTabOpenRequest,
+  WorkspaceTerminalTabOpenedInput,
+  WorkspaceTerminalTabCloseRequest,
+  WorkspaceBrowserTabOpenRequest,
+  WorkspaceBrowserTabOpenedInput,
+  WorkspaceBrowserTabCloseRequest,
+} from "./developer-tools.js";
 import type {
   ConfigurationWorkspaceDirectoryListing,
   ConfigurationWorkspaceEntry,
@@ -78,12 +127,58 @@ import type {
   SkillDocumentReferenceInput,
   SkillDocumentSaveInput,
 } from "./skill-document.js";
+import type {
+  AddTeamWorkItemCommentInput,
+  DeleteTeamWorkItemInput,
+  GetTeamWorkItemExecutionInput,
+  ListTeamWorkItemsInput,
+  PublishTeamWorkItemInput,
+  RequestTeamWorkItemReworkInput,
+  SubmitTeamWorkItemInput,
+  UpdateTeamWorkItemInput,
+  UpdateTeamWorkItemPermissionInput,
+  AcceptTeamWorkItemInput,
+  TeamWorkItemExecutionView,
+  TeamWorkItemView,
+} from "./team-work-item.js";
+import type {
+  GetTeamCollaborationProjectionInput,
+  TeamCollaborationProjection,
+} from "./team-collaboration.js";
+import type {
+  CreateTeamInstanceInput,
+  EnsureTeamInstanceMemberConversationInput,
+  ListTeamInstancesInput,
+  RenameTeamInstanceInput,
+  ReorderTeamInstancesInput,
+  SetTeamInstanceArchivedInput,
+  TeamInstanceReferenceInput,
+  TeamInstanceView,
+} from "./team-instance.js";
 
 /**
  * The complete renderer-facing desktop surface for the initial application
  * shell. It deliberately exposes operations, not a generic IPC transport.
  */
 export interface DesktopBridge {
+  getAppUpdateState(): Promise<AppUpdateState>;
+  checkAppUpdate(): Promise<AppUpdateState>;
+  downloadAppUpdate(): Promise<AppUpdateState>;
+  pauseAppUpdate(): Promise<AppUpdateState>;
+  installAppUpdate(): Promise<AppUpdateState>;
+  onAppUpdateChanged(listener: (state: AppUpdateState) => void): () => void;
+  htmlPreview(input: HtmlPreviewRequest): Promise<HtmlPreview | null>;
+  listUserQuestions(input: ConversationReferenceInput): Promise<UserQuestion[]>;
+  answerUserQuestion(input: AnswerUserQuestionInput): Promise<UserQuestion>;
+  markUserQuestionViewed(input: { questionId: string }): Promise<UserQuestion>;
+  listBackgroundCommands(input: ConversationReferenceInput): Promise<BackgroundCommand[]>;
+  readBackgroundCommand(input: ReadBackgroundCommandInput): Promise<BackgroundCommandOutput>;
+  stopBackgroundCommand(input: StopBackgroundCommandInput): Promise<BackgroundCommand>;
+  listScheduledTasks(): Promise<ScheduledTask[]>;
+  saveScheduledTask(input: SaveScheduledTaskInput): Promise<ScheduledTask>;
+  deleteScheduledTask(input: ScheduledTaskReference): Promise<void>;
+  runScheduledTask(input: ScheduledTaskReference): Promise<ScheduledTask>;
+
   addProject(): Promise<ProjectSummary | null>;
   createProjectEntry(input: CreateProjectEntryInput): Promise<ProjectEntry>;
   createConfigurationWorkspaceEntry(
@@ -106,12 +201,60 @@ export interface DesktopBridge {
   importConversationAttachmentBytes(
     input: ImportConversationAttachmentBytesInput
   ): Promise<ConversationAttachment[]>;
+  readConversationAttachmentPreview(
+    input: ReadConversationAttachmentPreviewInput
+  ): Promise<ConversationAttachmentPreview>;
   listDraftConversationAttachments(
     input: ConversationReferenceInput
   ): Promise<ConversationAttachment[]>;
   removeConversationAttachment(input: RemoveConversationAttachmentInput): Promise<void>;
   setTeamCoordinator(input: SetTeamCoordinatorInput): Promise<void>;
+  ensureTeamMemberConversation(
+    input: EnsureTeamMemberConversationInput
+  ): Promise<TeamMemberConversationView>;
+  listTeamInstances(input: ListTeamInstancesInput): Promise<TeamInstanceView[]>;
+  createTeamInstance(input: CreateTeamInstanceInput): Promise<TeamInstanceView>;
+  renameTeamInstance(input: RenameTeamInstanceInput): Promise<TeamInstanceView>;
+  reorderTeamInstances(input: ReorderTeamInstancesInput): Promise<TeamInstanceView[]>;
+  setTeamInstanceArchived(input: SetTeamInstanceArchivedInput): Promise<TeamInstanceView>;
+  deleteTeamInstance(input: TeamInstanceReferenceInput): Promise<void>;
+  ensureTeamInstanceMemberConversation(
+    input: EnsureTeamInstanceMemberConversationInput,
+  ): Promise<TeamMemberConversationView>;
   sendTeamMessage(input: SendTeamMessageInput): Promise<ConversationMessageSubmission>;
+  getTaskCompletionPolicy(input: TaskContextScope): Promise<TaskCompletionPolicy>;
+  setTaskCompletionPolicy(input: SetTaskCompletionPolicyInput): Promise<TaskCompletionPolicy>;
+  resolveChatReferences(input: ResolveChatReferencesInput): Promise<ChatReference[]>;
+  listTaskContexts(input: ListTaskContextsInput): Promise<TaskContextPage>;
+  getTaskContext(input: { id: string; beforeSourceSequence?: number; limit?: number }): Promise<TaskContextDetail>;
+  updateTaskContext(input: UpdateTaskContextInput): Promise<TaskContext>;
+  linkTaskContext(input: LinkTaskContextInput): Promise<void>;
+  mergeTaskContexts(input: MergeTaskContextsInput): Promise<TaskContext>;
+  readTeamChat(input: ReadTeamChatInput): Promise<TeamChatPage>;
+  postTeamChat(input: PostTeamChatInput): Promise<TeamChatMessage>;
+  getTeamChatMembers(input: { teamInstanceId: string }): Promise<TeamChatMember[]>;
+  getTeamChatCoordinationConversation(input: { teamInstanceId: string; agentId?: string }): Promise<ConversationSummary>;
+  markTeamChatRead(input: MarkTeamChatReadInput): Promise<void>;
+  resumeTeamChatDelivery(input: { id: string }): Promise<void>;
+  cancelTeamChatDelivery(input: { id: string }): Promise<void>;
+  pauseTeamChat(input: { teamInstanceId: string }): Promise<void>;
+  listTeamWorkItems(input: ListTeamWorkItemsInput): Promise<TeamWorkItemView[]>;
+  getTeamWorkItemExecution(
+    input: GetTeamWorkItemExecutionInput,
+  ): Promise<TeamWorkItemExecutionView>;
+  getTeamCollaborationProjection(
+    input: GetTeamCollaborationProjectionInput,
+  ): Promise<TeamCollaborationProjection>;
+  submitTeamWorkItem(input: SubmitTeamWorkItemInput): Promise<TeamWorkItemView>;
+  updateTeamWorkItem(input: UpdateTeamWorkItemInput): Promise<TeamWorkItemView>;
+  deleteTeamWorkItem(input: DeleteTeamWorkItemInput): Promise<void>;
+  updateTeamWorkItemPermission(
+    input: UpdateTeamWorkItemPermissionInput,
+  ): Promise<TeamWorkItemView>;
+  publishTeamWorkItem(input: PublishTeamWorkItemInput): Promise<TeamWorkItemView>;
+  addTeamWorkItemComment(input: AddTeamWorkItemCommentInput): Promise<TeamWorkItemView>;
+  requestTeamWorkItemRework(input: RequestTeamWorkItemReworkInput): Promise<TeamWorkItemView>;
+  acceptTeamWorkItem(input: AcceptTeamWorkItemInput): Promise<TeamWorkItemView>;
   listPlugins(): Promise<PluginCatalogEntry[]>;
   setPluginEnabled(input: SetPluginEnabledInput): Promise<PluginCatalogEntry>;
   getConversationTaskList(
@@ -122,18 +265,71 @@ export interface DesktopBridge {
   ): Promise<void>;
   deleteConversationTaskList(input: ConversationReferenceInput): Promise<void>;
   deleteConversation(input: ConversationReferenceInput): Promise<void>;
+  deleteConversationUndoable(input: ConversationReferenceInput): Promise<void>;
+  restoreDeletedConversation(input: ConversationReferenceInput): Promise<void>;
   deleteConfigurationWorkspaceEntry(
     input: DeleteConfigurationWorkspaceEntryInput
   ): Promise<void>;
   discoverModels(input: DiscoverModelsInput): Promise<DiscoveredModel[]>;
+  listChatGptConnections(): Promise<ChatGptConnection[]>;
+  connectChatGpt(providerId?: string): Promise<ChatGptConnectResult>;
+  disconnectChatGpt(providerId: string): Promise<boolean>;
+  syncChatGptModels(providerId: string): Promise<ModelRuntimeStatus>;
   testModelConnection(input: TestModelConnectionInput): Promise<ModelConnectionTestResult>;
   getModelApiKey(providerId: string): Promise<string | null>;
   getModelCatalog(): Promise<ModelCatalog>;
+  saveModelCatalog(catalog: ModelCatalog): Promise<ModelCatalog>;
   getModelStatus(): Promise<ModelRuntimeStatus>;
   getContextCompressionConfiguration(): Promise<ContextCompressionConfiguration>;
   getApplicationSettings(): Promise<ApplicationSettings>;
+  getApplicationStorageLocation(): Promise<ApplicationStorageLocation>;
+  chooseApplicationStorageLocation(): Promise<ApplicationStorageLocation | null>;
+  resetApplicationStorageLocation(): Promise<ApplicationStorageLocation>;
   getIntegrationConfiguration(): Promise<IntegrationConfiguration>;
+  getBrowserConfiguration(): Promise<BrowserConfiguration>;
+  getComputerUseConfiguration(): Promise<ComputerUseConfiguration>;
+  saveComputerUseConfiguration(input: ComputerUseConfiguration, baselineApplications?: ComputerApplication[]): Promise<ComputerUseConfiguration>;
+  chooseComputerApplication(): Promise<ComputerApplication | null>;
+  getComputerUseApplicationIcons(): Promise<ComputerApplicationIcons>;
+  getComputerUseStatus(): Promise<ComputerUseStatus>;
+  startComputerUse(): Promise<ComputerUseStatus>;
+  stopComputerUse(): Promise<void>;
+  clearBrowserData(): Promise<void>;
+  chooseBrowserDownloadDirectory(): Promise<string | null>;
+  getBrowserDefaultDownloadDirectory(): Promise<string>;
+  getBrowserSavedPasswords(): Promise<BrowserSavedPassword[]>;
+  revealBrowserPassword(input: BrowserPasswordReference): Promise<string | null>;
   getTerminalConfiguration(): Promise<TerminalConfiguration>;
+  getGitReviewSnapshot(input: GitReviewInput): Promise<GitReviewSnapshot>;
+  getGitFileDiff(input: GitFileDiffInput): Promise<GitFileDiff>;
+  runGitOperation(input: GitOperationInput): Promise<GitReviewSnapshot>;
+  openTerminalSession(input: TerminalSessionOpenInput): Promise<TerminalSession>;
+  readTerminalSessionOutput(input: TerminalSessionOutputInput): Promise<TerminalSessionOutput>;
+  writeTerminalSession(input: TerminalSessionWriteInput): Promise<void>;
+  resizeTerminalSession(input: TerminalSessionResizeInput): Promise<void>;
+  closeTerminalSession(input: TerminalSessionReferenceInput): Promise<void>;
+  onTerminalSessionEvent(listener: (event: TerminalSessionEvent) => void): () => void;
+  confirmWorkspaceTerminalTabOpened(input: WorkspaceTerminalTabOpenedInput): Promise<void>;
+  onWorkspaceTerminalTabOpenRequested(
+    listener: (request: WorkspaceTerminalTabOpenRequest) => void,
+  ): () => void;
+  onWorkspaceTerminalTabCloseRequested(
+    listener: (request: WorkspaceTerminalTabCloseRequest) => void,
+  ): () => void;
+  confirmWorkspaceBrowserTabOpened(input: WorkspaceBrowserTabOpenedInput): Promise<void>;
+  onWorkspaceBrowserTabOpenRequested(
+    listener: (request: WorkspaceBrowserTabOpenRequest) => void,
+  ): () => void;
+  onWorkspaceBrowserTabCloseRequested(
+    listener: (request: WorkspaceBrowserTabCloseRequest) => void,
+  ): () => void;
+  openManagedBrowser(input: ManagedBrowserOpenInput): Promise<ManagedBrowserSession>;
+  navigateManagedBrowser(input: ManagedBrowserNavigateInput): Promise<void>;
+  commandManagedBrowser(input: ManagedBrowserCommandInput): Promise<void>;
+  captureManagedBrowser(input: ManagedBrowserReferenceInput): Promise<ManagedBrowserSnapshot>;
+  setManagedBrowserBounds(input: ManagedBrowserBoundsInput): Promise<void>;
+  closeManagedBrowser(input: ManagedBrowserReferenceInput): Promise<void>;
+  onManagedBrowserEvent(listener: (event: ManagedBrowserEvent) => void): () => void;
   getRuntimeInfo(): Promise<RuntimeInfo>;
   getWindowState(): Promise<WindowState>;
   listProjectEntries(input: ListProjectEntriesInput): Promise<ProjectDirectoryListing>;
@@ -144,10 +340,17 @@ export interface DesktopBridge {
   listConversationTimeline(
     input: ConversationReferenceInput
   ): Promise<ConversationTimelineItem[]>;
+  listConversationTimelinePage(
+    input: ConversationTimelinePageInput
+  ): Promise<ConversationTimelinePage>;
+  searchConversations(input: ConversationSearchInput): Promise<ConversationSearchResult[]>;
   listConversationPendingMessages(
     input: ConversationReferenceInput
   ): Promise<ConversationPendingMessage[]>;
+  getConversationPendingQueuePaused(input: ConversationReferenceInput): Promise<boolean>;
+  setConversationPendingQueuePaused(input: ConversationReferenceInput & { paused: boolean }): Promise<boolean>;
   listConversations(): Promise<ConversationSummary[]>;
+  listConversationHierarchy(): Promise<ConversationSummary[]>;
   listConversationForks(input: ConversationReferenceInput): Promise<ConversationSummary[]>;
   markConversationResultViewed(
     input: ConversationReferenceInput
@@ -159,8 +362,10 @@ export interface DesktopBridge {
     input: ReadConfigurationWorkspaceFileInput
   ): Promise<ConfigurationWorkspaceFile>;
   removeProject(input: ProjectReferenceInput): Promise<void>;
+  openProjectDirectory(input: ProjectReferenceInput): Promise<void>;
   minimizeWindow(): Promise<void>;
   onConversationRunEvent(listener: (event: ConversationRunEvent) => void): () => void;
+  setConversationStreamSubscriptions(conversationIds: readonly string[]): Promise<void>;
   onApplicationSettingsChanged(listener: (settings: ApplicationSettings) => void): () => void;
   toggleMaximizeWindow(): Promise<void>;
   closeWindow(): Promise<void>;
@@ -170,9 +375,15 @@ export interface DesktopBridge {
   renameProject(input: RenameProjectInput): Promise<ProjectSummary>;
   reorderProjects(input: ReorderProjectsInput): Promise<ProjectSummary[]>;
   setProjectPinned(input: SetProjectPinnedInput): Promise<ProjectSummary>;
+  setProjectTeamsInNavigator(
+    input: SetProjectTeamsInNavigatorInput
+  ): Promise<ProjectSummary>;
   setConversationArchived(input: SetConversationArchivedInput): Promise<ConversationSummary>;
   setConversationModelSelection(
     input: SetConversationModelSelectionInput
+  ): Promise<ConversationSummary>;
+  setConversationPermissionMode(
+    input: SetConversationPermissionModeInput
   ): Promise<ConversationSummary>;
   setConversationProject(input: SetConversationProjectInput): Promise<ConversationSummary>;
   setConversationPinned(input: SetConversationPinnedInput): Promise<ConversationSummary>;
@@ -195,6 +406,7 @@ export interface DesktopBridge {
   saveModelConfiguration(
     input: SaveModelConfigurationInput
   ): Promise<ModelRuntimeStatus>;
+  deleteModelProvider(providerId: string): Promise<ModelRuntimeStatus>;
   setDefaultModel(input: SetDefaultModelInput): Promise<ModelRuntimeStatus>;
   saveContextCompressionConfiguration(
     input: ContextCompressionConfiguration
@@ -205,6 +417,9 @@ export interface DesktopBridge {
   saveIntegrationConfiguration(
     input: IntegrationConfiguration
   ): Promise<IntegrationConfiguration>;
+  saveBrowserConfiguration(
+    input: BrowserConfiguration
+  ): Promise<BrowserConfiguration>;
   saveTerminalConfiguration(
     input: TerminalConfiguration
   ): Promise<TerminalConfiguration>;
@@ -213,9 +428,11 @@ export interface DesktopBridge {
   discoverSkillDocuments(): Promise<SkillDiscoveryResult>;
   importSkillDocument(): Promise<SkillDocument | null>;
   readSkillDocument(input: SkillDocumentReferenceInput): Promise<SkillDocument>;
+  deleteSkillDocument(input: SkillDocumentReferenceInput): Promise<void>;
   saveSkillDocument(input: SkillDocumentSaveInput): Promise<SkillDocument>;
   writeConfigurationWorkspaceFile(
     input: WriteConfigurationWorkspaceFileInput
   ): Promise<ConfigurationWorkspaceFile>;
   onWindowStateChanged(listener: (state: WindowState) => void): () => void;
 }
+import type { ComputerApplication, ComputerApplicationIcons, ComputerUseConfiguration, ComputerUseStatus } from "./computer-use.js";

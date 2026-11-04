@@ -1,6 +1,14 @@
+import { taskContextSchema, updateTaskContextInputSchema, listTaskContextsInputSchema, postTeamChatInputSchema, type TaskContextScope, type TaskCompletionPolicy, type SetTaskCompletionPolicyInput, type ResolveChatReferencesInput, type ChatReference, type ListTaskContextsInput, type TaskContextPage, type TaskContextDetail, type UpdateTaskContextInput, type TaskContext, type LinkTaskContextInput, type MergeTaskContextsInput, type ReadTeamChatInput, type TeamChatPage, type PostTeamChatInput, type TeamChatMessage, type TeamChatMember, type MarkTeamChatReadInput } from "@agent/protocol";
+import type { HtmlPreview, HtmlPreviewRequest } from "@agent/protocol";
+import type { AnswerUserQuestionInput, UserQuestion, BackgroundCommand, StopBackgroundCommandInput, BackgroundCommandOutput, ReadBackgroundCommandInput } from "@agent/protocol";
+import { saveScheduledTaskInputSchema, type ScheduledTask, type SaveScheduledTaskInput, type ScheduledTaskReference } from "@agent/protocol";
 import {
+  modelCatalogSchema,
   createSkillMarkdown,
+  DEFAULT_BROWSER_CONFIGURATION,
   DEFAULT_APPLICATION_SETTINGS,
+  APPLICATION_DATA_DIRECTORY_NAME,
+  APPLICATION_DISPLAY_NAME,
   CONTEXT_MESSAGE_OVERHEAD_TOKENS,
   DEFAULT_CONTEXT_COMPRESSION_CONFIGURATION,
   DEFAULT_MODEL_CATALOG,
@@ -15,6 +23,12 @@ import {
   type SkillDocument,
   type SkillDiscoveryResult,
   type ApplicationSettings,
+  type ApplicationStorageLocation,
+  type AddTeamWorkItemCommentInput,
+  type DeleteTeamWorkItemInput,
+  type BrowserConfiguration,
+  type BrowserSavedPassword,
+  type BrowserPasswordReference,
   type SkillDocumentReferenceInput,
   type SkillDocumentSaveInput,
   type TerminalConfiguration,
@@ -22,11 +36,14 @@ import {
   type ApproveToolChangeInput,
   type CancelRunInput,
   type ConversationReferenceInput,
+  type ConversationSearchInput,
+  type ConversationSearchResult,
   type ForkConversationInput,
   type ConversationRunEvent,
   type ConversationContextUsage,
   type ConversationContextUsageInput,
   type ConversationAttachment,
+  type ConversationAttachmentPreview,
   type ConversationMessageSubmission,
   type ConversationPendingMessage,
   type ConfigurationWorkspaceDirectoryListing,
@@ -37,18 +54,27 @@ import {
   type ConversationSummary,
   type ConversationTaskList,
   type ConversationTimelineItem,
+  type ConversationTimelinePage,
+  type ConversationTimelinePageInput,
   type CreateProjectEntryInput,
   type CreateConfigurationWorkspaceEntryInput,
   type CreateConversationInput,
+  type CreateTeamInstanceInput,
+  type EnsureTeamMemberConversationInput,
+  type EnsureTeamInstanceMemberConversationInput,
   type DiscoverModelsInput,
   type DiscoveredModel,
+  type GitReviewSnapshot,
   type IntegrationConfiguration,
+  type ImportConversationAttachmentBytesInput,
   type DeleteConfigurationWorkspaceEntryInput,
   type ListConfigurationWorkspaceEntriesInput,
   type ListProjectEntriesInput,
   type ModelConnectionTestResult,
   type ModelCatalog,
   type ModelRuntimeStatus,
+  type ManagedBrowserSession,
+  type ManagedBrowserSnapshot,
   type McpServerConfiguration,
   type ModelProfile,
   type ProjectDirectoryListing,
@@ -74,14 +100,35 @@ import {
   type UpdatePendingConversationMessageInput,
   type SetConversationArchivedInput,
   type SetConversationModelSelectionInput,
+  type SetConversationPermissionModeInput,
   type SetConversationProjectInput,
   type SetConversationPinnedInput,
   type SetProjectPinnedInput,
+  type SetProjectTeamsInNavigatorInput,
   type RuntimeInfo,
   type RunAccepted,
+  type TerminalSession,
+  type TerminalSessionOutput,
   type WindowState,
   type WriteConfigurationWorkspaceFileInput,
   type WriteProjectFileInput,
+  type ListTeamWorkItemsInput,
+  type PublishTeamWorkItemInput,
+  type ListTeamInstancesInput,
+  type RequestTeamWorkItemReworkInput,
+  type SubmitTeamWorkItemInput,
+  type UpdateTeamWorkItemInput,
+  type UpdateTeamWorkItemPermissionInput,
+  type AcceptTeamWorkItemInput,
+  type TeamWorkItemExecutionView,
+  type TeamCollaborationProjection,
+  type TeamMemberConversationView,
+  type TeamWorkItemView,
+  type RenameTeamInstanceInput,
+  type ReorderTeamInstancesInput,
+  type SetTeamInstanceArchivedInput,
+  type TeamInstanceReferenceInput,
+  type TeamInstanceView,
 } from "@agent/protocol";
 
 import type {
@@ -132,7 +179,7 @@ const MOCK_RESPONSE_DELAY_MS = 800;
 const MOCK_PROJECT: ProjectSummary = {
   id: "00000000-0000-4000-8000-000000000001",
   isPinned: false,
-  name: "Aster",
+  name: APPLICATION_DISPLAY_NAME,
   rootPath: "D:\\Code\\Project\\202608\\Agent",
 };
 
@@ -193,7 +240,7 @@ function createMockUuid(sequence: number): string {
 }
 
 function createConversationTitle(content: string): string {
-  const title = content.trim().replaceAll(/\s+/g, " ").slice(0, 36);
+  const title = Array.from(content.trim().replaceAll(/\s+/g, " ")).slice(0, 20).join("");
   return title.length > 0 ? title : "新会话";
 }
 
@@ -219,6 +266,8 @@ function resolveMockForkBoundary(
  * deterministic fixture, not a substitute for a persistent runtime.
  */
 export class MockAgentClient implements AgentClient {
+  public htmlPreview(input: HtmlPreviewRequest): Promise<HtmlPreview | null> { void input; return Promise.reject(new Error("HTML 本地预览请在桌面应用中使用。")); }
+  private scheduledTasks: ScheduledTask[] = [];
   private readonly activeRuns = new Map<string, MockRun>();
 
   private readonly conversationListeners = new Set<ConversationRunEventListener>();
@@ -247,8 +296,13 @@ export class MockAgentClient implements AgentClient {
   private readonly timelines = new Map<string, ConversationTimelineItem[]>();
 
   private readonly pendingMessages = new Map<string, ConversationPendingMessage[]>();
+  private readonly pendingQueuePaused = new Map<string, boolean>();
 
   private readonly taskLists = new Map<string, ConversationTaskList>();
+
+  private readonly teamWorkItems: TeamWorkItemView[] = [];
+
+  private readonly teamInstances: TeamInstanceView[] = [];
 
   private readonly skillDocuments = new Map<string, SkillDocument>();
 
@@ -271,6 +325,10 @@ export class MockAgentClient implements AgentClient {
     DEFAULT_TERMINAL_CONFIGURATION,
   );
 
+  private browserConfiguration: BrowserConfiguration = structuredClone(
+    DEFAULT_BROWSER_CONFIGURATION,
+  );
+
   private contextCompressionConfiguration: ContextCompressionConfiguration = structuredClone(
     DEFAULT_CONTEXT_COMPRESSION_CONFIGURATION,
   );
@@ -278,6 +336,16 @@ export class MockAgentClient implements AgentClient {
   private applicationSettings: ApplicationSettings = structuredClone(
     DEFAULT_APPLICATION_SETTINGS,
   );
+
+  private applicationStorageLocation: ApplicationStorageLocation = {
+    activePath: `C:\\Users\\demo\\${APPLICATION_DATA_DIRECTORY_NAME}`,
+    canChange: true,
+    configuredPath: `C:\\Users\\demo\\${APPLICATION_DATA_DIRECTORY_NAME}`,
+    configurationError: false,
+    defaultPath: `C:\\Users\\demo\\${APPLICATION_DATA_DIRECTORY_NAME}`,
+    restartRequired: false,
+    source: "default",
+  };
 
   private readonly modelApiKeys = new Map<string, string>();
 
@@ -336,6 +404,19 @@ export class MockAgentClient implements AgentClient {
   }
 
   public cancelRun(input: CancelRunInput): Promise<void> {
+    if ("conversationId" in input) {
+      const ids = new Set([input.conversationId]);
+      let changed = true;
+      while (changed) {
+        changed = false;
+        for (const child of this.conversations) {
+          if (child.threadKind === "subagent" && child.parentConversationId !== null
+            && ids.has(child.parentConversationId) && !ids.has(child.id)) { ids.add(child.id); changed = true; }
+        }
+      }
+      return Promise.all([...this.activeRuns].filter(([, run]) => ids.has(run.conversationId))
+        .map(([runId]) => this.cancelRun({ runId }))).then(() => undefined);
+    }
     const activeRun = this.activeRuns.get(input.runId);
     if (activeRun === undefined) {
       return Promise.resolve();
@@ -345,6 +426,7 @@ export class MockAgentClient implements AgentClient {
       clearTimeout(activeRun.timeout);
     }
     this.activeRuns.delete(input.runId);
+    void this.setConversationPendingQueuePaused({ conversationId: activeRun.conversationId, paused: true });
     const conversation = this.conversations.find(
       (candidate) => candidate.id === activeRun.conversationId,
     );
@@ -392,6 +474,7 @@ export class MockAgentClient implements AgentClient {
       activeRunId: null,
       agentId: input.agent?.id ?? null,
       archivedAt: null,
+      avatarIcon: input.agent?.avatarIcon ?? null,
       createdAt: now,
       hasUnreadResult: false,
       id: this.createIdentifier(),
@@ -400,9 +483,11 @@ export class MockAgentClient implements AgentClient {
       lastRunStatus: null,
       modelSelection: input.modelSelection ?? this.modelStatus.recentSelection,
       parentConversationId: null,
+      permissionMode: "ask_before_changes",
       pinOrder: null,
       projectId,
       teamId: input.teamId ?? null,
+      teamWorkItemId: null,
       threadKind: input.threadKind ?? "agent",
       title:
         projectConversations.length === 0
@@ -415,6 +500,252 @@ export class MockAgentClient implements AgentClient {
     this.conversations.unshift(conversation);
     this.timelines.set(conversation.id, []);
     return Promise.resolve({ ...conversation });
+  }
+
+  public async ensureTeamMemberConversation(
+    input: EnsureTeamMemberConversationInput,
+  ): Promise<TeamMemberConversationView> {
+    const team = this.applicationSettings.agentDirectory.teams.find(
+      (candidate) => candidate.id === input.teamId,
+    );
+    if (team === undefined || !team.memberIds.includes(input.agentId)) {
+      throw new Error("The mock Team member is unavailable.");
+    }
+    const toBinding = (agentId: string) => {
+      const agent = this.applicationSettings.agentDirectory.agents.find(
+        (candidate) => candidate.id === agentId && candidate.enabled,
+      );
+      if (agent === undefined) throw new Error("The mock Agent is unavailable.");
+      const configured = team.memberConfigurations[agent.id];
+      return {
+        avatarIcon: agent.avatar.kind === "icon" ? agent.avatar.icon : null,
+        id: agent.id,
+        instructions: [agent.instructions, team.instructions, configured?.instructions]
+          .filter((value): value is string => value !== undefined && value.trim().length > 0)
+          .join("\n\n")
+          .slice(0, 20_000),
+        isDefault: agent.isDefault,
+        name: agent.name,
+        role: configured?.role.trim() || agent.role,
+      };
+    };
+    let lead = this.conversations.find((conversation) =>
+      !conversation.isArchived
+      && conversation.parentConversationId === null
+      && conversation.projectId === null
+      && conversation.teamId === team.id
+      && conversation.threadKind === "team_lead"
+    );
+    if (lead === undefined) {
+      const created = await this.createConversation({
+        agent: toBinding(team.leadAgentId),
+        projectId: null,
+        teamId: team.id,
+        threadKind: "team_lead",
+      });
+      lead = this.conversations.find((conversation) => conversation.id === created.id);
+      if (lead === undefined) throw new Error("The mock Team Lead could not be created.");
+      lead.title = `${lead.agentId === null ? "Team Lead" : toBinding(team.leadAgentId).name} · ${team.name}`;
+    }
+    if (input.agentId === team.leadAgentId) {
+      return { lead: { ...lead }, member: { ...lead } };
+    }
+    let member = this.conversations.find((conversation) =>
+      !conversation.isArchived
+      && conversation.agentId === input.agentId
+      && conversation.parentConversationId === lead.id
+      && conversation.teamId === team.id
+      && conversation.threadKind === "agent"
+    );
+    if (member === undefined) {
+      const binding = toBinding(input.agentId);
+      const created = await this.createConversation({
+        agent: binding,
+        projectId: null,
+        teamId: team.id,
+        threadKind: "agent",
+      });
+      member = this.conversations.find((conversation) => conversation.id === created.id);
+      if (member === undefined) throw new Error("The mock Team member could not be created.");
+      member.parentConversationId = lead.id;
+      member.title = `${binding.name} · ${team.name}`;
+    }
+    return { lead: { ...lead }, member: { ...member } };
+  }
+
+  public listTeamInstances(input: ListTeamInstancesInput): Promise<TeamInstanceView[]> {
+    return Promise.resolve(this.teamInstances.filter((instance) =>
+      (input.includeArchived === true || !instance.isArchived)
+      && (input.projectId === undefined || instance.projectId === input.projectId)
+      && (
+        input.sourceConversationId === undefined
+        || instance.sourceConversationId === input.sourceConversationId
+      )
+    ).map((instance) => ({ ...instance })));
+  }
+
+  public async createTeamInstance(input: CreateTeamInstanceInput): Promise<TeamInstanceView> {
+    const team = this.applicationSettings.agentDirectory.teams.find(
+      (candidate) => candidate.id === input.teamId,
+    );
+    if (team === undefined) throw new Error("The mock Team template is unavailable.");
+    const existingNames = new Set(this.teamInstances.filter((instance) =>
+      !instance.isArchived && (
+        instance.scope === "global"
+        || (input.projectId !== undefined
+          && instance.scope === "project"
+          && instance.projectId === input.projectId)
+        || (input.sourceConversationId !== undefined
+          && instance.scope === "conversation"
+          && instance.sourceConversationId === input.sourceConversationId)
+      )
+    ).map((instance) => instance.name.toLocaleLowerCase()));
+    const baseName = input.name?.trim() || team.name;
+    let name = baseName;
+    for (let suffix = 1; existingNames.has(name.toLocaleLowerCase()); suffix += 1) {
+      name = `${baseName} (${suffix})`;
+    }
+    const now = new Date().toISOString();
+    const instance: TeamInstanceView = {
+      createdAt: now,
+      id: this.createIdentifier(),
+      isArchived: false,
+      name,
+      projectId: input.projectId ?? null,
+      rootConversationId: null,
+      scope: input.scope,
+      sourceConversationId: input.sourceConversationId ?? null,
+      teamId: input.teamId,
+      updatedAt: now,
+    };
+    const toBinding = (agentId: string) => {
+      const agent = this.applicationSettings.agentDirectory.agents.find(
+        (candidate) => candidate.id === agentId,
+      );
+      if (agent === undefined) throw new Error("The mock Agent is unavailable.");
+      return {
+        avatarIcon: agent.avatar.kind === "icon" ? agent.avatar.icon : null,
+        id: agent.id,
+        instructions: agent.instructions,
+        isDefault: agent.isDefault,
+        name: agent.name,
+        role: team.memberConfigurations[agent.id]?.role.trim() || agent.role,
+      };
+    };
+    const leadBinding = toBinding(team.leadAgentId);
+    const leadSummary = await this.createConversation({
+      agent: leadBinding,
+      ...(instance.projectId === null ? {} : { projectId: instance.projectId }),
+      teamId: team.id,
+      threadKind: "team_lead",
+    });
+    const lead = this.conversations.find((conversation) => conversation.id === leadSummary.id)!;
+    lead.parentConversationId = instance.sourceConversationId;
+    lead.title = `${leadBinding.name} · ${instance.name}`;
+    instance.rootConversationId = lead.id;
+    this.teamInstances.push(instance);
+    for (const agentId of team.memberIds) {
+      if (agentId === team.leadAgentId) continue;
+      const binding = toBinding(agentId);
+      const memberSummary = await this.createConversation({
+        agent: binding,
+        ...(instance.projectId === null ? {} : { projectId: instance.projectId }),
+        teamId: team.id,
+        threadKind: "agent",
+      });
+      const member = this.conversations.find(
+        (conversation) => conversation.id === memberSummary.id,
+      )!;
+      member.parentConversationId = lead.id;
+      member.title = `${binding.name} · ${instance.name}`;
+    }
+    return { ...instance };
+  }
+
+  public renameTeamInstance(input: RenameTeamInstanceInput): Promise<TeamInstanceView> {
+    const instance = this.teamInstances.find((candidate) => candidate.id === input.teamInstanceId);
+    if (instance === undefined) return Promise.reject(new Error("The mock Team instance was not found."));
+    if (input.projectId !== undefined) {
+      if (instance.scope === "conversation") {
+        return Promise.reject(new Error("A conversation Team retains its source conversation project."));
+      }
+      instance.projectId = input.projectId;
+      instance.scope = input.projectId === null ? "global" : "project";
+      if (instance.rootConversationId !== null) {
+        const participantIds = new Set([
+          instance.rootConversationId,
+          ...this.conversations.filter((conversation) =>
+            conversation.parentConversationId === instance.rootConversationId
+          ).map((conversation) => conversation.id),
+        ]);
+        for (const conversation of this.conversations) {
+          if (participantIds.has(conversation.id)) conversation.projectId = input.projectId;
+        }
+      }
+    }
+    instance.name = input.name.trim();
+    instance.updatedAt = new Date().toISOString();
+    return Promise.resolve({ ...instance });
+  }
+
+  public reorderTeamInstances(input: ReorderTeamInstancesInput): Promise<TeamInstanceView[]> {
+    const visibleIds = this.teamInstances.filter((instance) =>
+      !instance.isArchived && instance.scope !== "conversation"
+    ).map((instance) => instance.id);
+    if (
+      input.teamInstanceIds.length !== visibleIds.length
+      || new Set(input.teamInstanceIds).size !== input.teamInstanceIds.length
+      || input.teamInstanceIds.some((teamInstanceId) => !visibleIds.includes(teamInstanceId))
+    ) {
+      return Promise.reject(new Error("Team instance reorder must include every visible Team."));
+    }
+    const orderById = new Map(input.teamInstanceIds.map((teamInstanceId, index) => [
+      teamInstanceId,
+      index,
+    ]));
+    this.teamInstances.sort((left, right) => {
+      const leftOrder = orderById.get(left.id);
+      const rightOrder = orderById.get(right.id);
+      if (leftOrder === undefined && rightOrder === undefined) return 0;
+      if (leftOrder === undefined) return 1;
+      if (rightOrder === undefined) return -1;
+      return leftOrder - rightOrder;
+    });
+    return this.listTeamInstances({ includeArchived: false });
+  }
+
+  public setTeamInstanceArchived(input: SetTeamInstanceArchivedInput): Promise<TeamInstanceView> {
+    const instance = this.teamInstances.find((candidate) => candidate.id === input.teamInstanceId);
+    if (instance === undefined) return Promise.reject(new Error("The mock Team instance was not found."));
+    instance.isArchived = input.archived;
+    instance.updatedAt = new Date().toISOString();
+    return Promise.resolve({ ...instance });
+  }
+
+  public deleteTeamInstance(input: TeamInstanceReferenceInput): Promise<void> {
+    const index = this.teamInstances.findIndex((candidate) => candidate.id === input.teamInstanceId);
+    if (index < 0) return Promise.reject(new Error("The mock Team instance was not found."));
+    this.teamInstances.splice(index, 1);
+    return Promise.resolve();
+  }
+
+  public ensureTeamInstanceMemberConversation(
+    input: EnsureTeamInstanceMemberConversationInput,
+  ): Promise<TeamMemberConversationView> {
+    const instance = this.teamInstances.find((candidate) => candidate.id === input.teamInstanceId);
+    if (instance === undefined || instance.rootConversationId === null) {
+      return Promise.reject(new Error("The mock Team instance is unavailable."));
+    }
+    const lead = this.conversations.find((conversation) => conversation.id === instance.rootConversationId);
+    const member = input.agentId === lead?.agentId
+      ? lead
+      : this.conversations.find((conversation) =>
+        conversation.parentConversationId === lead?.id && conversation.agentId === input.agentId
+      );
+    if (lead === undefined || member === undefined) {
+      return Promise.reject(new Error("The mock Team member is unavailable."));
+    }
+    return Promise.resolve({ lead: { ...lead }, member: { ...member } });
   }
 
   public forkConversation(
@@ -464,6 +795,7 @@ export class MockAgentClient implements AgentClient {
       activeRunId: null,
       agentId: source.agentId,
       archivedAt: null,
+      avatarIcon: source.avatarIcon ?? null,
       createdAt: now,
       hasUnreadResult: false,
       id: this.createIdentifier(),
@@ -472,9 +804,11 @@ export class MockAgentClient implements AgentClient {
       lastRunStatus: null,
       modelSelection: source.modelSelection,
       parentConversationId: isSiblingFork ? null : source.id,
+      permissionMode: source.permissionMode ?? "ask_before_changes",
       pinOrder: null,
       projectId: source.projectId,
       teamId: source.teamId,
+      teamWorkItemId: null,
       threadKind: "agent",
       title: isSiblingFork
         ? `${source.title} (${siblingForkNumber})`
@@ -512,6 +846,17 @@ export class MockAgentClient implements AgentClient {
         if (item.kind === "tool") {
           if (runId === null || runId === undefined) {
             throw new Error("The mock fork tool Run could not be mapped.");
+          }
+          return {
+            ...structuredClone(item),
+            conversationId: conversation.id,
+            id,
+            runId,
+          };
+        }
+        if (item.kind === "model_retry") {
+          if (runId === null || runId === undefined) {
+            throw new Error("The mock fork model retry Run could not be mapped.");
           }
           return {
             ...structuredClone(item),
@@ -576,6 +921,7 @@ export class MockAgentClient implements AgentClient {
           estimateContextTokens(item.content) + CONTEXT_MESSAGE_OVERHEAD_TOKENS;
         continue;
       }
+      if (item.kind === "model_retry") continue;
 
       estimatedToolTokens +=
         estimateContextTokens(item.arguments) +
@@ -623,7 +969,7 @@ export class MockAgentClient implements AgentClient {
                 + estimateContextTokens(
                   item.kind === "tool"
                     ? `${item.arguments}\n${item.result ?? ""}`
-                    : item.content,
+                    : item.kind === "model_retry" ? "" : item.content,
                 )
                 + CONTEXT_MESSAGE_OVERHEAD_TOKENS,
               0,
@@ -648,22 +994,27 @@ export class MockAgentClient implements AgentClient {
         + estimatedConversationTokens
         + estimatedToolTokens
         + estimatedReferenceTokens,
+      estimatedSkillCatalogTokens: 0,
       estimatedSystemTokens,
+      estimatedTaskListTokens: 0,
       estimatedToolDefinitionTokens: 0,
       estimatedToolTokens,
       historyCharacters: contextTimeline.reduce(
         (total, item) =>
           total +
           (item.kind === "message"
-            ? item.content.length
-            : item.kind === "agent_message"
               ? item.content.length
-              : item.arguments.length + (item.result?.length ?? 0)),
+              : item.kind === "agent_message"
+                ? item.content.length
+                : item.kind === "model_retry"
+                  ? 0
+                  : item.arguments.length + (item.result?.length ?? 0)),
         0,
       ),
-      includedMessageCount: contextTimeline.length,
+      includedMessageCount: contextTimeline.filter((item) => item.kind !== "model_retry").length,
       omittedMessageCount: 0,
       outputReserveTokens: 8_192,
+      skillReserveTokens: 0,
     });
   }
 
@@ -671,6 +1022,19 @@ export class MockAgentClient implements AgentClient {
     return Promise.reject(
       new Error("File selection is unavailable in the browser preview."),
     );
+  }
+
+  public importConversationAttachmentBytes(
+    input: ImportConversationAttachmentBytesInput,
+  ): Promise<ConversationAttachment[]> {
+    void input;
+    return Promise.reject(
+      new Error("Conversation attachments are unavailable in the browser preview."),
+    );
+  }
+
+  public readConversationAttachmentPreview(): Promise<ConversationAttachmentPreview> {
+    return Promise.reject(new Error("Conversation attachment previews are unavailable in the mock host."));
   }
 
   public listDraftConversationAttachments(): Promise<ConversationAttachment[]> {
@@ -796,12 +1160,30 @@ export class MockAgentClient implements AgentClient {
     });
   }
 
+  private readonly undoDeletedIds = new Set<string>();
+
+  public deleteConversationUndoable(input: ConversationReferenceInput): Promise<void> {
+    const conversation = this.conversations.find((item) => item.id === input.conversationId);
+    if (conversation === undefined || conversation.activeRunId !== null || conversation.teamWorkItemId !== null) {
+      return Promise.reject(new Error("Conversation cannot be deleted."));
+    }
+    this.undoDeletedIds.add(input.conversationId);
+    return Promise.resolve();
+  }
+  public restoreDeletedConversation(input: ConversationReferenceInput): Promise<void> {
+    if (!this.undoDeletedIds.delete(input.conversationId)) return Promise.reject(new Error("Deletion cannot be undone."));
+    return Promise.resolve();
+  }
   public deleteConversation(input: ConversationReferenceInput): Promise<void> {
     const index = this.conversations.findIndex(
       (conversation) => conversation.id === input.conversationId,
     );
     if (index < 0) {
       return Promise.reject(new Error("The mock conversation is unavailable."));
+    }
+    if (this.conversations[index]?.teamWorkItemId !== null
+      && this.conversations[index]?.teamWorkItemId !== undefined) {
+      return Promise.reject(new Error("Managed Team WorkItem conversations are retained by their WorkItem lifecycle."));
     }
 
     const deletedIds = new Set([
@@ -877,8 +1259,31 @@ export class MockAgentClient implements AgentClient {
     return Promise.resolve(this.modelApiKeys.get(providerId) ?? null);
   }
 
+  public deleteModelProvider(providerId: string): Promise<ModelRuntimeStatus> {
+    const models = this.modelStatus.models.filter((model) => model.providerId !== providerId);
+    const selected = models.find((model) => model.providerId === this.modelStatus.providerId && model.modelId === this.modelStatus.modelId) ?? models[0];
+    this.modelApiKeys.delete(providerId);
+    this.modelStatus = {
+      ...this.modelStatus,
+      baseUrl: selected?.providerBaseUrl ?? null,
+      configured: selected !== undefined,
+      modelId: selected?.modelId ?? null,
+      models,
+      providerId: selected?.providerId ?? null,
+      recentSelection: this.modelStatus.recentSelection?.providerId === providerId ? null : this.modelStatus.recentSelection,
+    };
+    return this.getModelStatus();
+  }
+
+  private modelCatalog = structuredClone(DEFAULT_MODEL_CATALOG);
+
   public getModelCatalog(): Promise<ModelCatalog> {
-    return Promise.resolve(structuredClone(DEFAULT_MODEL_CATALOG));
+    return Promise.resolve(structuredClone(this.modelCatalog));
+  }
+
+  public saveModelCatalog(catalog: ModelCatalog): Promise<ModelCatalog> {
+    this.modelCatalog = modelCatalogSchema.parse(catalog);
+    return this.getModelCatalog();
   }
 
   public getModelStatus(): Promise<ModelRuntimeStatus> {
@@ -896,12 +1301,165 @@ export class MockAgentClient implements AgentClient {
     return Promise.resolve(structuredClone(this.applicationSettings));
   }
 
+  public getApplicationStorageLocation(): Promise<ApplicationStorageLocation> {
+    return Promise.resolve(structuredClone(this.applicationStorageLocation));
+  }
+
+  public chooseApplicationStorageLocation(): Promise<ApplicationStorageLocation | null> {
+    return Promise.resolve(null);
+  }
+
+  public resetApplicationStorageLocation(): Promise<ApplicationStorageLocation> {
+    this.applicationStorageLocation = {
+      ...this.applicationStorageLocation,
+      configuredPath: this.applicationStorageLocation.defaultPath,
+      restartRequired:
+        this.applicationStorageLocation.activePath !== this.applicationStorageLocation.defaultPath,
+      source: "default",
+    };
+    return this.getApplicationStorageLocation();
+  }
+
   public getIntegrationConfiguration(): Promise<IntegrationConfiguration> {
     return Promise.resolve(structuredClone(this.integrationConfiguration));
   }
 
+  private computerUseConfiguration = structuredClone(DEFAULT_COMPUTER_USE_CONFIGURATION);
+  public getComputerUseConfiguration(): Promise<ComputerUseConfiguration> { return Promise.resolve(structuredClone(this.computerUseConfiguration)); }
+  public saveComputerUseConfiguration(input: ComputerUseConfiguration, baselineApplications?: ComputerApplication[]): Promise<ComputerUseConfiguration> { this.computerUseConfiguration = computerUseConfigurationSchema.parse(baselineApplications === undefined ? input : { ...input,
+    applications: mergeComputerApplicationGrants(baselineApplications, input.applications, this.computerUseConfiguration.applications) }); return this.getComputerUseConfiguration(); }
+  public chooseComputerApplication(): Promise<ComputerApplication | null> { return Promise.resolve(null); }
+  public getComputerUseApplicationIcons(): Promise<Record<string, string | null>> { return Promise.resolve({}); }
+  public getComputerUseStatus(): Promise<ComputerUseStatus> { return Promise.resolve({ supported: false, running: false, elevated: false }); }
+  public startComputerUse(): Promise<ComputerUseStatus> { return Promise.reject(new Error("请在 Windows 桌面版使用电脑控制。")); }
+  public stopComputerUse(): Promise<void> { return Promise.resolve(); }
+  public getBrowserConfiguration(): Promise<BrowserConfiguration> {
+    return Promise.resolve(structuredClone(this.browserConfiguration));
+  }
+  public chooseBrowserDownloadDirectory(): Promise<string | null> {
+    return Promise.resolve(null);
+  }
+  public getBrowserDefaultDownloadDirectory(): Promise<string> {
+    return Promise.resolve("C:\\Users\\demo\\Downloads");
+  }
+  public getBrowserSavedPasswords(): Promise<BrowserSavedPassword[]> {
+    return Promise.resolve([]);
+  }
+  public revealBrowserPassword(input: BrowserPasswordReference): Promise<string | null> {
+    void input;
+    return Promise.resolve(null);
+  }
+
+  public clearBrowserData(): Promise<void> {
+    return Promise.resolve();
+  }
+
+  public listScheduledTasks(): Promise<ScheduledTask[]> { return Promise.resolve(structuredClone(this.scheduledTasks)); }
+  public saveScheduledTask(raw: SaveScheduledTaskInput): Promise<ScheduledTask> {
+    const input = saveScheduledTaskInputSchema.parse(raw);
+    const previous = this.scheduledTasks.find((task) => task.id === input.id);
+    const now = new Date().toISOString();
+    const task: ScheduledTask = { ...input, id: previous?.id ?? crypto.randomUUID(), createdAt: previous?.createdAt ?? now,
+      updatedAt: now, nextRunAt: input.enabled && input.recurrence.kind === "once" ? input.recurrence.at : null, executions: previous?.executions ?? [] };
+    this.scheduledTasks = previous === undefined ? [...this.scheduledTasks, task] : this.scheduledTasks.map((item) => item.id === task.id ? task : item);
+    return Promise.resolve(structuredClone(task));
+  }
+  public deleteScheduledTask(input: ScheduledTaskReference): Promise<void> {
+    this.scheduledTasks = this.scheduledTasks.filter((task) => task.id !== input.id); return Promise.resolve();
+  }
+  public runScheduledTask(): Promise<ScheduledTask> {
+    return Promise.reject(new Error("定时任务执行需要桌面环境。"));
+  }
   public getTerminalConfiguration(): Promise<TerminalConfiguration> {
     return Promise.resolve(structuredClone(this.terminalConfiguration));
+  }
+
+  public getGitReviewSnapshot(): Promise<GitReviewSnapshot> {
+    return Promise.reject(new Error("Git review is unavailable in the mock host."));
+  }
+
+  public getGitFileDiff(): Promise<never> {
+    return Promise.reject(new Error("Git review is unavailable in the mock host."));
+  }
+
+  public runGitOperation(): Promise<GitReviewSnapshot> {
+    return Promise.reject(new Error("Git review is unavailable in the mock host."));
+  }
+
+  public openTerminalSession(): Promise<TerminalSession> {
+    return Promise.reject(new Error("Terminal sessions are unavailable in the mock host."));
+  }
+
+  public readTerminalSessionOutput(): Promise<TerminalSessionOutput> {
+    return Promise.reject(new Error("Terminal sessions are unavailable in the mock host."));
+  }
+
+  public writeTerminalSession(): Promise<void> {
+    return Promise.reject(new Error("Terminal sessions are unavailable in the mock host."));
+  }
+
+  public resizeTerminalSession(): Promise<void> {
+    return Promise.reject(new Error("Terminal sessions are unavailable in the mock host."));
+  }
+
+  public closeTerminalSession(): Promise<void> {
+    return Promise.reject(new Error("Terminal sessions are unavailable in the mock host."));
+  }
+
+  public onTerminalSessionEvent(): () => void {
+    return () => undefined;
+  }
+
+  public confirmWorkspaceTerminalTabOpened(): Promise<void> {
+    return Promise.resolve();
+  }
+
+  public onWorkspaceTerminalTabOpenRequested(): () => void {
+    return () => undefined;
+  }
+
+  public onWorkspaceTerminalTabCloseRequested(): () => void {
+    return () => undefined;
+  }
+
+  public confirmWorkspaceBrowserTabOpened(): Promise<void> {
+    return Promise.resolve();
+  }
+
+  public onWorkspaceBrowserTabOpenRequested(): () => void {
+    return () => undefined;
+  }
+
+  public onWorkspaceBrowserTabCloseRequested(): () => void {
+    return () => undefined;
+  }
+
+  public openManagedBrowser(): Promise<ManagedBrowserSession> {
+    return Promise.reject(new Error("Managed browser is unavailable in the mock host."));
+  }
+
+  public navigateManagedBrowser(): Promise<void> {
+    return Promise.reject(new Error("Managed browser is unavailable in the mock host."));
+  }
+
+  public commandManagedBrowser(): Promise<void> {
+    return Promise.reject(new Error("Managed browser is unavailable in the mock host."));
+  }
+
+  public captureManagedBrowser(): Promise<ManagedBrowserSnapshot> {
+    return Promise.reject(new Error("Managed browser is unavailable in the mock host."));
+  }
+
+  public setManagedBrowserBounds(): Promise<void> {
+    return Promise.reject(new Error("Managed browser is unavailable in the mock host."));
+  }
+
+  public closeManagedBrowser(): Promise<void> {
+    return Promise.reject(new Error("Managed browser is unavailable in the mock host."));
+  }
+
+  public onManagedBrowserEvent(): () => void {
+    return () => undefined;
   }
 
   public getRuntimeInfo(): Promise<RuntimeInfo> {
@@ -930,10 +1488,72 @@ export class MockAgentClient implements AgentClient {
     return Promise.resolve([...timeline]);
   }
 
+  public listConversationTimelinePage(
+    input: ConversationTimelinePageInput,
+  ): Promise<ConversationTimelinePage> {
+    return this.listConversationTimeline(input).then((timeline) => {
+      let end = input.beforeSequence === undefined
+        ? timeline.length
+        : Math.max(0, input.beforeSequence - 1);
+      let start = Math.max(0, end - input.limit);
+      if (input.afterSequence !== undefined) {
+        start = input.afterSequence;
+        end = Math.min(timeline.length, start + input.limit);
+      } else if (input.aroundItemId !== undefined) {
+        const target = timeline.findIndex((item) => item.id === input.aroundItemId);
+        if (target < 0) throw new Error("Conversation timeline item was not found.");
+        start = Math.max(0, target - Math.floor(input.limit / 2));
+        end = Math.min(timeline.length, start + input.limit);
+      }
+      return {
+        hasMore: start > 0,
+        items: timeline.slice(start, end),
+        nextBeforeSequence: start > 0 ? start + 1 : null,
+        nextAfterSequence: end < timeline.length ? end : null,
+      };
+    });
+  }
+
+  public searchConversations(input: ConversationSearchInput): Promise<ConversationSearchResult[]> {
+    const query = input.query.toLocaleLowerCase();
+    const results: ConversationSearchResult[] = [];
+    for (const conversation of this.conversations) {
+      for (const item of this.timelines.get(conversation.id) ?? []) {
+        if (item.kind !== "message" && item.kind !== "agent_message") continue;
+        if (!item.content.toLocaleLowerCase().includes(query)) continue;
+        results.push({
+          content: item.content.slice(0, 320),
+          conversationId: conversation.id,
+          conversationTitle: conversation.title,
+          createdAt: item.createdAt,
+          itemId: item.id,
+          parentConversationId: conversation.parentConversationId,
+          projectId: conversation.projectId,
+          role: item.kind === "agent_message" ? "agent" : item.role,
+          sequence: results.length + 1,
+          threadKind: conversation.threadKind,
+        });
+        if (results.length >= input.limit) return Promise.resolve(results);
+      }
+    }
+    return Promise.resolve(results);
+  }
+
   public listConversationPendingMessages(
     input: ConversationReferenceInput,
   ): Promise<ConversationPendingMessage[]> {
     return Promise.resolve(structuredClone(this.pendingMessages.get(input.conversationId) ?? []));
+  }
+
+  public getConversationPendingQueuePaused(input: ConversationReferenceInput): Promise<boolean> {
+    return Promise.resolve(this.pendingQueuePaused.get(input.conversationId) ?? false);
+  }
+
+  public setConversationPendingQueuePaused(input: ConversationReferenceInput & { paused: boolean }): Promise<boolean> {
+    this.pendingQueuePaused.set(input.conversationId, input.paused);
+    this.emitConversationRunEvent({ type: "pending_messages.updated", conversationId: input.conversationId,
+      pendingMessages: structuredClone(this.pendingMessages.get(input.conversationId) ?? []), queuePaused: input.paused });
+    return Promise.resolve(input.paused);
   }
 
   public markConversationResultViewed(
@@ -946,13 +1566,30 @@ export class MockAgentClient implements AgentClient {
       return Promise.reject(new Error("The mock conversation is unavailable."));
     }
     conversation.hasUnreadResult = false;
+    this.emitConversationRunEvent({ conversation: { ...conversation }, type: "conversation.updated" });
     return Promise.resolve({ ...conversation });
   }
+
+  public listUserQuestions(input: ConversationReferenceInput): Promise<UserQuestion[]> { void input; return Promise.resolve([]); }
+  public answerUserQuestion(input: AnswerUserQuestionInput): Promise<UserQuestion> { return Promise.reject(new Error(`演示环境中没有提问 ${input.questionId}。`)); }
+  public markUserQuestionViewed(input: { questionId: string }): Promise<UserQuestion> { return Promise.reject(new Error(`演示环境中没有提问 ${input.questionId}。`)); }
+  public listBackgroundCommands(input: ConversationReferenceInput): Promise<BackgroundCommand[]> { void input; return Promise.resolve([]); }
+  public readBackgroundCommand(input: ReadBackgroundCommandInput): Promise<BackgroundCommandOutput> { return Promise.reject(new Error(`演示环境中没有后台程序 ${input.commandId}。`)); }
+  public stopBackgroundCommand(input: StopBackgroundCommandInput): Promise<BackgroundCommand> { return Promise.reject(new Error(`演示环境中没有后台程序 ${input.commandId}。`)); }
 
   public listConversations(): Promise<ConversationSummary[]> {
     return Promise.resolve(
       this.conversations
-        .filter((conversation) => !this.conversationParents.has(conversation.id))
+        .filter((conversation) => !this.conversationParents.has(conversation.id) && !this.undoDeletedIds.has(conversation.id))
+        .map((conversation) => ({ ...conversation }))
+        .sort((left, right) => Number(right.isPinned) - Number(left.isPinned)),
+    );
+  }
+
+  public listConversationHierarchy(): Promise<ConversationSummary[]> {
+    return Promise.resolve(
+      this.conversations
+        .filter((conversation) => !this.undoDeletedIds.has(conversation.id))
         .map((conversation) => ({ ...conversation }))
         .sort((left, right) => Number(right.isPinned) - Number(left.isPinned)),
     );
@@ -1038,6 +1675,410 @@ export class MockAgentClient implements AgentClient {
 
   public listProjects(): Promise<ProjectSummary[]> {
     return Promise.resolve(this.project === null ? [] : [{ ...this.project }]);
+  }
+
+  private directoryTasks: TaskContext[] = [];
+  private directorySources = new Map<string, TaskContextDetail["sources"]>();
+  private groupMessages: TeamChatMessage[] = [];
+  private readonly pausedGroupIds = new Set<string>();
+  private groupRead = new Map<string, number>();
+  private readonly taskCompletionPolicies = new Map<string, boolean>();
+  public getTaskCompletionPolicy(input: TaskContextScope): Promise<TaskCompletionPolicy> {
+    return Promise.resolve({ allowAgentCompletion: this.taskCompletionPolicies.get(input.teamInstanceId ?? input.conversationId!) ?? false });
+  }
+  public setTaskCompletionPolicy(input: SetTaskCompletionPolicyInput): Promise<TaskCompletionPolicy> {
+    this.taskCompletionPolicies.set(input.teamInstanceId ?? input.conversationId!, input.allowAgentCompletion);
+    return Promise.resolve({ allowAgentCompletion: input.allowAgentCompletion });
+  }
+  public resolveChatReferences(input: ResolveChatReferencesInput): Promise<ChatReference[]> {
+    const result: ChatReference[] = [];
+    for (const id of new Set(input.ids)) {
+      const task = this.directoryTasks.find(item => item.id === id && (input.teamInstanceId !== undefined
+        ? item.teamInstanceId === input.teamInstanceId : item.ownerConversationId === input.conversationId
+          || this.directorySources.get(item.id)?.some(source => source.containerId === input.conversationId)));
+      if (task) { result.push({ kind: "task", id, title: task.title, ownerConversationId: task.ownerConversationId, teamInstanceId: task.teamInstanceId }); continue; }
+      const group = this.groupMessages.find(item => item.id === id && item.teamInstanceId === input.teamInstanceId);
+      if (group) { result.push({ kind: "message", id, sourceKind: "group", containerId: group.teamInstanceId, senderName: group.senderName, senderConversationId: group.senderConversationId, content: group.content.slice(0, 2000), createdAt: group.createdAt }); continue; }
+      const message = input.conversationId === undefined ? undefined : this.timelines.get(input.conversationId)?.find(item => item.kind === "message" && item.id === id);
+      if (message?.kind === "message") result.push({ kind: "message", id, sourceKind: "conversation", containerId: input.conversationId!, senderName: message.role === "user" ? "你" : "Agent", senderConversationId: message.role === "user" ? null : input.conversationId!, content: message.content.slice(0, 2000), createdAt: message.createdAt });
+    }
+    return Promise.resolve(result);
+  }
+  public listTaskContexts(raw: ListTaskContextsInput): Promise<TaskContextPage> {
+    const input = listTaskContextsInputSchema.parse(raw);
+    let items = this.directoryTasks.filter(task => task.mergedIntoId === null
+      && (input.conversationId === undefined || task.ownerConversationId === input.conversationId || this.directorySources.get(task.id)?.some(source => source.containerId === input.conversationId))
+      && (input.teamInstanceId === undefined || task.teamInstanceId === input.teamInstanceId)
+      && (input.projectId === undefined || task.projectId === input.projectId)
+      && (input.status === undefined || task.status === input.status)
+      && (!input.query || task.title.includes(input.query) || task.goal.includes(input.query) || this.directorySources.get(task.id)?.some(source => source.role === "user" && source.content?.includes(input.query!)))).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || b.id.localeCompare(a.id));
+    const total = items.length;
+    if (input.beforeId) items = items.slice(items.findIndex(task => task.id === input.beforeId) + 1);
+    return Promise.resolve({ total, items: structuredClone(items.slice(0, input.limit).map(task => ({ ...task, userMessageCount: this.directorySources.get(task.id)?.filter(source => source.role === "user").length ?? 0 }))), unclassified: [], nextBeforeId: items.length > input.limit ? items[input.limit - 1]!.id : null });
+  }
+  public getTaskContext(input: { id: string; beforeSourceSequence?: number; limit?: number }): Promise<TaskContextDetail> {
+    const task = this.directoryTasks.find(task => task.id === input.id);
+    if (!task) return Promise.reject(new Error("任务不存在"));
+    const sources = [...(this.directorySources.get(task.id) ?? [])].reverse().filter(source => input.beforeSourceSequence === undefined || source.sequence < input.beforeSourceSequence);
+    const limit = input.limit ?? 20;
+    return Promise.resolve(structuredClone({ task, sources: sources.slice(0, limit), nextBeforeSourceSequence: sources.length > limit ? sources[limit - 1]!.sequence : null }));
+  }
+  public async updateTaskContext(raw: UpdateTaskContextInput): Promise<TaskContext> {
+    const input = updateTaskContextInputSchema.parse(raw);
+    const previous = this.directoryTasks.find(task => task.id === input.id);
+    if (input.id && (!previous || input.expectedRevision !== previous.revision)) throw new Error("任务已更新，请重新读取");
+    const conversation = this.conversations.find(item => item.id === input.conversationId);
+    if (!conversation) throw new Error("对话不存在");
+    const instance = this.teamInstances.find(item => item.rootConversationId === conversation.id || item.rootConversationId === conversation.parentConversationId);
+    const now = new Date().toISOString();
+    const { requestId: _requestId, expectedRevision: _expectedRevision, source: _source, conversationId: _conversationId, ...fields } = input;
+    void _requestId; void _expectedRevision; void _source; void _conversationId;
+    const task = taskContextSchema.parse({ ...fields, id: previous?.id ?? crypto.randomUUID(),
+      ownerConversationId: previous?.ownerConversationId ?? input.conversationId, projectId: conversation.projectId,
+      teamInstanceId: instance?.id ?? null, workItemId: null, revision: (previous?.revision ?? 0) + 1,
+      createdAt: previous?.createdAt ?? now, updatedAt: now, mergedIntoId: null, completionRequested: false, completedBy: input.status === "completed" ? "user" : null,
+    });
+    this.directoryTasks = [...this.directoryTasks.filter(item => item.id !== task.id), task];
+    if (input.source) await this.linkTaskContext({ id: task.id, source: input.source });
+    this.emitConversationRunEvent({ type: "collaboration.changed", conversationId: input.conversationId,
+      ...(task.teamInstanceId === null ? {} : { teamInstanceId: task.teamInstanceId }) });
+    return structuredClone(task);
+  }
+  public linkTaskContext(input: LinkTaskContextInput): Promise<void> {
+    const sources = (this.directorySources.get(input.id) ?? []).filter(source => !(source.containerId === input.source.containerId && source.messageId === input.source.messageId));
+    const original = input.source.kind === "group" ? this.groupMessages.find(item => item.id === input.source.messageId)
+      : this.timelines.get(input.source.containerId)?.find(item => item.id === input.source.messageId && item.kind === "message");
+    if (!input.remove) sources.push({ content: original && "content" in original ? original.content : null,
+      role: original && "role" in original ? original.role : original && "senderConversationId" in original ? original.senderConversationId === null ? "user" : "assistant" : null,
+      createdAt: original?.createdAt ?? null, sequence: Math.max(0, ...sources.map(source => source.sequence)) + 1, ...input.source, runId: input.source.runId ?? null, purpose: input.source.purpose ?? "progress", available: true, title: this.conversations.find(item => item.id === input.source.containerId)?.title ?? "团队群聊" });
+    this.directorySources.set(input.id, sources); return Promise.resolve();
+  }
+  public async mergeTaskContexts(input: MergeTaskContextsInput): Promise<TaskContext> {
+    const source = (await this.getTaskContext({ id: input.id })).task;
+    const target = (await this.getTaskContext({ id: input.intoId })).task;
+    if (source.revision !== input.expectedRevision || source.id === target.id) throw new Error("任务版本或归并目标不正确");
+    source.mergedIntoId = target.id; this.directoryTasks = this.directoryTasks.map(task => task.id === source.id ? source : task);
+    this.directorySources.set(target.id, [...(this.directorySources.get(target.id) ?? []), ...(this.directorySources.get(source.id) ?? [])]);
+    return target;
+  }
+  private readonly coordinationConversations = new Map<string, string>();
+  public async getTeamChatCoordinationConversation(input: { teamInstanceId: string; agentId?: string }): Promise<ConversationSummary> {
+    const instance = this.teamInstances.find(candidate => candidate.id === input.teamInstanceId);
+    if (instance === undefined || instance.isArchived) throw new Error("团队不可用");
+    const owner = this.applicationSettings.agentDirectory.agents.find(agent => agent.id === (input.agentId ?? "default-agent"));
+    if (owner === undefined) throw new Error("Agent 不可用");
+    const key = instance.id;
+    const existing = this.conversations.find(conversation => conversation.id === this.coordinationConversations.get(key));
+    if (existing !== undefined) { existing.agentId = owner.id; existing.title = `${owner.name} · 后台协调`; return structuredClone(existing); }
+    const created = await this.createConversation({ projectId: instance.projectId,
+      agent: { id: owner.id, name: owner.name, role: owner.role, instructions: owner.instructions, isDefault: owner.isDefault } });
+    const conversation = this.conversations.find(candidate => candidate.id === created.id)!;
+    conversation.title = `${owner.name} · 后台协调`; conversation.coordinationTeamInstanceId = instance.id;
+    this.coordinationConversations.set(key, conversation.id);
+    return structuredClone(conversation);
+  }
+  public getTeamChatMembers(input: { teamInstanceId: string }): Promise<TeamChatMember[]> {
+    const instance = this.teamInstances.find(item => item.id === input.teamInstanceId);
+    return Promise.resolve(this.conversations.filter(item => instance && (item.id === instance.rootConversationId || item.parentConversationId === instance.rootConversationId)).map(item => ({
+      conversationId: item.id, name: item.title, role: item.id === instance?.rootConversationId ? "负责人" : "成员", isLead: item.id === instance?.rootConversationId, isArchived: item.isArchived,
+    })));
+  }
+  public readTeamChat(input: ReadTeamChatInput): Promise<TeamChatPage> {
+    const roomMessages = this.groupMessages.filter(message => message.teamInstanceId === input.teamInstanceId);
+    const all = roomMessages.filter(message => (input.beforeSequence === undefined || message.sequence < input.beforeSequence)
+      && (input.afterSequence === undefined || message.sequence > input.afterSequence)
+      && (input.query === undefined || message.content.toLocaleLowerCase().includes(input.query.toLocaleLowerCase()))
+      && (input.senderConversationId === undefined || message.senderConversationId === input.senderConversationId)
+      && (input.createdAfter === undefined || message.createdAt >= input.createdAfter)
+      && (input.createdBefore === undefined || message.createdAt <= input.createdBefore));
+    const messages = all.slice(-(input.limit ?? 30));
+    return Promise.resolve(structuredClone({ messages, nextBeforeSequence: all.length > messages.length ? messages[0]!.sequence : null, userReadSequence: this.groupRead.get(input.teamInstanceId) ?? 0, memberReadSequence: 0,
+      coordinator: this.groupMessages.findLast(message => message.teamInstanceId === input.teamInstanceId && message.coordinator != null)?.coordinator ?? null,
+      activity: { status: this.pausedGroupIds.has(input.teamInstanceId) ? "paused" : roomMessages.some(message => message.coordinator?.status === "pending") ? "coordinating"
+        : roomMessages.some(message => message.deliveries.some(delivery => ["pending", "consumed", "delivered"].includes(delivery.status))) ? "working" : "idle",
+        activeMemberCount: 0, pendingDeliveryCount: roomMessages.flatMap(message => message.deliveries).filter(delivery => delivery.status === "pending").length } }));
+  }
+  public async postTeamChat(raw: PostTeamChatInput): Promise<TeamChatMessage> {
+    const input = postTeamChatInputSchema.parse(raw); const members = await this.getTeamChatMembers(input);
+    this.pausedGroupIds.delete(input.teamInstanceId);
+    const id = crypto.randomUUID();
+    let recipients = input.intent === "notify" ? [] : input.allMembers ? members.filter(member => !member.isArchived).map(member => member.conversationId)
+      : input.recipientConversationIds.length ? input.recipientConversationIds : members.filter(member => member.isLead).map(member => member.conversationId);
+    const quoted = input.replyToId === null ? undefined : this.groupMessages.find(message => message.id === input.replyToId);
+    if (quoted !== undefined && quoted.teamInstanceId !== input.teamInstanceId) throw new Error("Reply belongs to another room.");
+    if (input.intent === "request" && !input.allMembers && quoted?.senderConversationId != null) recipients = [...new Set([quoted.senderConversationId, ...input.recipientConversationIds])];
+    const message: TeamChatMessage = { id, teamInstanceId: input.teamInstanceId,
+      sequence: this.groupMessages.filter(item => item.teamInstanceId === input.teamInstanceId).length + 1,
+      content: input.content, senderConversationId: null, senderName: "你", intent: input.intent,
+      recipientConversationIds: recipients, allMembers: input.allMembers,
+      ...(input.fileReferences === undefined ? {} : { fileReferences: input.fileReferences.map(file => {
+        if (file.sourceMessageId === undefined) throw new Error("A user must reference an already-published member file.");
+        const source = this.groupMessages.find(message => message.id === file.sourceMessageId);
+        const original = source?.fileReferences?.find(item => item.path === file.path);
+        if (source?.teamInstanceId !== input.teamInstanceId || original === undefined) throw new Error("Invalid public file source.");
+        return { ...file, sourceMessageId: file.sourceMessageId, conversationId: original.conversationId };
+      }) }), taskContextId: input.taskContextId, replyToId: input.replyToId,
+      createdAt: new Date().toISOString(), sourceRunId: null, rootMessageId: quoted?.rootMessageId ?? id, depth: 0,
+      supersedesId: input.supersedesId, coordinator: input.coordinator === undefined ? null : { ...input.coordinator, modelSelection: input.coordinator.modelSelection ?? null, status: "completed", error: null },
+      deliveries: recipients.map(conversationId => ({ id: crypto.randomUUID(), conversationId, status: "pending", runId: null, error: null })),
+    };
+    this.groupMessages.push(message);
+    const root = members.find(member => member.isLead);
+    if (root) this.emitConversationRunEvent({ type: "collaboration.changed", conversationId: root.conversationId, teamInstanceId: input.teamInstanceId });
+    return structuredClone(message);
+  }
+  public markTeamChatRead(input: MarkTeamChatReadInput): Promise<void> {
+    const before = this.groupRead.get(input.teamInstanceId) ?? -1;
+    if (input.throughSequence > before) {
+      this.groupRead.set(input.teamInstanceId, input.throughSequence);
+      const instance = this.teamInstances.find(item => item.id === input.teamInstanceId);
+      if (input.throughSequence > 0 && instance?.rootConversationId != null) this.emitConversationRunEvent({ type: "collaboration.changed",
+        conversationId: instance.rootConversationId, teamInstanceId: instance.id, reason: "read" });
+    }
+    return Promise.resolve();
+  }
+  public resumeTeamChatDelivery(input: { id: string }): Promise<void> {
+    for (const message of this.groupMessages) for (const delivery of message.deliveries) if (delivery.id === input.id && delivery.status === "pending") delivery.error = null;
+    return Promise.resolve();
+  }
+  public cancelTeamChatDelivery(input: { id: string }): Promise<void> {
+    for (const message of this.groupMessages) for (const delivery of message.deliveries) if (delivery.id === input.id && delivery.status === "pending") delivery.status = "cancelled";
+    return Promise.resolve();
+  }
+  public async pauseTeamChat(input: { teamInstanceId: string }): Promise<void> {
+    const members = await this.getTeamChatMembers(input);
+    this.pausedGroupIds.add(input.teamInstanceId);
+    for (const message of this.groupMessages.filter(message => message.teamInstanceId === input.teamInstanceId)) {
+      if (message.coordinator?.status === "pending") message.coordinator = { ...message.coordinator, status: "paused", error: null };
+      for (const delivery of message.deliveries) if (["pending", "consumed", "delivered"].includes(delivery.status)) delivery.status = "cancelled";
+    }
+    const root = members.find(member => member.isLead);
+    if (root) this.emitConversationRunEvent({ type: "collaboration.changed", conversationId: root.conversationId, teamInstanceId: input.teamInstanceId });
+  }
+
+  public listTeamWorkItems(input: ListTeamWorkItemsInput): Promise<TeamWorkItemView[]> {
+    return Promise.resolve(structuredClone(this.teamWorkItems.filter((item) =>
+      (input.teamId === undefined || item.teamId === input.teamId)
+      && (input.projectId === undefined || item.projectId === input.projectId))));
+  }
+
+  public getTeamWorkItemExecution(workItemId: string): Promise<TeamWorkItemExecutionView> {
+    if (!this.teamWorkItems.some((item) => item.id === workItemId)) {
+      return Promise.reject(new Error("The mock Team WorkItem is unavailable."));
+    }
+    return Promise.resolve({ agents: [], workItemId });
+  }
+
+  public getTeamCollaborationProjection(workItemId: string): Promise<TeamCollaborationProjection> {
+    if (!this.teamWorkItems.some((item) => item.id === workItemId)) {
+      return Promise.reject(new Error("The mock Team WorkItem is unavailable."));
+    }
+    return Promise.resolve({
+      edges: [],
+      isLive: false,
+      nodes: [],
+      plan: null,
+      summary: {
+        adHocRouteCount: 0,
+        lastActivityAt: null,
+        messageCount: 0,
+        observedRouteCount: 0,
+        participantCount: 0,
+        plannedRouteCount: 0,
+      },
+      workItemId,
+    });
+  }
+
+  public submitTeamWorkItem(input: SubmitTeamWorkItemInput): Promise<TeamWorkItemView> {
+    const now = new Date().toISOString();
+    const item: TeamWorkItemView = {
+      acceptanceCriteria: input.acceptanceCriteria ?? [],
+      acceptedCriteria: [],
+      activeRunId: null,
+      blockedReason: null,
+      completedAt: null,
+      createdAt: now,
+      events: [{
+        createdAt: now,
+        detail: "需求已进入浏览器模拟收件箱。",
+        id: this.createIdentifier(),
+        sequence: this.teamWorkItems.length + 1,
+        type: "received",
+      }],
+      executionConversationId: null,
+      executionScope: input.executionScope ?? "project",
+      id: this.createIdentifier(),
+      modelSelection: input.modelSelection ?? {
+        modelId: "mock-model",
+        providerId: "00000000-0000-4000-8000-000000000001",
+        reasoning: null,
+      },
+      permissionMode: input.permissionMode ?? "full_access",
+      priority: input.priority ?? "normal",
+      projectId: input.projectId,
+      requirement: input.requirement,
+      resultSummary: null,
+      revision: 1,
+      sourceConversationId: input.sourceConversationId ?? null,
+      status: "queued",
+      tasks: [],
+      teamId: input.teamId,
+      title: input.title,
+      updatedAt: now,
+      ...(input.teamInstanceId === undefined ? {} : {
+        teamInstanceId: input.teamInstanceId,
+        instanceName: this.teamInstances.find(instance => instance.id === input.teamInstanceId)?.name ?? "团队",
+      }),
+    };
+    this.teamWorkItems.push(item);
+    return Promise.resolve(structuredClone(item));
+  }
+
+  public updateTeamWorkItem(input: UpdateTeamWorkItemInput): Promise<TeamWorkItemView> {
+    const item = this.teamWorkItems.find((candidate) => candidate.id === input.workItemId);
+    if (item === undefined) return Promise.reject(new Error("Mock Team WorkItem was not found."));
+    item.title = input.title;
+    item.requirement = input.requirement;
+    item.updatedAt = new Date().toISOString();
+    const nextTeamEventSequence = this.teamWorkItems
+      .filter((candidate) => candidate.teamId === item.teamId)
+      .flatMap((candidate) => candidate.events)
+      .reduce((sequence, event) => Math.max(sequence, event.sequence), 0) + 1;
+    item.events.push({
+      createdAt: item.updatedAt,
+      detail: "浏览器模拟用户在调度前更新了需求。",
+      id: this.createIdentifier(),
+      sequence: nextTeamEventSequence,
+      type: "updated",
+    });
+    return Promise.resolve(structuredClone(item));
+  }
+
+  public updateTeamWorkItemPermission(
+    input: UpdateTeamWorkItemPermissionInput,
+  ): Promise<TeamWorkItemView> {
+    const item = this.teamWorkItems.find((candidate) => candidate.id === input.workItemId);
+    if (
+      item === undefined
+      || item.status === "completed"
+      || item.status === "cancelled"
+      || item.status === "failed"
+    ) {
+      return Promise.reject(new Error("The mock Team WorkItem permission cannot be changed."));
+    }
+    if (item.permissionMode === input.permissionMode) return Promise.resolve(structuredClone(item));
+    item.permissionMode = input.permissionMode;
+    item.updatedAt = new Date().toISOString();
+    const nextTeamEventSequence = this.teamWorkItems
+      .filter((candidate) => candidate.teamId === item.teamId)
+      .flatMap((candidate) => candidate.events)
+      .reduce((sequence, event) => Math.max(sequence, event.sequence), 0) + 1;
+    item.events.push({
+      createdAt: item.updatedAt,
+      detail: "浏览器模拟用户更新了团队执行权限。",
+      id: this.createIdentifier(),
+      sequence: nextTeamEventSequence,
+      type: "updated",
+    });
+    return Promise.resolve(structuredClone(item));
+  }
+
+  public publishTeamWorkItem(input: PublishTeamWorkItemInput): Promise<TeamWorkItemView> {
+    const item = this.teamWorkItems.find((candidate) => candidate.id === input.workItemId);
+    if (
+      item === undefined
+      || (item.status !== "queued"
+        && item.status !== "blocked"
+        && item.status !== "failed"
+        && item.status !== "cancelled")
+    ) {
+      return Promise.reject(new Error("The mock Team WorkItem cannot be published."));
+    }
+    if (item.status === "queued") return Promise.resolve(structuredClone(item));
+    item.status = "queued";
+    item.executionConversationId = null;
+    item.activeRunId = null;
+    item.resultSummary = null;
+    item.acceptedCriteria = [];
+    item.blockedReason = null;
+    item.completedAt = null;
+    item.revision += 1;
+    item.updatedAt = new Date().toISOString();
+    const nextTeamEventSequence = this.teamWorkItems
+      .filter((candidate) => candidate.teamId === item.teamId)
+      .flatMap((candidate) => candidate.events)
+      .reduce((sequence, event) => Math.max(sequence, event.sequence), 0) + 1;
+    item.events.push({
+      createdAt: item.updatedAt,
+      detail: "浏览器模拟用户已重新发布任务。",
+      id: this.createIdentifier(),
+      sequence: nextTeamEventSequence,
+      type: "scheduled",
+    });
+    return Promise.resolve(structuredClone(item));
+  }
+
+  public requestTeamWorkItemRework(
+    input: RequestTeamWorkItemReworkInput,
+  ): Promise<TeamWorkItemView> {
+    const item = this.teamWorkItems.find((candidate) => candidate.id === input.workItemId);
+    if (
+      item === undefined
+      || (item.status !== "waiting_user" && item.status !== "completed")
+    ) {
+      return Promise.reject(new Error("The mock Team WorkItem cannot be reworked."));
+    }
+    item.status = "running";
+    item.revision += 1;
+    item.acceptedCriteria = [];
+    item.completedAt = null;
+    item.updatedAt = new Date().toISOString();
+    return Promise.resolve(structuredClone(item));
+  }
+
+  public deleteTeamWorkItem(input: DeleteTeamWorkItemInput): Promise<void> {
+    const index = this.teamWorkItems.findIndex((candidate) => candidate.id === input.workItemId);
+    if (index < 0) return Promise.reject(new Error("Mock Team WorkItem was not found."));
+    this.teamWorkItems.splice(index, 1);
+    return Promise.resolve();
+  }
+
+  public addTeamWorkItemComment(
+    input: AddTeamWorkItemCommentInput,
+  ): Promise<TeamWorkItemView> {
+    const item = this.teamWorkItems.find((candidate) => candidate.id === input.workItemId);
+    if (item === undefined) {
+      return Promise.reject(new Error("The mock Team WorkItem is unavailable."));
+    }
+    item.updatedAt = new Date().toISOString();
+    const nextTeamEventSequence = this.teamWorkItems
+      .filter((candidate) => candidate.teamId === item.teamId)
+      .flatMap((candidate) => candidate.events)
+      .reduce((sequence, event) => Math.max(sequence, event.sequence), 0) + 1;
+    item.events.push({
+      createdAt: item.updatedAt,
+      detail: input.content.trim(),
+      id: this.createIdentifier(),
+      sequence: nextTeamEventSequence,
+      type: "commented",
+    });
+    return Promise.resolve(structuredClone(item));
+  }
+
+  public acceptTeamWorkItem(input: AcceptTeamWorkItemInput): Promise<TeamWorkItemView> {
+    const item = this.teamWorkItems.find((candidate) => candidate.id === input.workItemId);
+    if (item === undefined || item.status !== "waiting_user") {
+      return Promise.reject(new Error("The mock Team WorkItem is not waiting for acceptance."));
+    }
+    if (item.acceptanceCriteria.some((criterion) => !input.acceptedCriteria.includes(criterion))) {
+      return Promise.reject(new Error("Every acceptance criterion must be explicitly confirmed."));
+    }
+    item.acceptedCriteria = [...input.acceptedCriteria];
+    item.status = "completed";
+    item.completedAt = new Date().toISOString();
+    item.updatedAt = item.completedAt;
+    return Promise.resolve(structuredClone(item));
   }
 
   public readProjectFile(input: ReadProjectFileInput): Promise<ProjectFile> {
@@ -1148,6 +2189,9 @@ export class MockAgentClient implements AgentClient {
     if (conversation === undefined) {
       return Promise.reject(new Error("The mock conversation is unavailable."));
     }
+    if (conversation.teamWorkItemId !== null && conversation.teamWorkItemId !== undefined) {
+      return Promise.reject(new Error("Managed Team WorkItem conversations retain their WorkItem project binding."));
+    }
     if (input.projectId !== null && this.project?.id !== input.projectId) {
       return Promise.reject(new Error("The mock project is unavailable."));
     }
@@ -1189,10 +2233,54 @@ export class MockAgentClient implements AgentClient {
         return Promise.reject(new Error("The selected reasoning option is not configured."));
       }
     }
+    const workItem = conversation.teamWorkItemId === null || conversation.teamWorkItemId === undefined
+      ? undefined
+      : this.teamWorkItems.find((candidate) => candidate.id === conversation.teamWorkItemId);
+    if (conversation.teamWorkItemId !== null && conversation.teamWorkItemId !== undefined) {
+      if (
+        workItem === undefined
+        || workItem.status === "completed"
+        || workItem.status === "cancelled"
+        || workItem.status === "failed"
+      ) {
+        return Promise.reject(new Error("The mock Team WorkItem model cannot be changed."));
+      }
+      workItem.modelSelection = structuredClone(input.modelSelection);
+      workItem.updatedAt = new Date().toISOString();
+      const nextTeamEventSequence = this.teamWorkItems
+        .filter((candidate) => candidate.teamId === workItem.teamId)
+        .flatMap((candidate) => candidate.events)
+        .reduce((sequence, event) => Math.max(sequence, event.sequence), 0) + 1;
+      workItem.events.push({
+        createdAt: workItem.updatedAt,
+        detail: "浏览器模拟用户更新了团队执行模型和思考程度。",
+        id: this.createIdentifier(),
+        sequence: nextTeamEventSequence,
+        type: "updated",
+      });
+    }
     conversation.modelSelection = structuredClone(input.modelSelection);
-    if (conversation.threadKind !== "subagent") {
+    if (
+      conversation.threadKind !== "subagent"
+      && (conversation.teamWorkItemId === null || conversation.teamWorkItemId === undefined)
+    ) {
       this.modelStatus.recentSelection = structuredClone(input.modelSelection);
     }
+    conversation.updatedAt = new Date().toISOString();
+    return Promise.resolve({ ...conversation });
+  }
+
+  public setConversationPermissionMode(
+    input: SetConversationPermissionModeInput,
+  ): Promise<ConversationSummary> {
+    const conversation = this.conversations.find(
+      (candidate) => candidate.id === input.conversationId,
+    );
+    if (conversation === undefined) {
+      return Promise.reject(new Error("Conversation was not found."));
+    }
+    conversation.permissionMode = input.permissionMode;
+    conversation.coordinationMode = input.permissionMode !== "full_access" ? "direct" : input.coordinationMode ?? conversation.coordinationMode ?? "direct";
     conversation.updatedAt = new Date().toISOString();
     return Promise.resolve({ ...conversation });
   }
@@ -1245,6 +2333,10 @@ export class MockAgentClient implements AgentClient {
     return this.listProjects();
   }
 
+  public openProjectDirectory(): Promise<void> {
+    return Promise.reject(new Error("请在桌面应用中打开项目目录"));
+  }
+
   public removeProject(input: ProjectReferenceInput): Promise<void> {
     if (this.project?.id !== input.projectId) {
       return Promise.reject(new Error("The mock project is unavailable."));
@@ -1264,7 +2356,15 @@ export class MockAgentClient implements AgentClient {
     const conversation = this.conversations.find(
       (candidate) => candidate.id === input.conversationId,
     );
-    if (conversation === undefined || (input.archived && conversation.activeRunId !== null)) {
+    if (
+      conversation === undefined
+      || (input.archived && conversation.activeRunId !== null)
+      || (
+        input.archived
+        && conversation.teamWorkItemId !== null
+        && conversation.teamWorkItemId !== undefined
+      )
+    ) {
       return Promise.reject(new Error("The mock conversation cannot be archived."));
     }
     if (conversation.isArchived === input.archived) {
@@ -1313,11 +2413,33 @@ export class MockAgentClient implements AgentClient {
     return Promise.resolve({ ...this.project });
   }
 
+  public setProjectTeamsInNavigator(
+    input: SetProjectTeamsInNavigatorInput,
+  ): Promise<ProjectSummary> {
+    if (this.project?.id !== input.projectId) {
+      return Promise.reject(new Error("The mock project is unavailable."));
+    }
+    this.project = {
+      ...this.project,
+      showTeamsInNavigator: input.showTeamsInNavigator,
+    };
+    return Promise.resolve({ ...this.project });
+  }
+
   public readSkillDocument(input: SkillDocumentReferenceInput): Promise<SkillDocument> {
     const document = this.skillDocuments.get(input.entryPath);
     return document === undefined
       ? Promise.reject(new Error("The mock Skill document is unavailable."))
       : Promise.resolve(structuredClone(document));
+  }
+
+  public deleteSkillDocument(input: SkillDocumentReferenceInput): Promise<void> {
+    this.skillDocuments.delete(input.entryPath);
+    this.integrationConfiguration = {
+      ...this.integrationConfiguration,
+      skills: this.integrationConfiguration.skills.filter((skill) => skill.entryPath !== input.entryPath),
+    };
+    return Promise.resolve();
   }
 
   public sendConversationMessage(
@@ -1355,7 +2477,10 @@ export class MockAgentClient implements AgentClient {
         return Promise.reject(new Error("This conversation is already bound to another Agent."));
       }
       conversation.agentId = input.agent.id;
+      conversation.avatarIcon = input.agent.avatarIcon ?? null;
     }
+    conversation.permissionMode = input.permissionMode ?? conversation.permissionMode
+      ?? "ask_before_changes";
 
     const now = new Date().toISOString();
     const runId = this.createIdentifier();
@@ -1375,6 +2500,7 @@ export class MockAgentClient implements AgentClient {
     if (
       !this.conversationParents.has(conversation.id) &&
       !this.inheritedTimelines.has(conversation.id) &&
+      /^新会话(?: \d+)?$/u.test(conversation.title) &&
       !timeline.some(
         (item) => item.kind === "message" && item.role === "user" && item.id !== userMessage.id,
       )
@@ -1390,6 +2516,7 @@ export class MockAgentClient implements AgentClient {
       modelId: input.modelId ?? "mock-agent",
       timeout: null,
     };
+    const assistantMessageId = this.createIdentifier();
     this.activeRuns.set(runId, activeRun);
     queueMicrotask(() => {
       if (!this.activeRuns.has(runId)) {
@@ -1414,6 +2541,8 @@ export class MockAgentClient implements AgentClient {
           conversationId: conversation.id,
           delta: "正在检查浏览器预览配置",
           kind: "summary",
+          messageId: assistantMessageId,
+          modelId: activeRun.modelId,
           reset: true,
           runId,
           type: "assistant.reasoning_delta",
@@ -1429,7 +2558,7 @@ export class MockAgentClient implements AgentClient {
           content: response,
           conversationId: conversation.id,
           createdAt: new Date().toISOString(),
-          id: this.createIdentifier(),
+          id: assistantMessageId,
           kind: "message",
           modelId: activeRun.modelId,
           role: "assistant",
@@ -1462,7 +2591,7 @@ export class MockAgentClient implements AgentClient {
           type: "run.finished",
         });
         const nextPending = this.pendingMessages.get(conversation.id)?.[0];
-        if (nextPending !== undefined) {
+        if (nextPending !== undefined && !this.pendingQueuePaused.get(conversation.id)) {
           const remaining = (this.pendingMessages.get(conversation.id) ?? []).slice(1);
           this.pendingMessages.set(conversation.id, remaining);
           this.emitConversationRunEvent({
@@ -1502,6 +2631,7 @@ export class MockAgentClient implements AgentClient {
     if (latestUser.runId !== null && this.activeRuns.has(latestUser.runId)) {
       await this.cancelRun({ runId: latestUser.runId });
     }
+    const originalAttachments = structuredClone(latestUser.attachments);
     timeline.splice(latestUserIndex);
     const submission = await this.sendConversationMessage({
       content: input.content,
@@ -1521,6 +2651,12 @@ export class MockAgentClient implements AgentClient {
       throw new Error("The replacement message could not start in the mock runtime.");
     }
     submission.userMessage.id = input.messageId;
+    const selectedAttachmentIds = new Set(
+      input.attachmentIds ?? originalAttachments.map((attachment) => attachment.id),
+    );
+    submission.userMessage.attachments = originalAttachments.filter(
+      (attachment) => selectedAttachmentIds.has(attachment.id),
+    );
     return submission;
   }
 
@@ -1676,6 +2812,13 @@ export class MockAgentClient implements AgentClient {
       workspace.files.set("mcp.json", `${JSON.stringify(server, null, 2)}\n`);
     }
     return this.getIntegrationConfiguration();
+  }
+
+  public saveBrowserConfiguration(
+    input: BrowserConfiguration,
+  ): Promise<BrowserConfiguration> {
+    this.browserConfiguration = structuredClone(input);
+    return this.getBrowserConfiguration();
   }
 
   public saveTerminalConfiguration(
@@ -1939,3 +3082,4 @@ export class MockAgentClient implements AgentClient {
     }
   }
 }
+import { DEFAULT_COMPUTER_USE_CONFIGURATION, computerUseConfigurationSchema, mergeComputerApplicationGrants, type ComputerApplication, type ComputerUseConfiguration, type ComputerUseStatus } from "@agent/protocol";

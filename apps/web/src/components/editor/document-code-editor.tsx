@@ -117,6 +117,7 @@ export function DocumentCodeEditor({
       rectangularSelection(),
       highlightActiveLine(),
       EditorView.lineWrapping,
+      EditorState.readOnly.of(readOnly),
       EditorView.editable.of(!readOnly),
       keymap.of([
         ...defaultKeymap,
@@ -126,12 +127,13 @@ export function DocumentCodeEditor({
           key: "Mod-s",
           preventDefault: true,
           run: () => {
+            if (readOnly) return true;
             onSaveRef.current?.();
             return onSaveRef.current !== undefined;
           },
         },
       ]),
-      EditorView.contentAttributes.of({ "aria-label": ariaLabel }),
+      EditorView.contentAttributes.of({ "aria-label": ariaLabel, "aria-readonly": String(readOnly) }),
       languageCompartmentRef.current.of(languageExtension(initialLanguageRef.current)),
       themeCompartmentRef.current.of(documentCodeEditorTheme(initialThemeRef.current)),
       EditorView.updateListener.of((update) => {

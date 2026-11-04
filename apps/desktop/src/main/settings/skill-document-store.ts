@@ -6,6 +6,7 @@ import {
   readFileSync,
   readdirSync,
   realpathSync,
+  rmSync,
   renameSync,
   statSync,
   unlinkSync,
@@ -28,6 +29,7 @@ import {
 } from "@agent/protocol";
 
 import { IntegrationConfigurationStore } from "./integration-configuration-store.js";
+import { isPathInsideRoot } from "../security/workspace-path.js";
 
 const DISCOVERY_IGNORED_DIRECTORIES = new Set([".git", "node_modules"]);
 const MAX_DISCOVERED_SKILLS = 500;
@@ -87,6 +89,31 @@ export class SkillDocumentStore {
     const rootPath = parsedInput.directoryPath === undefined || parsedInput.directoryPath === null
       ? this.getManagedDirectoryPath()
       : this.resolveRegisteredDirectory(parsedInput.directoryPath);
+    if (parsedInput.content !== undefined) {
+      const metadata = parseSkillMarkdown(parsedInput.content).metadata;
+      const directory = path.join(rootPath, metadata.name);
+      const entryPath = path.join(directory, "SKILL.md");
+      if (!isPathInsideRoot(rootPath, directory) || samePath(rootPath, directory)) throw new Error("Skill 目录必须位于个人技能目录内。");
+      if (existsSync(directory)) {
+        const skill = this.integrationConfiguration.getConfiguration().skills.find(skill => samePath(skill.entryPath, entryPath));
+        if (skill?.origin !== "system" && !lstatSync(directory).isSymbolicLink() && this.readPath(entryPath).content === parsedInput.content) {
+          const document = this.readPath(entryPath);
+          this.synchronizeDocuments([document]);
+          return document;
+        }
+        throw new Error("同名 Skill 目录已存在；请在设置中编辑个人技能，或使用不同名称。系统技能只读。");
+      }
+      const document = this.toDocument(entryPath, parsedInput.content);
+      mkdirSync(directory, { recursive: false });
+      try {
+        writeFileSync(entryPath, parsedInput.content, { encoding: "utf8", flag: "wx", mode: 0o600 });
+        this.synchronizeDocuments([document]);
+      } catch (error) {
+        rmSync(directory, { recursive: true, force: true });
+        throw error;
+      }
+      return document;
+    }
     let suffix = 1;
     let name = "new-skill";
     let directory = path.join(rootPath, name);
@@ -108,6 +135,49 @@ export class SkillDocumentStore {
     const document = this.toDocument(entryPath, content);
     this.synchronizeDocuments([document]);
     return document;
+  }
+
+  /** Installs one first-party Skill once while preserving later user edits and enablement. */
+  public ensureManagedDocument(content: string): SkillDocument {
+    const parsed = parseSkillMarkdown(content);
+    const rootPath = this.getManagedDirectoryPath();
+    const directory = path.join(rootPath, parsed.metadata.name);
+    const entryPath = path.join(directory, "SKILL.md");
+    if (existsSync(entryPath)) {
+      const document = this.readPath(entryPath);
+      this.registerSystemDocument(document);
+      return document;
+    }
+    if (existsSync(directory)) throw new Error("内置 Skill 目录存在，但缺少 SKILL.md。未覆盖现有目录。");
+    mkdirSync(directory, { recursive: false });
+    writeFileSync(entryPath, content, { encoding: "utf8", flag: "wx", mode: 0o600 });
+    const document = this.toDocument(entryPath, content);
+    this.registerSystemDocument(document);
+    return document;
+  }
+
+  private registerSystemDocument(document: SkillDocument): void {
+    this.synchronizeDocuments([document]);
+    const configuration = this.integrationConfiguration.getConfiguration();
+    const normalize = (content: string): string => content.replace(/\r\n/gu, "\n").trim();
+    const isStandalone = (entryPath: string): boolean => readdirSync(path.dirname(entryPath)).length === 1;
+    const skills = configuration.skills.map((skill) => {
+      if (samePath(skill.entryPath, document.entryPath)) return { ...skill, origin: "system" as const };
+      if (!skill.enabled || skill.name !== document.metadata.name) return skill;
+      try {
+        // Preserve customized copies and files; retire only exact duplicate catalog entries.
+        if (isStandalone(skill.entryPath) && isStandalone(document.entryPath)
+          && normalize(this.readPath(skill.entryPath).content) === normalize(document.content)) {
+          return { ...skill, enabled: false };
+        }
+      } catch {
+        // Missing external files are not evidence of a duplicate.
+      }
+      return skill;
+    });
+    if (JSON.stringify(skills) !== JSON.stringify(configuration.skills)) {
+      this.integrationConfiguration.saveConfiguration({ ...configuration, skills });
+    }
   }
 
   public discoverDocuments(): SkillDiscoveryResult {
@@ -146,11 +216,44 @@ export class SkillDocumentStore {
     return this.readPath(entryPath);
   }
 
+  public deleteDocument(entryPath: string): void {
+    this.assertRegistered(entryPath);
+    this.assertSkillEntryPath(entryPath);
+    const configuration = this.integrationConfiguration.getConfiguration();
+    const skill = configuration.skills.find((candidate) => samePath(candidate.entryPath, entryPath));
+    if (skill?.origin === "system") throw new Error("内置 Skill 不能删除，请使用停用开关。");
+    const directoryPath = path.dirname(path.resolve(entryPath));
+    let packagePath = directoryPath;
+    if (existsSync(directoryPath)) {
+      if (lstatSync(directoryPath).isSymbolicLink()) throw new Error("不能删除符号链接 Skill 目录。");
+      const canonicalDirectory = this.resolveExistingDirectory(directoryPath);
+      packagePath = canonicalDirectory;
+      const roots = [this.getManagedDirectoryPath(), ...configuration.skillDirectories];
+      if (samePath(path.parse(canonicalDirectory).root, canonicalDirectory)
+        || roots.some((root) => samePath(existsSync(root) ? realpathSync(root) : root, canonicalDirectory))) {
+        throw new Error("不能删除 Skill 扫描根目录，请将 Skill 放在独立子目录中。");
+      }
+      if (existsSync(entryPath) && (lstatSync(entryPath).isSymbolicLink()
+        || !samePath(path.dirname(realpathSync(entryPath)), canonicalDirectory))) {
+        throw new Error("Skill 入口必须位于自己的目录内。");
+      }
+      rmSync(canonicalDirectory, { recursive: true, force: true });
+    }
+    this.integrationConfiguration.saveConfiguration({
+      ...configuration,
+      skills: configuration.skills.filter((candidate) => !isPathInsideRoot(packagePath, path.resolve(candidate.entryPath))),
+    });
+  }
+
   public saveDocument(input: SkillDocumentSaveInput): SkillDocument {
     const parsedInput = skillDocumentSaveInputSchema.parse(input);
     this.assertRegistered(parsedInput.entryPath);
+    if (this.integrationConfiguration.getConfiguration().skills.some(skill => skill.origin === "system"
+      && isPathInsideRoot(path.dirname(path.resolve(skill.entryPath)), path.resolve(parsedInput.entryPath)))) {
+      throw new Error("系统 Skill 只读，不能修改。");
+    }
     this.assertSkillEntryPath(parsedInput.entryPath);
-    parseSkillMarkdown(parsedInput.content);
+    const document = this.toDocument(parsedInput.entryPath, parsedInput.content);
 
     const temporaryPath = `${parsedInput.entryPath}.${process.pid}.${randomUUID()}.tmp`;
     try {
@@ -159,7 +262,6 @@ export class SkillDocumentStore {
     } finally {
       if (existsSync(temporaryPath)) unlinkSync(temporaryPath);
     }
-    const document = this.toDocument(parsedInput.entryPath, parsedInput.content);
     this.synchronizeDocuments([document]);
     return document;
   }
@@ -275,6 +377,7 @@ export class SkillDocumentStore {
     for (const document of documents) {
       if (existingByPath.has(pathKey(document.entryPath))) continue;
       updatedSkills.push({
+        origin: "personal",
         description: document.metadata.description,
         enabled: true,
         entryPath: document.entryPath,
@@ -305,6 +408,12 @@ export class SkillDocumentStore {
 
   private toDocument(entryPath: string, content: string): SkillDocument {
     const { metadata } = parseSkillMarkdown(content);
+    const directoryName = path.basename(path.dirname(entryPath));
+    if (metadata.name !== directoryName) {
+      throw new Error(
+        `SKILL.md 的 name 必须与父目录名一致：期望 ${directoryName}，实际 ${metadata.name}。`,
+      );
+    }
     return skillDocumentSchema.parse({ content, entryPath: path.resolve(entryPath), metadata });
   }
 }

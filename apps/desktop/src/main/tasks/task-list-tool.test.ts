@@ -1,8 +1,8 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { AgentDatabase } from "../storage/agent-database.js";
 import {
-  CREATE_TASK_LIST_TOOL_NAME,
+  CLOSE_TASK_LIST_TOOL_NAME,
   TaskListTool,
   UPDATE_TASK_LIST_TOOL_NAME,
 } from "./task-list-tool.js";
@@ -14,7 +14,47 @@ afterEach(() => {
 });
 
 describe("TaskListTool", () => {
-  it("keeps exactly one active task list when concurrent Agents try to create one", () => {
+  it("closes the finished checklist in its final update without persisting an intermediate list", () => {
+    const database = new AgentDatabase(":memory:"); databases.push(database);
+    const conversation = database.createConversation(null), tool = new TaskListTool(database);
+    tool.execute(UPDATE_TASK_LIST_TOOL_NAME, JSON.stringify({ tasks: [
+      { title: "实现", status: "running" }, { title: "验证", status: "pending" },
+    ] }), conversation.id);
+    const update = vi.spyOn(database, "updateTaskList"), close = vi.spyOn(database, "closeTaskList");
+    const result = tool.execute(UPDATE_TASK_LIST_TOOL_NAME, JSON.stringify({ close: true, tasks: [
+      { title: "实现", status: "completed" }, { title: "验证", status: "completed" },
+    ] }), conversation.id);
+    expect(result).toMatchObject({ changed: true, isError: false, taskList: null });
+    expect(JSON.parse(result.content)).toEqual({ ok: true, value: { status: "closed" } });
+    expect(close).toHaveBeenCalledOnce(); expect(update).not.toHaveBeenCalled();
+    expect(database.getTaskList(conversation.id)).toBeNull();
+  });
+
+  it("rejects finishing an incomplete checklist without losing its state", () => {
+    const database = new AgentDatabase(":memory:"); databases.push(database);
+    const conversation = database.createConversation(null), tool = new TaskListTool(database);
+    const tasks = [{ title: "实现", status: "completed" }, { title: "验证", status: "running" }];
+    tool.execute(UPDATE_TASK_LIST_TOOL_NAME, JSON.stringify({ tasks }), conversation.id);
+    const before = database.getTaskList(conversation.id);
+    expect(tool.execute(UPDATE_TASK_LIST_TOOL_NAME, JSON.stringify({ tasks, close: true }), conversation.id).isError).toBe(true);
+    expect(database.getTaskList(conversation.id)).toEqual(before);
+  });
+
+  it("does not persist or report progress for an identical task list", () => {
+    const database = new AgentDatabase(":memory:");
+    databases.push(database);
+    const conversation = database.createConversation(null);
+    const tool = new TaskListTool(database);
+    const args = JSON.stringify({ tasks: [{ title: "等待材料", status: "blocked", reason: "尚未提供" }, { title: "验收", status: "pending" }] });
+    const first = tool.execute(UPDATE_TASK_LIST_TOOL_NAME, args, conversation.id);
+    const write = vi.spyOn(database, "updateTaskList");
+    const repeated = tool.execute(UPDATE_TASK_LIST_TOOL_NAME, args, conversation.id);
+    expect(repeated).toMatchObject({ changed: false, isError: false, taskList: first.taskList });
+    expect(JSON.parse(repeated.content)).toMatchObject({ value: { status: "unchanged", taskCount: 2 } });
+    expect(write).not.toHaveBeenCalled();
+  });
+
+  it("creates, updates and recreates a list through the same update tool", () => {
     const database = new AgentDatabase(":memory:");
     databases.push(database);
     const conversation = database.createConversation(null);
@@ -27,22 +67,43 @@ describe("TaskListTool", () => {
     });
     const secondTasks = JSON.stringify({
       tasks: [
-        { status: "running", title: "测试" },
-        { status: "pending", title: "汇报" },
+        { status: "completed", title: "分析" },
+        { status: "running", title: "实现" },
       ],
     });
 
-    const results = [
-      tool.execute(CREATE_TASK_LIST_TOOL_NAME, firstTasks, conversation.id),
-      tool.execute(CREATE_TASK_LIST_TOOL_NAME, secondTasks, conversation.id),
-    ];
-
-    expect(results.filter((result) => !result.isError)).toHaveLength(1);
-    expect(results.filter((result) => result.isError)).toHaveLength(1);
+    expect(tool.getDefinitions().map((definition) => definition.name))
+      .toEqual([UPDATE_TASK_LIST_TOOL_NAME, CLOSE_TASK_LIST_TOOL_NAME]);
+    for (const definition of tool.getDefinitions()) {
+      expect(definition.description).toContain("local execution checklist");
+      expect(definition.description).toContain("persistent task");
+    }
+    const created = tool.execute(UPDATE_TASK_LIST_TOOL_NAME, firstTasks, conversation.id);
+    expect(created.isError).toBe(false);
+    expect(JSON.parse(created.content)).toEqual({
+      ok: true,
+      value: { status: "updated", taskCount: 2 },
+    });
+    expect(created.content).not.toContain("createdAt");
+    expect(created.content).not.toContain("分析");
+    const updated = tool.execute(UPDATE_TASK_LIST_TOOL_NAME, secondTasks, conversation.id);
+    expect(updated.isError).toBe(false);
+    expect(updated.taskList?.createdAt).toBe(created.taskList?.createdAt);
+    expect(updated.taskList?.tasks.map((task) => task.id))
+      .toEqual(created.taskList?.tasks.map((task) => task.id));
     const taskList = database.getTaskList(conversation.id);
     if (taskList === null) throw new Error("Expected an active task list.");
     expect(taskList.status).toBe("active");
-    expect(taskList.tasks).toHaveLength(2);
+    expect(taskList.tasks.map((task) => task.status)).toEqual(["completed", "running"]);
+    const other = database.createConversation(null);
+    expect(database.getTaskList(other.id)).toBeNull();
+    const closed = tool.execute(CLOSE_TASK_LIST_TOOL_NAME, "{}", conversation.id);
+    expect(closed.isError).toBe(false);
+    expect(JSON.parse(closed.content)).toEqual({ ok: true, value: { status: "closed" } });
+    expect(database.getTaskList(conversation.id)).toBeNull();
+    expect(tool.execute(UPDATE_TASK_LIST_TOOL_NAME, firstTasks, conversation.id).isError).toBe(false);
+    expect(database.getTaskList(conversation.id)?.tasks.map((task) => task.status))
+      .toEqual(["running", "pending"]);
   });
 
   it("requires a reason only when a task becomes blocked or failed", () => {
@@ -50,7 +111,7 @@ describe("TaskListTool", () => {
     databases.push(database);
     const conversation = database.createConversation(null);
     const tool = new TaskListTool(database);
-    const created = tool.execute(CREATE_TASK_LIST_TOOL_NAME, JSON.stringify({
+    const created = tool.execute(UPDATE_TASK_LIST_TOOL_NAME, JSON.stringify({
       tasks: [
         { status: "running", title: "执行" },
         { status: "pending", title: "验证" },
@@ -65,6 +126,7 @@ describe("TaskListTool", () => {
       ],
     }), conversation.id);
     expect(missingReason.isError).toBe(true);
+    expect(database.getTaskList(conversation.id)).toEqual(created.taskList);
 
     const updated = tool.execute(UPDATE_TASK_LIST_TOOL_NAME, JSON.stringify({
       tasks: [
@@ -77,5 +139,24 @@ describe("TaskListTool", () => {
       reason: "等待用户批准文件修改",
       status: "blocked",
     });
+  });
+
+  it("allows the conversation task list to show multiple running tasks", () => {
+    const database = new AgentDatabase(":memory:");
+    databases.push(database);
+    const conversation = database.createConversation(null);
+    const tool = new TaskListTool(database);
+
+    const created = tool.execute(UPDATE_TASK_LIST_TOOL_NAME, JSON.stringify({
+      tasks: [
+        { status: "running", title: "调查问题" },
+        { status: "running", title: "补充测试" },
+        { status: "pending", title: "汇总结果" },
+      ],
+    }), conversation.id);
+
+    expect(created.isError).toBe(false);
+    expect(database.getTaskList(conversation.id)?.tasks.map((task) => task.status))
+      .toEqual(["running", "running", "pending"]);
   });
 });

@@ -21,10 +21,13 @@ describe("task-list context", () => {
       updatedAt: "2026-08-27T00:01:00.000Z",
     });
 
-    expect(context).toMatchObject({ role: "system", toolCalls: [] });
-    expect(context?.content).toContain("[当前任务清单｜动态运行状态]");
+    expect(context).toMatchObject({ role: "user", toolCalls: [] });
+    expect(context?.content).toContain("[Current task list | live state]");
+    expect(context?.content).toContain("not authorization to resume work");
+    expect(context?.content).toContain("repeating an identical list does not advance work");
+    expect(context?.content).toContain("without touching unrelated steps");
     expect(context?.content).toContain("[blocked]");
-    expect(context?.content).toContain("原因：");
+    expect(context?.content).toContain("Reason:");
     expect(context?.content).toContain("…");
     expect(context?.content).not.toContain("00000000-0000-4000-8000-000000000001");
     expect(context?.content).not.toContain("2026-08-27T00:01:00.000Z");

@@ -18,6 +18,155 @@ afterEach(async () => {
 });
 
 describe("AgentDatabase", () => {
+  it("keeps a manual title set before the first message", () => {
+    const database = new AgentDatabase(":memory:");
+    try {
+      const conversation = database.createConversation(null);
+      database.renameConversation(conversation.id, "手动命名");
+      expect(database.createRunWithUserMessage(conversation.id, "这是首条消息", "fixture").conversation.title).toBe("手动命名");
+    } finally { database.close(); }
+  });
+  it.each(["请帮我设计一个支持团队并行协作和消息查询的项目管理页面", "😀".repeat(24)])("uses at most twenty characters without appending an ellipsis for the first-message title: %s", content => {
+    const database = new AgentDatabase(":memory:");
+    try {
+      const conversation = database.createConversation(null);
+      const run = database.createRunWithUserMessage(conversation.id, content, "fixture");
+      expect(run.conversation.title).toBe(Array.from(content).slice(0, 20).join(""));
+      expect(run.conversation.title).not.toMatch(/\.\.\.|…/u);
+    } finally { database.close(); }
+  });
+  it("interrupts yielded command receipts after restart without discarding logs or changing confirmed results", () => {
+    const database = new AgentDatabase(":memory:");
+    const conversation = database.createConversation(null);
+    const run = database.createRunWithUserMessage(conversation.id, "command", "test-model");
+    database.markRunRunning(run.runId);
+    const ids = [crypto.randomUUID(), crypto.randomUUID()];
+    for (const [index, id] of ids.entries()) database.upsertRuntimeActivity({
+      id, kind: "tool", name: "run_command", conversationId: conversation.id, runId: run.runId,
+      arguments: "{}", batchId: null, diff: null, createdAt: new Date().toISOString(), status: "completed",
+      result: JSON.stringify({ ok: true, value: { status: index === 0 ? "running" : "completed", stdout: "retained log", exitCode: index === 0 ? null : 0 } }),
+    });
+    const events = database.interruptRecoveredThreadLogRuns();
+    const commands = database.listTimeline(conversation.id).filter(item => item.kind === "tool");
+    const interrupted = commands.find(item => item.id === ids[0]);
+    const completed = commands.find(item => item.id === ids[1]);
+    expect(interrupted).toMatchObject({ status: "cancelled" });
+    expect(interrupted?.result).toContain("retained log");
+    expect(completed).toMatchObject({ status: "completed" });
+    expect(completed?.result).toContain('"exitCode":0');
+    expect(events.filter(event => event.event.type === "runtime_activity_updated")).toHaveLength(1);
+    expect(database.interruptRecoveredThreadLogRuns().filter(event => event.event.type === "runtime_activity_updated")).toHaveLength(0);
+    database.close();
+  });
+
+  it("keeps post-cutover task lists in memory and rolls them back with failed event batches", () => {
+    const database = new AgentDatabase(":memory:");
+    database.activateVolatileConversationProjection();
+    const conversation = database.createConversation(null);
+    database.finalizeJsonlConversationStorage();
+    try {
+      const original = database.createTaskList(conversation.id, [{ title: "first", status: "pending" }]);
+      original.tasks[0]!.title = "caller mutation";
+      const stored = database.getTaskList(conversation.id)!;
+      expect(stored.tasks[0]?.title).toBe("first");
+      const event = (sequence: number, type: string, payload: Record<string, unknown>) => ({
+        createdAt: new Date().toISOString(), eventId: crypto.randomUUID(), sequence, type, payload,
+      });
+      expect(() => database.restoreThreadLogBusinessEvents(conversation.id, [
+        event(1, "task_list_updated", { taskList: { ...stored, tasks: [{ ...stored.tasks[0], title: "should roll back" }] } }),
+        event(2, "run_queued", {}),
+      ])).toThrow();
+      expect(database.getTaskList(conversation.id)).toEqual(stored);
+      database.updateTaskList(conversation.id, [{ title: "first", status: "completed" }]);
+      expect(database.getTaskList(conversation.id)?.tasks[0]?.status).toBe("completed");
+      database.closeTaskList(conversation.id);
+      expect(database.getTaskList(conversation.id)).toBeNull();
+    } finally {
+      database.close();
+    }
+  });
+
+  it("removes durable Conversation tables after the JSONL cutover", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "agent-jsonl-cutover-"));
+    temporaryDirectories.push(directory);
+    const databasePath = path.join(directory, "db.sqlite");
+    const database = new AgentDatabase(databasePath);
+    const conversation = database.createConversation(null);
+
+    database.activateVolatileConversationProjection();
+    database.projectConversationCreated({ agent: null, conversation });
+    database.finalizeJsonlConversationStorage();
+
+    expect(database.getConversation(conversation.id).id).toBe(conversation.id);
+    expect(database.isJsonlConversationStorageFinalized()).toBe(true);
+    database.close();
+
+    const persisted = new DatabaseSync(databasePath);
+    const conversationTables = persisted.prepare(
+      `SELECT name FROM sqlite_master
+       WHERE type IN ('table', 'view')
+         AND name IN (
+           'conversations', 'runs', 'conversation_timeline', 'model_messages',
+           'conversation_timeline_search', 'model_message_search',
+           'thread_log_event_index', 'thread_log_projection_cursors'
+         )`,
+    ).all();
+    const marker = persisted.prepare(
+      `SELECT 1 AS present FROM storage_imports
+       WHERE source_kind = 'jsonl-conversation-storage'
+         AND source_identity = 'conversation-jsonl-v1'`,
+    ).get();
+    const crossStoreForeignKeys = persisted.prepare(
+      `SELECT name, sql FROM sqlite_master
+       WHERE type = 'table'
+         AND (
+           sql LIKE '%REFERENCES conversations(%'
+           OR sql LIKE '%REFERENCES runs(%'
+           OR sql LIKE '%REFERENCES conversation_agent_messages(%'
+         )`,
+    ).all();
+    persisted.close();
+
+    expect(conversationTables).toEqual([]);
+    expect(crossStoreForeignKeys).toEqual([]);
+    expect(marker).toBeDefined();
+
+    const reopened = new AgentDatabase(databasePath);
+    expect(reopened.isJsonlConversationStorageFinalized()).toBe(true);
+    expect(reopened.listAllConversationIds()).toEqual([]);
+    reopened.close();
+  });
+
+  it.each([29, 31])("upgrades post-cutover storage with migrations from version %i pending", async (pendingVersion) => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "agent-post-cutover-upgrade-"));
+    temporaryDirectories.push(directory);
+    const databasePath = path.join(directory, "db.sqlite");
+    const original = new AgentDatabase(databasePath);
+    const project = { id: crypto.randomUUID(), name: "Retained project", rootPath: "D:\\workspace\\retained", isPinned: false };
+    original.saveProject(project);
+    original.activateVolatileConversationProjection();
+    original.finalizeJsonlConversationStorage();
+    original.close();
+
+    const legacy = new DatabaseSync(databasePath);
+    legacy.prepare("DELETE FROM schema_migrations WHERE version >= ?").run(pendingVersion);
+    legacy.close();
+
+    const upgraded = new AgentDatabase(databasePath);
+    expect(upgraded.isJsonlConversationStorageFinalized()).toBe(true);
+    expect(upgraded.listProjects()).toEqual([project]);
+    expect(upgraded.createConversation(null).coordinationMode).toBe("direct");
+    upgraded.close();
+
+    const persisted = new DatabaseSync(databasePath);
+    expect(persisted.prepare("SELECT name FROM sqlite_master WHERE name = 'conversations'").get()).toBeUndefined();
+    expect(persisted.prepare("SELECT MAX(version) AS version FROM schema_migrations").get()?.version).toBe(35);
+    persisted.close();
+    const reopened = new AgentDatabase(databasePath);
+    expect(reopened.listProjects()).toEqual([project]);
+    reopened.close();
+  });
+
   it("records the current schema version and keeps it stable across restarts", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "agent-database-"));
     temporaryDirectories.push(directory);
@@ -45,12 +194,240 @@ describe("AgentDatabase", () => {
     const migrationCount = secondMetadata
       .prepare("SELECT COUNT(*) AS count FROM schema_migrations")
       .get() as Record<string, unknown>;
+    const historyIndexes = secondMetadata
+      .prepare(
+        `SELECT name FROM sqlite_master
+         WHERE type = 'index' AND name IN (
+           'conversation_timeline_conversation_sequence',
+           'model_messages_conversation_sequence',
+           'model_messages_run_sequence'
+         )
+         ORDER BY name`,
+      )
+      .all() as Array<Record<string, unknown>>;
+    const projectionCursorColumns = secondMetadata
+      .prepare("PRAGMA table_info(thread_log_projection_cursors)")
+      .all() as Array<Record<string, unknown>>;
     secondMetadata.close();
 
-    expect(firstRow.version).toBe(7);
-    expect(firstRow.name).toBe("conversation-model-selection");
+    expect(firstRow.version).toBe(35);
+    expect(firstRow.name).toBe("task-completion-policies");
     expect(secondRow).toEqual(firstRow);
-    expect(migrationCount.count).toBe(7);
+    expect(migrationCount.count).toBe(35);
+    expect(historyIndexes.map((row) => row.name)).toEqual([
+      "conversation_timeline_conversation_sequence",
+      "model_messages_conversation_sequence",
+      "model_messages_run_sequence",
+    ]);
+    expect(projectionCursorColumns.map((column) => column.name)).toEqual(expect.arrayContaining([
+      "source_modified_at_ms",
+      "source_size_bytes",
+    ]));
+  });
+
+  it("upgrades version 28 team data without losing tasks, members, indexes or foreign keys", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "team-v28-upgrade-"));
+    temporaryDirectories.push(directory);
+    const databasePath = path.join(directory, "team.sqlite");
+    const original = new AgentDatabase(databasePath);
+    original.syncTeamDirectory(structuredClone(DEFAULT_AGENT_DIRECTORY_CONFIGURATION));
+    const project = { id: crypto.randomUUID(), name: "Migration", rootPath: "D:\\workspace\\team-upgrade", isPinned: false };
+    original.saveProject(project);
+    const instance = original.createTeamInstance({ teamId: "default-team", scope: "project", projectId: project.id });
+    const lead = original.createConversation(project.id, { threadKind: "team_lead", teamId: instance.teamId });
+    original.bindTeamExecutionConversation({ conversationId: lead.id, projectId: project.id, sourceConversationId: null, teamId: instance.teamId, teamInstanceId: instance.id });
+    const agent = { id: "developer", name: "开发", role: "开发", instructions: "", isDefault: false };
+    const member = original.createConversation(project.id, { agent, parentConversationId: lead.id, teamId: instance.teamId, threadKind: "agent" });
+    original.bindTeamMemberConversation({ agentId: agent.id, conversationId: member.id, teamExecutionConversationId: lead.id });
+    const selection = { providerId: crypto.randomUUID(), modelId: "migration-model", reasoning: null };
+    const task = original.createTeamWorkItem({ teamId: instance.teamId, teamInstanceId: instance.id, projectId: project.id,
+      title: "保留任务", requirement: "保留验收历史", acceptanceCriteria: ["保留"], priority: "normal", permissionMode: "read_only" }, selection);
+    original.close();
+    const legacy = new DatabaseSync(databasePath);
+    legacy.exec("PRAGMA foreign_keys = OFF; DROP INDEX team_member_conversations_role; DROP TABLE team_instance_worker_counts;");
+    for (const name of ["team_work_items", "team_member_conversations"]) {
+      const table = legacy.prepare("SELECT sql FROM sqlite_master WHERE name = ? AND type = 'table'").get(name)!;
+      const indexes = legacy.prepare("SELECT sql FROM sqlite_master WHERE tbl_name = ? AND type = 'index' AND sql IS NOT NULL").all(name);
+      let sql = String(table.sql).replace(new RegExp('^(CREATE\\s+TABLE\\s+)(?:"' + name + '"|' + name + ')', "u"), "$1" + name + "_v28");
+      if (name === "team_work_items") sql = sql.replace(/\bproject_id\s+TEXT(?!\s+NOT\s+NULL)/u, "project_id TEXT NOT NULL");
+      else sql = sql.replace("conversation_id TEXT NOT NULL PRIMARY KEY", "conversation_id TEXT NOT NULL UNIQUE")
+        .replace(/\)\s*$/u, ", PRIMARY KEY (team_execution_conversation_id, agent_id))");
+      legacy.exec(sql);
+      legacy.exec("INSERT INTO " + name + "_v28 SELECT * FROM " + name + "; DROP TABLE " + name + "; ALTER TABLE " + name + "_v28 RENAME TO " + name);
+      for (const index of indexes) legacy.exec(String(index.sql));
+    }
+    legacy.exec("ALTER TABLE conversations DROP COLUMN coordination_mode; DELETE FROM schema_migrations WHERE version >= 29;");
+    expect(legacy.prepare("PRAGMA table_info(team_work_items)").all().find(column => column.name === "project_id")?.notnull).toBe(1);
+    expect(legacy.prepare("PRAGMA table_info(team_member_conversations)").all().filter(column => Number(column.pk) > 0)).toHaveLength(2);
+    legacy.close();
+    const upgraded = new AgentDatabase(databasePath);
+    expect(upgraded.getTeamWorkItem(task.id)).toMatchObject({ title: "保留任务", permissionMode: "read_only", acceptanceCriteria: ["保留"] });
+    expect(upgraded.listTeamMemberConversations(lead.id).map(value => value.id)).toEqual([member.id]);
+    const second = upgraded.createConversation(project.id, { agent, parentConversationId: lead.id, teamId: instance.teamId, threadKind: "agent" });
+    upgraded.bindTeamMemberConversation({ agentId: agent.id, conversationId: second.id, teamExecutionConversationId: lead.id, replica: true });
+    expect(upgraded.listTeamMemberConversations(lead.id)).toHaveLength(2);
+    upgraded.close();
+    const metadata = new DatabaseSync(databasePath);
+    expect(metadata.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+    expect(metadata.prepare("PRAGMA table_info(team_work_items)").all().find(column => column.name === "project_id")?.notnull).toBe(0);
+    metadata.close();
+    const reopened = new AgentDatabase(databasePath);
+    expect(reopened.listTeamMemberConversations(lead.id)).toHaveLength(2);
+    reopened.close();
+  });
+
+  it("imports former standalone LangGraph checkpoints idempotently", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "agent-checkpoint-import-"));
+    temporaryDirectories.push(directory);
+    const databasePath = path.join(directory, "db.sqlite");
+    const legacyPath = path.join(directory, "langgraph-checkpoints.sqlite");
+    const legacy = new DatabaseSync(legacyPath);
+    legacy.exec(`
+      CREATE TABLE langgraph_checkpoints (
+        thread_id TEXT NOT NULL,
+        checkpoint_ns TEXT NOT NULL,
+        checkpoint_id TEXT NOT NULL,
+        parent_checkpoint_id TEXT,
+        checkpoint_type TEXT NOT NULL,
+        checkpoint_blob BLOB NOT NULL,
+        metadata_type TEXT NOT NULL,
+        metadata_blob BLOB NOT NULL,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (thread_id, checkpoint_ns, checkpoint_id)
+      );
+      CREATE TABLE langgraph_checkpoint_writes (
+        thread_id TEXT NOT NULL,
+        checkpoint_ns TEXT NOT NULL,
+        checkpoint_id TEXT NOT NULL,
+        task_id TEXT NOT NULL,
+        write_idx INTEGER NOT NULL,
+        channel TEXT NOT NULL,
+        value_type TEXT NOT NULL,
+        value_blob BLOB NOT NULL,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (thread_id, checkpoint_ns, checkpoint_id, task_id, write_idx)
+      );
+    `);
+    legacy.prepare(
+      `INSERT INTO langgraph_checkpoints VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      "conversation-1",
+      "",
+      "checkpoint-1",
+      null,
+      "json",
+      new Uint8Array([1]),
+      "json",
+      new Uint8Array([2]),
+      "2026-09-07T00:00:00.000Z",
+    );
+    legacy.close();
+
+    const database = new AgentDatabase(databasePath);
+    database.importLegacyCheckpointDatabases([legacyPath]);
+    const migratedDatabase = new DatabaseSync(databasePath);
+    migratedDatabase.prepare("DELETE FROM langgraph_checkpoints").run();
+    migratedDatabase.close();
+    database.importLegacyCheckpointDatabases([legacyPath]);
+    database.close();
+
+    const migrated = new DatabaseSync(databasePath);
+    const checkpointCount = migrated.prepare(
+      "SELECT COUNT(*) AS count FROM langgraph_checkpoints",
+    ).get() as Record<string, unknown>;
+    const migrationCount = migrated.prepare(
+      "SELECT COUNT(*) AS count FROM schema_migrations",
+    ).get() as Record<string, unknown>;
+    migrated.close();
+
+    expect(checkpointCount.count).toBe(0);
+    expect(migrationCount.count).toBe(35);
+  });
+
+  it("adds hidden turn summaries when upgrading an existing version 19 database", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "agent-database-"));
+    temporaryDirectories.push(directory);
+    const databasePath = path.join(directory, "agent.sqlite");
+    const current = new AgentDatabase(databasePath);
+    current.close();
+
+    const legacy = new DatabaseSync(databasePath);
+    legacy.exec(`
+      DROP TABLE conversation_turn_summaries;
+      DELETE FROM schema_migrations WHERE version >= 20;
+    `);
+    legacy.close();
+
+    const migrated = new AgentDatabase(databasePath);
+    const conversation = migrated.createConversation(null);
+    const run = migrated.createRunWithUserMessage(conversation.id, "旧库升级", "test-model");
+    migrated.finishRun(run.runId, "completed", null);
+    const boundary = migrated.listContextMessages(conversation.id).at(-1)?.sequence;
+    if (boundary === undefined) throw new Error("Expected a context message boundary.");
+    migrated.saveConversationTurnSummary({
+      conversationId: conversation.id,
+      coveredThroughSequence: boundary,
+      runId: run.runId,
+      summary: "升级后摘要可保存",
+    });
+
+    expect(migrated.getConversationTurnSummary(run.runId)?.summary)
+      .toBe("升级后摘要可保存");
+    migrated.close();
+  });
+
+  it("preserves legacy Team execution scope when migrating version 12 data", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "agent-database-"));
+    temporaryDirectories.push(directory);
+    const databasePath = path.join(directory, "agent.sqlite");
+    const database = new AgentDatabase(databasePath);
+    database.syncTeamDirectory(structuredClone(DEFAULT_AGENT_DIRECTORY_CONFIGURATION));
+    const project = {
+      id: "00000000-0000-4000-8000-000000000061",
+      isPinned: false,
+      name: "Team scope migration fixture",
+      rootPath: "D:\\workspace\\team-scope-migration",
+    };
+    const selection = {
+      modelId: "deepseek-v4-flash",
+      providerId: "00000000-0000-4000-8000-000000000062",
+      reasoning: null,
+    };
+    database.saveProject(project);
+    const source = database.createConversation(project.id);
+    const projectScoped = database.createTeamWorkItem({
+      acceptanceCriteria: [],
+      modelSelection: selection,
+      permissionMode: "ask_before_changes",
+      priority: "normal",
+      projectId: project.id,
+      requirement: "旧版无来源任务。",
+      teamId: "default-team",
+      title: "旧版项目任务",
+    }, selection);
+    const conversationScoped = database.createTeamWorkItem({
+      acceptanceCriteria: [],
+      executionScope: "conversation",
+      modelSelection: selection,
+      permissionMode: "ask_before_changes",
+      priority: "normal",
+      projectId: project.id,
+      requirement: "旧版有来源任务。",
+      sourceConversationId: source.id,
+      teamId: "default-team",
+      title: "旧版对话任务",
+    }, selection);
+    database.close();
+
+    const legacy = new DatabaseSync(databasePath);
+    legacy.exec("ALTER TABLE team_work_items DROP COLUMN execution_scope");
+    legacy.exec("DELETE FROM schema_migrations WHERE version >= 13");
+    legacy.close();
+
+    const migrated = new AgentDatabase(databasePath);
+    expect(migrated.getTeamWorkItem(projectScoped.id).executionScope).toBe("project");
+    expect(migrated.getTeamWorkItem(conversationScoped.id).executionScope).toBe("conversation");
+    migrated.close();
   });
 
   it("searches persisted conversation messages by bounded keyword matches", () => {
@@ -88,6 +465,146 @@ describe("AgentDatabase", () => {
 
     expect(matches.some((message) => message.content.includes("src/login.tsx"))).toBe(true);
     expect(matches.some((message) => message.content === "继续处理其他页面")).toBe(false);
+    database.close();
+  });
+
+  it("searches visible conversation timeline messages across conversations", () => {
+    const database = new AgentDatabase(":memory:");
+    const firstConversation = database.createConversation(null);
+    const secondConversation = database.createConversation(null);
+    const firstRun = database.createRunWithUserMessage(
+      firstConversation.id,
+      "请排查全局搜索定位标记",
+      "test-model",
+    );
+    const assistantId = crypto.randomUUID();
+    database.appendAssistantTurn({
+      content: "已经修复全局搜索定位标记。",
+      conversationId: firstConversation.id,
+      messageId: assistantId,
+      modelId: "test-model",
+      runId: firstRun.runId,
+      toolCalls: [],
+    });
+    database.createRunWithUserMessage(secondConversation.id, "无关内容", "test-model");
+
+    const matches = database.searchConversations({ limit: 10, query: "定位标记" });
+    const firstConversationMatches = database.searchConversations({
+      conversationId: firstConversation.id,
+      limit: 10,
+      query: "定位标记",
+    });
+    const olderMatches = database.searchConversations({
+      beforeSequence: matches[0]?.sequence,
+      conversationId: firstConversation.id,
+      limit: 10,
+      query: "定位标记",
+    });
+
+    expect(matches).toHaveLength(2);
+    expect(matches.some((match) => match.itemId === assistantId)).toBe(true);
+    expect(matches.every((match) => match.conversationId === firstConversation.id)).toBe(true);
+    expect(firstConversationMatches).toEqual(matches);
+    expect(olderMatches).toHaveLength(1);
+    expect(olderMatches[0]?.sequence).toBeLessThan(matches[0]?.sequence ?? 0);
+    database.close();
+  });
+
+  it("loads the newest timeline page first and pages backward by sequence", () => {
+    const database = new AgentDatabase(":memory:");
+    const sender = database.createConversation(null);
+    const target = database.createConversation(null);
+    const run = database.createRunWithUserMessage(sender.id, "start", "test-model");
+    const messages = Array.from({ length: 25 }, (_, index) => database.sendAgentMessage({
+      content: `message-${index + 1}`,
+      runId: run.runId,
+      senderConversationId: sender.id,
+      targetConversationId: target.id,
+    }));
+
+    const latest = database.listTimelinePage({
+      conversationId: target.id,
+      limit: 20,
+    });
+    const older = database.listTimelinePage({
+      beforeSequence: latest.nextBeforeSequence ?? undefined,
+      conversationId: target.id,
+      limit: 20,
+    });
+
+    expect(latest).toMatchObject({
+      hasMore: true,
+      items: messages.slice(5),
+      nextBeforeSequence: 7,
+    });
+    expect(older).toMatchObject({
+      hasMore: false,
+      items: messages.slice(0, 5),
+      nextBeforeSequence: null,
+    });
+    database.close();
+  });
+
+  it("limits context search to messages before a sequence cursor", () => {
+    const database = new AgentDatabase(":memory:");
+    const conversation = database.createConversation(null);
+    const oldRun = database.createRunWithUserMessage(
+      conversation.id,
+      "CURSOR-DB 旧记录",
+      "test-model",
+    );
+    database.finishRun(oldRun.runId, "completed", null);
+    const recentRun = database.createRunWithUserMessage(
+      conversation.id,
+      "CURSOR-DB 新记录",
+      "test-model",
+    );
+    database.finishRun(recentRun.runId, "completed", null);
+    const recentSequence = database.listContextMessages(conversation.id)
+      .find((message) => message.runId === recentRun.runId)
+      ?.sequence;
+    if (recentSequence === undefined) throw new Error("Expected recent message.");
+
+    const matches = database.searchContextMessages({
+      beforeSequence: recentSequence,
+      conversationId: conversation.id,
+      query: "CURSOR-DB",
+    });
+    const shortQueryMatches = database.searchContextMessages({
+      beforeSequence: recentSequence,
+      conversationId: conversation.id,
+      query: "DB",
+    });
+
+    expect(matches.map((message) => message.content)).toEqual(["CURSOR-DB 旧记录"]);
+    expect(shortQueryMatches.map((message) => message.content)).toEqual(["CURSOR-DB 旧记录"]);
+    expect(() => database.searchContextMessages({
+      beforeSequence: 0,
+      conversationId: conversation.id,
+      query: "CURSOR-DB",
+    })).toThrow("beforeSequence must be a positive safe integer");
+    database.close();
+  });
+
+  it("persists full reasoning for display without adding it to model-visible text", () => {
+    const database = new AgentDatabase(":memory:");
+    const conversation = database.createConversation(null);
+    const run = database.createRunWithUserMessage(conversation.id, "请分析", "test-model");
+    const message = database.appendAssistantTurn({
+      content: "",
+      conversationId: conversation.id,
+      messageId: crypto.randomUUID(),
+      modelId: "test-model",
+      reasoningContent: "完整思考过程",
+      runId: run.runId,
+      toolCalls: [],
+    });
+
+    expect(message).toMatchObject({ content: "", reasoningContent: "完整思考过程" });
+    expect(database.listTimeline(conversation.id)).toContainEqual(
+      expect.objectContaining({ reasoningContent: "完整思考过程" }),
+    );
+    expect(database.listModelMessages(conversation.id).at(-1)?.content).toBe("");
     database.close();
   });
 
@@ -130,6 +647,7 @@ describe("AgentDatabase", () => {
     );
     reopenedDatabase.finishRun(editableRun.runId, "completed", null);
     const replacement = reopenedDatabase.replaceLatestUserMessage({
+      attachmentIds: [],
       content: "新词",
       conversationId: conversation.id,
       messageId: editableRun.userMessage.id,
@@ -195,6 +713,75 @@ describe("AgentDatabase", () => {
     database.close();
   });
 
+  it("filters weak one-term context hits when a query has several searchable terms", () => {
+    const database = new AgentDatabase(":memory:");
+    const conversation = database.createConversation(null);
+    const weakRun = database.createRunWithUserMessage(
+      conversation.id,
+      "旧的表单记录",
+      "test-model",
+    );
+    database.appendAssistantTurn({
+      content: "This unrelated note only mentions validation.",
+      conversationId: conversation.id,
+      messageId: crypto.randomUUID(),
+      modelId: "test-model",
+      runId: weakRun.runId,
+      toolCalls: [],
+    });
+    database.finishRun(weakRun.runId, "completed", null);
+    const strongRun = database.createRunWithUserMessage(
+      conversation.id,
+      "登录页处理",
+      "test-model",
+    );
+    database.appendAssistantTurn({
+      content: "The login page uses src/login.tsx and reuses the validation component.",
+      conversationId: conversation.id,
+      messageId: crypto.randomUUID(),
+      modelId: "test-model",
+      runId: strongRun.runId,
+      toolCalls: [],
+    });
+    database.finishRun(strongRun.runId, "completed", null);
+
+    const matches = database.searchContextMessages({
+      conversationId: conversation.id,
+      query: "login.tsx validation component",
+    });
+
+    expect(matches.some((message) => message.content.includes("src/login.tsx"))).toBe(true);
+    expect(matches.some((message) => message.content.includes("unrelated note"))).toBe(false);
+    database.close();
+  });
+
+  it("keeps a distinctive identifier searchable after a long natural-language prefix", () => {
+    const database = new AgentDatabase(":memory:");
+    const conversation = database.createConversation(null);
+    const run = database.createRunWithUserMessage(
+      conversation.id,
+      "认证配置",
+      "test-model",
+    );
+    database.appendAssistantTurn({
+      content: "AUTH_TOKEN 最后保存在系统 secure store 中。",
+      conversationId: conversation.id,
+      messageId: crypto.randomUUID(),
+      modelId: "test-model",
+      runId: run.runId,
+      toolCalls: [],
+    });
+    database.finishRun(run.runId, "completed", null);
+
+    const matches = database.searchContextMessages({
+      conversationId: conversation.id,
+      query: "我们之前在很久以前讨论过的认证配置问题，现在那个 AUTH_TOKEN 最后放到哪里了",
+    });
+
+    expect(matches.some((message) => message.content.includes("AUTH_TOKEN"))).toBe(true);
+    database.close();
+  });
+
   it("refuses to open a database from a newer schema version", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "agent-database-"));
     temporaryDirectories.push(directory);
@@ -212,7 +799,7 @@ describe("AgentDatabase", () => {
     futureDatabase.close();
 
     expect(() => new AgentDatabase(databasePath)).toThrow(
-      "newer than supported version 7",
+      "newer than supported version 35",
     );
   });
 
@@ -226,10 +813,12 @@ describe("AgentDatabase", () => {
       "default-team",
     ]);
     expect(database.listTeamMembers("default-team")).toEqual([
-      expect.objectContaining({ agentId: "team-lead", role: "" }),
-      expect.objectContaining({ agentId: "explorer", role: "项目事实调查" }),
-      expect.objectContaining({ agentId: "implementer", role: "" }),
-      expect.objectContaining({ agentId: "reviewer", role: "独立质量复核" }),
+      expect.objectContaining({ agentId: "team-lead", role: "任务分诊、调度与交付" }),
+      expect.objectContaining({ agentId: "requirements-analyst", role: "需求澄清与验收定义" }),
+      expect.objectContaining({ agentId: "solution-architect", role: "技术方案与架构边界" }),
+      expect.objectContaining({ agentId: "frontend-engineer", role: "前端实现与交互验证" }),
+      expect.objectContaining({ agentId: "backend-engineer", role: "后端实现与数据安全" }),
+      expect.objectContaining({ agentId: "qa-engineer", role: "测试设计与质量验收" }),
     ]);
 
     const lead = directory.agents.find((agent) => agent.id === "team-lead");
@@ -255,33 +844,1138 @@ describe("AgentDatabase", () => {
     database.close();
   });
 
-  it("keeps Plugin discovery data queryable without resetting a user's enabled state", () => {
+  it("persists Team WorkItem execution, rework, and user acceptance", () => {
     const database = new AgentDatabase(":memory:");
-    const record = {
-      contentHash: "a".repeat(64),
-      id: "example.plugin",
-      manifestJson: '{"version":1,"id":"example.plugin"}',
-      name: "Example Plugin",
-      rootPath: "C:\\Users\\example\\.agent\\plugins\\example",
-      version: "1.0.0",
+    database.syncTeamDirectory(structuredClone(DEFAULT_AGENT_DIRECTORY_CONFIGURATION));
+    const project = {
+      id: "00000000-0000-4000-8000-000000000001",
+      isPinned: false,
+      name: "Team fixture",
+      rootPath: "D:\\workspace\\team-fixture",
+    };
+    database.saveProject(project);
+    const modelSelection = {
+      modelId: "deepseek-v4-flash",
+      providerId: "00000000-0000-4000-8000-000000000002",
+      reasoning: { kind: "effort" as const, value: "high" as const },
+    };
+    const created = database.createTeamWorkItem({
+      acceptanceCriteria: ["测试通过"],
+      modelSelection,
+      permissionMode: "full_access",
+      priority: "high",
+      projectId: project.id,
+      requirement: "实现一个可测试的加法函数。",
+      teamId: "default-team",
+      title: "实现加法函数",
+    }, modelSelection);
+
+    expect(created).toMatchObject({
+      executionScope: "project",
+      revision: 1,
+      status: "queued",
+    });
+    expect(created.events.map((event) => event.type)).toEqual(["received", "scheduled"]);
+    expect(database.addTeamWorkItemComment({
+      content: "补充说明：验收时请附上测试证据。",
+      workItemId: created.id,
+    }).events.at(-1)).toMatchObject({
+      detail: "补充说明：验收时请附上测试证据。",
+      type: "commented",
+    });
+    expect(database.updateTeamWorkItem({
+      requirement: "实现一个可测试的加法函数，并验证负数边界。",
+      title: "实现加法函数和边界测试",
+      workItemId: created.id,
+    })).toMatchObject({
+      requirement: "实现一个可测试的加法函数，并验证负数边界。",
+      title: "实现加法函数和边界测试",
+    });
+
+    const execution = database.createConversation(project.id);
+    const firstRun = database.createRunWithUserMessage(execution.id, "开始执行", modelSelection.modelId);
+    database.createTaskList(execution.id, [{ status: "running", title: "实现与测试" }]);
+    expect(database.startTeamWorkItem(created.id, execution.id, firstRun.runId)).toMatchObject({
+      activeRunId: firstRun.runId,
+      status: "running",
+      tasks: [expect.objectContaining({ title: "实现与测试" })],
+    });
+    expect(database.updateTeamWorkItem({
+      requirement: "执行中补充负数和零值边界。",
+      title: "补充执行中需求",
+      workItemId: created.id,
+    })).toMatchObject({
+      requirement: "执行中补充负数和零值边界。",
+      status: "running",
+      title: "补充执行中需求",
+    });
+    expect(database.updateTeamWorkItemPermission({
+      permissionMode: "read_only",
+      workItemId: created.id,
+    })).toMatchObject({ permissionMode: "read_only", status: "running" });
+    const latestWorkItemEvent = database.getTeamWorkItem(created.id).events.at(-1);
+    expect(latestWorkItemEvent?.type).toBe("updated");
+    expect(latestWorkItemEvent?.detail).toContain("权限");
+    database.finishRun(firstRun.runId, "completed", null);
+    expect(database.finishTeamWorkItemRun({
+      conversationId: execution.id,
+      error: null,
+      resultSummary: "实现完成，测试通过。",
+      runId: firstRun.runId,
+      status: "completed",
+      workItemId: created.id,
+    })).toMatchObject({ resultSummary: "实现完成，测试通过。", status: "waiting_user" });
+
+    const secondRun = database.createRunWithUserMessage(execution.id, "补充边界测试", modelSelection.modelId);
+    expect(database.startTeamWorkItemRework(created.id, secondRun.runId, "补充负数测试"))
+      .toMatchObject({ revision: 2, status: "running" });
+    database.finishRun(secondRun.runId, "completed", null);
+    database.finishTeamWorkItemRun({
+      conversationId: execution.id,
+      error: null,
+      resultSummary: "已补充负数测试。",
+      runId: secondRun.runId,
+      status: "completed",
+      workItemId: created.id,
+    });
+    expect(() => database.acceptTeamWorkItem({
+      acceptedCriteria: [],
+      workItemId: created.id,
+    })).toThrow("Every acceptance criterion");
+    const accepted = database.acceptTeamWorkItem({
+      acceptedCriteria: created.acceptanceCriteria,
+      workItemId: created.id,
+    });
+    expect(accepted).toMatchObject({
+      revision: 2,
+      status: "completed",
+    });
+    expect(typeof accepted.completedAt).toBe("string");
+
+    const completedReworkRun = database.createRunWithUserMessage(
+      execution.id,
+      "根据评论继续返工",
+      modelSelection.modelId,
+    );
+    const reopened = database.startTeamWorkItemRework(
+      created.id,
+      completedReworkRun.runId,
+      "验收后发现窄窗口仍需调整",
+    );
+    expect(reopened).toMatchObject({
+      acceptedCriteria: [],
+      completedAt: null,
+      revision: 3,
+      status: "running",
+    });
+    expect(reopened.events.map((event) => event.type)).toContain("accepted");
+    expect(reopened.events.at(-1)).toMatchObject({ type: "rework_requested" });
+    expect(database.deleteTeamWorkItem({ workItemId: created.id })).toMatchObject({
+      status: "cancelled",
+    });
+    expect(database.getTeamWorkItem(created.id).events.at(-1)).toMatchObject({ type: "deleted" });
+    expect(database.listTeamWorkItems({ teamId: "default-team" })).toEqual([]);
+    database.close();
+  });
+
+  it("records the normal project conversation that submitted a Team WorkItem", () => {
+    const database = new AgentDatabase(":memory:");
+    database.syncTeamDirectory(structuredClone(DEFAULT_AGENT_DIRECTORY_CONFIGURATION));
+    const project = {
+      id: "00000000-0000-4000-8000-000000000071",
+      isPinned: false,
+      name: "Team source fixture",
+      rootPath: "D:\\workspace\\team-source",
+    };
+    database.saveProject(project);
+    const sourceConversation = database.createConversation(project.id);
+    const selection = {
+      modelId: "deepseek-v4-flash",
+      providerId: "00000000-0000-4000-8000-000000000072",
+      reasoning: null,
     };
 
-    database.syncPluginCatalog([record]);
-    expect(database.listPluginCatalog()).toEqual([
-      expect.objectContaining({ ...record, enabled: true }),
-    ]);
+    const created = database.createTeamWorkItem({
+      acceptanceCriteria: [],
+      modelSelection: selection,
+      permissionMode: "ask_before_changes",
+      priority: "normal",
+      projectId: project.id,
+      requirement: "从项目对话交给团队。",
+      sourceConversationId: sourceConversation.id,
+      teamId: "default-team",
+      title: "对话来源任务",
+    }, selection);
 
-    database.setPluginEnabled(record.id, false);
-    database.syncPluginCatalog([{ ...record, contentHash: "b".repeat(64) }]);
-    expect(database.listPluginCatalog()).toEqual([
-      expect.objectContaining({
-        ...record,
-        contentHash: "b".repeat(64),
-        enabled: false,
-      }),
+    expect(created).toMatchObject({
+      executionScope: "project",
+      sourceConversationId: sourceConversation.id,
+    });
+    const isolated = database.createTeamWorkItem({
+      acceptanceCriteria: [],
+      executionScope: "conversation",
+      modelSelection: selection,
+      permissionMode: "ask_before_changes",
+      priority: "normal",
+      projectId: project.id,
+      requirement: "仅复用当前对话的团队上下文。",
+      sourceConversationId: sourceConversation.id,
+      teamId: "default-team",
+      title: "对话隔离任务",
+    }, selection);
+    expect(isolated.executionScope).toBe("conversation");
+    const otherProject = {
+      ...project,
+      id: "00000000-0000-4000-8000-000000000073",
+      name: "Other project",
+      rootPath: "D:\\workspace\\team-source-other",
+    };
+    database.saveProject(otherProject);
+    const otherConversation = database.createConversation(otherProject.id);
+    expect(() => database.createTeamWorkItem({
+      acceptanceCriteria: [],
+      modelSelection: selection,
+      permissionMode: "ask_before_changes",
+      priority: "normal",
+      projectId: project.id,
+      requirement: "不能跨项目伪造来源。",
+      sourceConversationId: otherConversation.id,
+      teamId: "default-team",
+      title: "来源校验",
+    }, selection)).toThrow("source conversation must belong");
+    database.close();
+  });
+
+  it("keeps project-scoped Team executions separate across projects", () => {
+    const database = new AgentDatabase(":memory:");
+    database.syncTeamDirectory(structuredClone(DEFAULT_AGENT_DIRECTORY_CONFIGURATION));
+    const firstProject = {
+      id: "00000000-0000-4000-8000-000000000074",
+      isPinned: false,
+      name: "First project",
+      rootPath: "D:\\workspace\\team-scope-first",
+    };
+    const secondProject = {
+      ...firstProject,
+      id: "00000000-0000-4000-8000-000000000075",
+      name: "Second project",
+      rootPath: "D:\\workspace\\team-scope-second",
+    };
+    database.saveProject(firstProject);
+    database.saveProject(secondProject);
+    const firstLead = database.createConversation(firstProject.id, {
+      teamId: "default-team",
+      threadKind: "team_lead",
+    });
+    const secondLead = database.createConversation(secondProject.id, {
+      teamId: "default-team",
+      threadKind: "team_lead",
+    });
+    database.bindTeamExecutionConversation({
+      conversationId: firstLead.id,
+      projectId: firstProject.id,
+      sourceConversationId: null,
+      teamId: "default-team",
+    });
+    database.bindTeamExecutionConversation({
+      conversationId: secondLead.id,
+      projectId: secondProject.id,
+      sourceConversationId: null,
+      teamId: "default-team",
+    });
+
+    expect(database.getTeamExecutionConversation({
+      projectId: firstProject.id,
+      sourceConversationId: null,
+      teamId: "default-team",
+    })?.id).toBe(firstLead.id);
+    expect(database.getTeamExecutionConversation({
+      projectId: secondProject.id,
+      sourceConversationId: null,
+      teamId: "default-team",
+    })?.id).toBe(secondLead.id);
+    database.close();
+  });
+
+  it("allocates stable unique Team instance names inside a project", () => {
+    const database = new AgentDatabase(":memory:");
+    const directory = structuredClone(DEFAULT_AGENT_DIRECTORY_CONFIGURATION);
+    directory.teams[1]!.name = directory.teams[0]!.name;
+    database.syncTeamDirectory(directory);
+    const project = {
+      id: "00000000-0000-4000-8000-000000000076",
+      isPinned: false,
+      name: "Named Team fixture",
+      rootPath: "D:\\workspace\\named-team",
+    };
+    database.saveProject(project);
+    const source = database.createConversation(project.id);
+    const selection = {
+      modelId: "deepseek-v4-flash",
+      providerId: "00000000-0000-4000-8000-000000000077",
+      reasoning: null,
+    };
+    const create = (teamId: string, instanceName?: string) => database.createTeamWorkItem({
+      acceptanceCriteria: [],
+      ...(instanceName === undefined ? {} : { instanceName }),
+      permissionMode: "ask_before_changes" as const,
+      priority: "normal" as const,
+      projectId: project.id,
+      requirement: "验证团队实例命名。",
+      sourceConversationId: source.id,
+      teamId,
+      title: "团队实例命名",
+    }, selection);
+
+    const first = create(directory.teams[0]!.id);
+    const duplicateTemplateName = create(directory.teams[1]!.id);
+    const reused = create(directory.teams[0]!.id, "不应覆盖已有名称");
+
+    expect(first.instanceName).toBe(directory.teams[0]!.name);
+    expect(duplicateTemplateName.instanceName).toBe(`${directory.teams[0]!.name} (1)`);
+    expect(reused.instanceName).toBe(first.instanceName);
+    database.close();
+  });
+
+  it("keeps conversation Team instance names scoped to their source conversation", () => {
+    const database = new AgentDatabase(":memory:");
+    database.syncTeamDirectory(structuredClone(DEFAULT_AGENT_DIRECTORY_CONFIGURATION));
+    const project = {
+      id: "00000000-0000-4000-8000-000000000078",
+      isPinned: false,
+      name: "Conversation Team fixture",
+      rootPath: "D:\\workspace\\conversation-team",
+    };
+    database.saveProject(project);
+    const firstSource = database.createConversation(project.id);
+    const secondSource = database.createConversation(project.id);
+    const selection = {
+      modelId: "deepseek-v4-flash",
+      providerId: "00000000-0000-4000-8000-000000000079",
+      reasoning: null,
+    };
+    const create = (sourceConversationId: string) => database.createTeamWorkItem({
+      acceptanceCriteria: [],
+      executionScope: "conversation",
+      instanceName: "专项小组",
+      permissionMode: "ask_before_changes",
+      priority: "normal",
+      projectId: project.id,
+      requirement: "验证对话团队隔离。",
+      sourceConversationId,
+      teamId: "default-team",
+      title: "对话团队隔离",
+    }, selection);
+
+    expect(create(firstSource.id).instanceName).toBe("专项小组");
+    expect(create(firstSource.id).instanceName).toBe("专项小组");
+    expect(create(secondSource.id).instanceName).toBe("专项小组");
+    database.close();
+  });
+
+  it("persists the custom order of visible Team instances", () => {
+    const database = new AgentDatabase(":memory:");
+    database.syncTeamDirectory(structuredClone(DEFAULT_AGENT_DIRECTORY_CONFIGURATION));
+    const project = {
+      id: "00000000-0000-4000-8000-000000000080",
+      isPinned: false,
+      name: "Team order fixture",
+      rootPath: "D:\\workspace\\team-order",
+    };
+    database.saveProject(project);
+    const first = database.createTeamInstance({
+      name: "全局团队",
+      scope: "global",
+      teamId: "default-team",
+    });
+    const second = database.createTeamInstance({
+      name: "项目团队",
+      projectId: project.id,
+      scope: "project",
+      teamId: "default-team",
+    });
+
+    expect(database.listTeamInstances().map((instance) => instance.id)).toEqual([
+      first.id,
+      second.id,
     ]);
-    database.syncPluginCatalog([]);
-    expect(database.listPluginCatalog()).toEqual([]);
+    expect(database.reorderTeamInstances([second.id, first.id]).map((instance) => instance.id))
+      .toEqual([second.id, first.id]);
+    expect(() => database.reorderTeamInstances([first.id, first.id])).toThrow(
+      "duplicate identifiers",
+    );
+    expect(() => database.reorderTeamInstances([first.id])).toThrow(
+      "include every visible Team",
+    );
+    database.close();
+  });
+
+  it("keeps the latest bounded Team WorkItem event projection after repeated queued edits", () => {
+    const database = new AgentDatabase(":memory:");
+    database.syncTeamDirectory(structuredClone(DEFAULT_AGENT_DIRECTORY_CONFIGURATION));
+    const project = {
+      id: "00000000-0000-4000-8000-000000000081",
+      isPinned: false,
+      name: "Team event cap fixture",
+      rootPath: "D:\\workspace\\team-event-cap",
+    };
+    database.saveProject(project);
+    const modelSelection = {
+      modelId: "deepseek-v4-flash",
+      providerId: "00000000-0000-4000-8000-000000000082",
+      reasoning: null,
+    };
+    const created = database.createTeamWorkItem({
+      acceptanceCriteria: [],
+      permissionMode: "ask_before_changes",
+      priority: "normal",
+      projectId: project.id,
+      requirement: "持续编辑的需求。",
+      teamId: "default-team",
+      title: "持续编辑",
+    }, modelSelection);
+
+    let updated = created;
+    for (let index = 1; index <= 205; index += 1) {
+      updated = database.updateTeamWorkItem({
+        requirement: `第 ${index} 次修改的需求。`,
+        title: `第 ${index} 次修改`,
+        workItemId: created.id,
+      });
+    }
+
+    expect(updated).toMatchObject({
+      requirement: "第 205 次修改的需求。",
+      title: "第 205 次修改",
+    });
+    expect(updated.events).toHaveLength(200);
+    expect(updated.events[0]?.sequence).toBe(8);
+    expect(updated.events.at(-1)).toMatchObject({ sequence: 207, type: "updated" });
+    database.close();
+  });
+
+  it("does not recover a reserved Team WorkItem root or unbound Subagent Run while preserving a side chat Run", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "agent-team-recovery-"));
+    temporaryDirectories.push(directory);
+    const databasePath = path.join(directory, "agent.sqlite");
+    const database = new AgentDatabase(databasePath);
+    database.syncTeamDirectory(structuredClone(DEFAULT_AGENT_DIRECTORY_CONFIGURATION));
+    const project = {
+      id: "00000000-0000-4000-8000-000000000090",
+      isPinned: false,
+      name: "Interrupted Team fixture",
+      rootPath: "D:\\workspace\\interrupted-team",
+    };
+    database.saveProject(project);
+    const modelSelection = {
+      modelId: "deepseek-v4-flash",
+      providerId: "00000000-0000-4000-8000-000000000091",
+      reasoning: null,
+    };
+    const workItem = database.createTeamWorkItem({
+      acceptanceCriteria: [],
+      modelSelection,
+      permissionMode: "full_access",
+      priority: "normal",
+      projectId: project.id,
+      requirement: "验证重启后不会重放团队执行。",
+      teamId: "default-team",
+      title: "阻止重放团队执行",
+    }, modelSelection);
+    const root = database.createConversation(project.id, {
+      modelSelection,
+      teamId: "default-team",
+      threadKind: "team_lead",
+    });
+    database.reserveTeamWorkItemExecution(workItem.id, root.id);
+    database.createRunWithUserMessage(
+      root.id,
+      "开始受管执行",
+      modelSelection.modelId,
+    );
+    const unboundSubagent = database.forkConversation(root.id, "subagent");
+    database.createRunWithUserMessage(
+      unboundSubagent.id,
+      "尚未写入委派关系的 Subagent Run",
+      modelSelection.modelId,
+    );
+    const sideChat = database.forkConversation(root.id, "side");
+    const sideRun = database.createRunWithUserMessage(
+      sideChat.id,
+      "这是可恢复的普通侧边对话",
+      modelSelection.modelId,
+    );
+    database.close();
+
+    const reopened = new AgentDatabase(databasePath);
+    expect(reopened.listQueuedRunRecoveries().map((recovery) => recovery.runId)).toEqual([
+      sideRun.runId,
+    ]);
+    expect(reopened.blockInterruptedTeamWorkItems()).toBe(1);
+    expect(reopened.getTeamWorkItem(workItem.id)).toMatchObject({
+      activeRunId: null,
+      status: "blocked",
+    });
+    expect(reopened.getConversation(root.id)).toMatchObject({
+      activeRunId: null,
+      lastRunStatus: "failed",
+    });
+    expect(reopened.getConversation(unboundSubagent.id)).toMatchObject({
+      activeRunId: null,
+      lastRunStatus: "failed",
+    });
+    expect(reopened.listQueuedRunRecoveries().map((recovery) => recovery.runId)).toEqual([
+      sideRun.runId,
+    ]);
+    reopened.close();
+  });
+
+  it("requeues a blocked Team WorkItem only after explicit publication and keeps its history", () => {
+    const database = new AgentDatabase(":memory:");
+    database.syncTeamDirectory(structuredClone(DEFAULT_AGENT_DIRECTORY_CONFIGURATION));
+    const project = {
+      id: "00000000-0000-4000-8000-000000000093",
+      isPinned: false,
+      name: "Republish Team fixture",
+      rootPath: "D:\\workspace\\republish-team",
+    };
+    const modelSelection = {
+      modelId: "deepseek-v4-flash",
+      providerId: "00000000-0000-4000-8000-000000000094",
+      reasoning: null,
+    };
+    database.saveProject(project);
+    const workItem = database.createTeamWorkItem({
+      acceptanceCriteria: [],
+      modelSelection,
+      permissionMode: "full_access",
+      priority: "normal",
+      projectId: project.id,
+      requirement: "验证用户能够重新发布已阻塞任务。",
+      teamId: "default-team",
+      title: "重新发布阻塞任务",
+    }, modelSelection);
+    const root = database.createConversation(project.id, {
+      modelSelection,
+      teamId: "default-team",
+      threadKind: "team_lead",
+    });
+    database.reserveTeamWorkItemExecution(workItem.id, root.id);
+    const run = database.createRunWithUserMessage(root.id, "开始执行", modelSelection.modelId);
+    database.startTeamWorkItem(workItem.id, root.id, run.runId);
+    database.finishRun(run.runId, "failed", "connection closed");
+    const blocked = database.blockTeamWorkItem(workItem.id, "连接中断，需要人工确认。");
+
+    expect(blocked).toMatchObject({
+      blockedReason: "连接中断，需要人工确认。",
+      executionConversationId: root.id,
+      revision: 1,
+      status: "blocked",
+    });
+
+    const published = database.publishTeamWorkItem(workItem.id);
+
+    expect(published).toMatchObject({
+      activeRunId: null,
+      blockedReason: null,
+      executionConversationId: null,
+      revision: 2,
+      status: "queued",
+    });
+    expect(published.events.at(-1)).toMatchObject({
+      detail: "用户已重新发布任务，等待团队调度。",
+      type: "scheduled",
+    });
+    expect(database.reserveTeamWorkItemExecution(workItem.id, root.id)).toMatchObject({
+      executionConversationId: root.id,
+      status: "planned",
+    });
+    database.close();
+  });
+
+  it("keeps a WorkItem running until every delegated execution branch is terminal", () => {
+    const database = new AgentDatabase(":memory:");
+    const directory = structuredClone(DEFAULT_AGENT_DIRECTORY_CONFIGURATION);
+    database.syncTeamDirectory(directory);
+    const project = {
+      id: "00000000-0000-4000-8000-000000000015",
+      isPinned: false,
+      name: "Delegation completion fixture",
+      rootPath: "D:\\workspace\\delegation-completion",
+    };
+    database.saveProject(project);
+    const modelSelection = {
+      modelId: "deepseek-v4-flash",
+      providerId: "00000000-0000-4000-8000-000000000016",
+      reasoning: null,
+    };
+    const lead = directory.agents.find((agent) => agent.id === "team-lead");
+    if (lead === undefined) throw new Error("Team Lead fixture is unavailable.");
+    const workItem = database.createTeamWorkItem({
+      acceptanceCriteria: ["所有委派完成后再验收"],
+      modelSelection,
+      permissionMode: "full_access",
+      priority: "normal",
+      projectId: project.id,
+      requirement: "验证后台委派完成条件。",
+      teamId: "default-team",
+      title: "等待所有委派完成",
+    }, modelSelection);
+    const root = database.createConversation(project.id, {
+      agent: {
+        id: lead.id,
+        instructions: lead.instructions,
+        isDefault: lead.isDefault,
+        name: lead.name,
+        role: lead.role,
+      },
+      modelSelection,
+      teamId: "default-team",
+      threadKind: "team_lead",
+    });
+    const rootRun = database.createRunWithUserMessage(root.id, "开始执行", modelSelection.modelId);
+    database.startTeamWorkItem(workItem.id, root.id, rootRun.runId);
+    const worker = database.forkConversation(root.id, "subagent");
+    const workerRun = database.createRunWithUserMessage(worker.id, "执行实现", modelSelection.modelId);
+    const workerTask = database.createSubagentTask({
+      childConversationId: worker.id,
+      parentConversationId: root.id,
+      sourceRunId: rootRun.runId,
+      task: "执行实现",
+      title: "实现",
+    });
+    database.assignSubagentTaskRun(workerTask.id, workerRun.runId);
+    const nestedWorker = database.forkConversation(worker.id, "subagent");
+    const nestedRun = database.createRunWithUserMessage(
+      nestedWorker.id,
+      "独立复核",
+      modelSelection.modelId,
+    );
+    const nestedTask = database.createSubagentTask({
+      childConversationId: nestedWorker.id,
+      parentConversationId: worker.id,
+      sourceRunId: workerRun.runId,
+      task: "独立复核",
+      title: "复核",
+    });
+    database.assignSubagentTaskRun(nestedTask.id, nestedRun.runId);
+
+    database.finishRun(rootRun.runId, "completed", null);
+    expect(database.finishTeamWorkItemRun({
+      conversationId: root.id,
+      error: null,
+      resultSummary: "Team Lead 的首轮说明",
+      runId: rootRun.runId,
+      status: "completed",
+      workItemId: workItem.id,
+    })).toMatchObject({ activeRunId: null, resultSummary: null, status: "running" });
+    expect(database.countActiveSubagentTasksInExecutionTree(root.id)).toBe(2);
+
+    database.finishRun(workerRun.runId, "completed", null);
+    database.completeSubagentTaskByRun({
+      error: null,
+      result: "实现已完成",
+      status: "completed",
+      targetRunId: workerRun.runId,
+    });
+    expect(database.getConversation(root.id).activeSubagentCount).toBe(0);
+    expect(database.countActiveSubagentTasksInExecutionTree(root.id)).toBe(1);
+
+    const intermediateContinuation = database.createTeamWorkItemContinuationRun({
+      conversationId: root.id,
+      modelId: modelSelection.modelId,
+      workItemId: workItem.id,
+    });
+    database.finishRun(intermediateContinuation.runId, "completed", null);
+    expect(database.finishTeamWorkItemRun({
+      conversationId: root.id,
+      error: null,
+      resultSummary: "等待复核",
+      runId: intermediateContinuation.runId,
+      status: "completed",
+      workItemId: workItem.id,
+    })).toMatchObject({ activeRunId: null, status: "running" });
+
+    database.finishRun(nestedRun.runId, "completed", null);
+    database.completeSubagentTaskByRun({
+      error: null,
+      result: "复核已完成",
+      status: "completed",
+      targetRunId: nestedRun.runId,
+    });
+    expect(database.countActiveSubagentTasksInExecutionTree(root.id)).toBe(0);
+
+    const lateSender = database.createConversation(null);
+    const lateResult = database.sendAgentMessage({
+      content: "最后一条成员结果已经送达。",
+      runId: crypto.randomUUID(),
+      senderConversationId: lateSender.id,
+      targetConversationId: root.id,
+    });
+    const unreadContinuation = database.createTeamWorkItemContinuationRun({
+      conversationId: root.id,
+      modelId: modelSelection.modelId,
+      workItemId: workItem.id,
+    });
+    database.finishRun(unreadContinuation.runId, "completed", null);
+    expect(database.finishTeamWorkItemRun({
+      conversationId: root.id,
+      error: null,
+      resultSummary: "尚有未汇总结果",
+      runId: unreadContinuation.runId,
+      status: "completed",
+      workItemId: workItem.id,
+    })).toMatchObject({ activeRunId: null, status: "running" });
+    database.markAgentMessagesRead([lateResult.id]);
+
+    const finalContinuation = database.createTeamWorkItemContinuationRun({
+      conversationId: root.id,
+      modelId: modelSelection.modelId,
+      workItemId: workItem.id,
+    });
+    database.finishRun(finalContinuation.runId, "completed", null);
+    expect(database.finishTeamWorkItemRun({
+      conversationId: root.id,
+      error: null,
+      resultSummary: "所有结果已汇总",
+      runId: finalContinuation.runId,
+      status: "completed",
+      workItemId: workItem.id,
+    })).toMatchObject({
+      activeRunId: null,
+      resultSummary: "所有结果已汇总",
+      status: "waiting_user",
+    });
+    database.close();
+  });
+
+  it("projects a WorkItem execution conversation and recursive Subagents without side chats", () => {
+    const database = new AgentDatabase(":memory:");
+    database.syncTeamDirectory(structuredClone(DEFAULT_AGENT_DIRECTORY_CONFIGURATION));
+    const project = {
+      id: "00000000-0000-4000-8000-000000000021",
+      isPinned: false,
+      name: "Execution lineage fixture",
+      rootPath: "D:\\workspace\\execution-lineage",
+    };
+    const modelSelection = {
+      modelId: "deepseek-v4-flash",
+      providerId: "00000000-0000-4000-8000-000000000022",
+      reasoning: null,
+    };
+    database.saveProject(project);
+    const workItem = database.createTeamWorkItem({
+      acceptanceCriteria: [],
+      modelSelection,
+      permissionMode: "full_access",
+      priority: "normal",
+      projectId: project.id,
+      requirement: "验证真实执行谱系。",
+      teamId: "default-team",
+      title: "验证执行谱系",
+    }, modelSelection);
+
+    expect(database.getTeamWorkItemExecution(workItem.id)).toEqual({
+      agents: [],
+      workItemId: workItem.id,
+    });
+
+    const execution = database.createConversation(project.id, {
+      agent: {
+        id: "team-lead",
+        instructions: "负责总体执行。",
+        isDefault: true,
+        name: "Team Lead",
+        role: "负责人",
+      },
+      modelSelection,
+      teamId: "default-team",
+      threadKind: "agent",
+    });
+    const executionRun = database.createRunWithUserMessage(
+      execution.id,
+      "开始执行",
+      modelSelection.modelId,
+    );
+    database.startTeamWorkItem(workItem.id, execution.id, executionRun.runId);
+
+    const direct = database.forkConversation(execution.id, "subagent");
+    database.bindConversationAgent(direct.id, {
+      id: "investigator",
+      instructions: "检查实现。",
+      isDefault: false,
+      name: "调查 Agent",
+      role: "调查",
+    });
+    const directRun = database.createRunWithUserMessage(direct.id, "调查问题", modelSelection.modelId);
+    const directTask = database.createSubagentTask({
+      childConversationId: direct.id,
+      parentConversationId: execution.id,
+      sourceRunId: executionRun.runId,
+      task: "调查问题",
+      title: "调查问题",
+    });
+    database.assignSubagentTaskRun(directTask.id, directRun.runId);
+
+    const recursive = database.forkConversation(direct.id, "subagent");
+    database.bindConversationAgent(recursive.id, {
+      id: "reviewer",
+      instructions: "复核调查结论。",
+      isDefault: false,
+      name: "复核 Agent",
+      role: "复核",
+    });
+    const recursiveRun = database.createRunWithUserMessage(
+      recursive.id,
+      "复核调查结论",
+      modelSelection.modelId,
+    );
+    const recursiveTask = database.createSubagentTask({
+      childConversationId: recursive.id,
+      parentConversationId: direct.id,
+      sourceRunId: directRun.runId,
+      task: "复核调查结论",
+      title: "复核调查结论",
+    });
+    database.assignSubagentTaskRun(recursiveTask.id, recursiveRun.runId);
+
+    const sideChat = database.forkConversation(execution.id, "side");
+    const sideChatSubagent = database.forkConversation(sideChat.id, "subagent");
+    const lineage = database.getTeamWorkItemExecution(workItem.id);
+
+    expect(database.getConversation(execution.id).teamWorkItemId).toBe(workItem.id);
+    expect(database.getConversation(direct.id).teamWorkItemId).toBe(workItem.id);
+    expect(database.getConversation(recursive.id).teamWorkItemId).toBe(workItem.id);
+    expect(database.getConversation(sideChat.id).teamWorkItemId).toBeNull();
+    expect(database.getConversation(sideChatSubagent.id).teamWorkItemId).toBeNull();
+    for (const conversation of database.listConversationHierarchy()) {
+      expect(database.getConversation(conversation.id).teamWorkItemId).toBe(conversation.teamWorkItemId);
+    }
+    expect(database.isTeamWorkItemExecutionTreeConversation(execution.id)).toBe(true);
+    expect(database.isTeamWorkItemExecutionTreeConversation(direct.id)).toBe(true);
+    expect(database.isTeamWorkItemExecutionTreeConversation(sideChat.id)).toBe(false);
+    expect(database.isTeamWorkItemExecutionTreeConversation(sideChatSubagent.id)).toBe(false);
+
+    expect(lineage.agents.map((entry) => entry.conversation.id)).toEqual([
+      execution.id,
+      direct.id,
+      recursive.id,
+    ]);
+    expect(lineage.agents).toMatchObject([
+      {
+        agent: { id: "team-lead", name: "Team Lead" },
+        conversation: { activeRunId: executionRun.runId, id: execution.id },
+        delegation: null,
+        depth: 0,
+      },
+      {
+        agent: { id: "investigator", name: "调查 Agent" },
+        conversation: { activeRunId: directRun.runId, id: direct.id, subagentTaskStatus: "running" },
+        delegation: { id: directTask.id, status: "running", title: "调查问题" },
+        depth: 1,
+      },
+      {
+        agent: { id: "reviewer", name: "复核 Agent" },
+        conversation: { activeRunId: recursiveRun.runId, id: recursive.id, subagentTaskStatus: "running" },
+        delegation: { id: recursiveTask.id, status: "running", title: "复核调查结论" },
+        depth: 2,
+      },
+    ]);
+    expect(lineage.agents.some((entry) => entry.conversation.id === sideChat.id)).toBe(false);
+
+    database.finishRun(recursiveRun.runId, "completed", null);
+    database.completeSubagentTaskByRun({
+      error: null,
+      result: "复核完成。",
+      status: "completed",
+      targetRunId: recursiveRun.runId,
+    });
+    expect(() => database.createConversationDeletionTask(recursive.id)).toThrow(
+      "Managed Team WorkItem conversations are retained",
+    );
+    expect(database.getTeamWorkItemExecution(workItem.id).agents.map((entry) => entry.conversation.id))
+      .toEqual([execution.id, direct.id, recursive.id]);
+
+    const retainedRootWorkItem = database.createTeamWorkItem({
+      acceptanceCriteria: [],
+      modelSelection,
+      permissionMode: "full_access",
+      priority: "normal",
+      projectId: project.id,
+      requirement: "验证待删除根对话不会投影。",
+      teamId: "default-team",
+      title: "验证待删除执行根",
+    }, modelSelection);
+    const retainedRoot = database.createConversation(project.id, {
+      agent: {
+        id: "team-lead",
+        instructions: "负责总体执行。",
+        isDefault: true,
+        name: "Team Lead",
+        role: "负责人",
+      },
+      modelSelection,
+      teamId: "default-team",
+      threadKind: "agent",
+    });
+    const retainedRootRun = database.createRunWithUserMessage(
+      retainedRoot.id,
+      "开始执行",
+      modelSelection.modelId,
+    );
+    database.startTeamWorkItem(retainedRootWorkItem.id, retainedRoot.id, retainedRootRun.runId);
+    database.finishRun(retainedRootRun.runId, "completed", null);
+    expect(() => database.setConversationArchived(retainedRoot.id, true)).toThrow(
+      "Managed Team WorkItem conversations are retained",
+    );
+    expect(() => database.createConversationDeletionTask(retainedRoot.id)).toThrow(
+      "Managed Team WorkItem conversations are retained",
+    );
+    expect(() => database.setConversationModelSelection(retainedRoot.id, modelSelection)).toThrow(
+      "Managed Team WorkItem conversations use the WorkItem's frozen model selection",
+    );
+    expect(() => database.setConversationProject(retainedRoot.id, null)).toThrow(
+      "Managed Team WorkItem conversations retain their WorkItem project binding",
+    );
+    expect(database.getTeamWorkItemExecution(retainedRootWorkItem.id).agents.map((entry) => entry.conversation.id))
+      .toEqual([retainedRoot.id]);
+    expect(database.getTeamWorkItem(retainedRootWorkItem.id)).toMatchObject({ tasks: [] });
+    expect(database.listTeamWorkItems({ teamId: "default-team" }))
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({ id: retainedRootWorkItem.id, tasks: [] }),
+      ]));
+    database.close();
+  });
+
+  it("versions Team Lead collaboration plans and projects planned and ad-hoc messages", () => {
+    const database = new AgentDatabase(":memory:");
+    database.syncTeamDirectory(structuredClone(DEFAULT_AGENT_DIRECTORY_CONFIGURATION));
+    const project = {
+      id: "00000000-0000-4000-8000-000000000081",
+      isPinned: false,
+      name: "Collaboration projection fixture",
+      rootPath: "D:\\workspace\\collaboration-projection",
+    };
+    const modelSelection = {
+      modelId: "deepseek-v4-flash",
+      providerId: "00000000-0000-4000-8000-000000000082",
+      reasoning: null,
+    };
+    database.saveProject(project);
+    const workItem = database.createTeamWorkItem({
+      acceptanceCriteria: [],
+      modelSelection,
+      permissionMode: "full_access",
+      priority: "normal",
+      projectId: project.id,
+      requirement: "验证计划与实际通信投影。",
+      teamId: "default-team",
+      title: "协作投影",
+    }, modelSelection);
+    const lead = database.createConversation(project.id, {
+      agent: {
+        avatarIcon: "crown",
+        id: "team-lead",
+        instructions: "负责总体执行。",
+        isDefault: true,
+        name: "Team Lead",
+        role: "负责人",
+      },
+      modelSelection,
+      teamId: "default-team",
+      threadKind: "team_lead",
+    });
+    const createMember = (
+      agentId: string,
+      name: string,
+      avatarIcon: "code" | "shield",
+    ) => {
+      const member = database.createConversation(project.id, {
+        agent: {
+          avatarIcon,
+          id: agentId,
+          instructions: "执行专业任务。",
+          isDefault: false,
+          name,
+          role: "专业成员",
+        },
+        modelSelection,
+        parentConversationId: lead.id,
+        teamId: "default-team",
+        threadKind: "agent",
+      });
+      database.bindTeamMemberConversation({
+        agentId,
+        conversationId: member.id,
+        teamExecutionConversationId: lead.id,
+      });
+      return member;
+    };
+    const plannedMember = createMember("developer", "开发 Agent", "code");
+    const adHocMember = createMember("reviewer", "评审 Agent", "shield");
+    const run = database.createRunWithUserMessage(lead.id, "开始执行", modelSelection.modelId);
+    database.startTeamWorkItem(workItem.id, lead.id, run.runId);
+    const memberRun = database.createRunWithUserMessage(
+      plannedMember.id,
+      "实现并汇报",
+      modelSelection.modelId,
+    );
+    database.markRunRunning(memberRun.runId);
+    const memberOutput = `已完成实现。${"详细输出".repeat(80)}`;
+    database.completeRun({
+      assistant: {
+        content: memberOutput,
+        kind: "turn",
+        messageId: crypto.randomUUID(),
+        modelId: modelSelection.modelId,
+      },
+      conversationId: plannedMember.id,
+      error: null,
+      result: "已完成实现。",
+      runId: memberRun.runId,
+      status: "completed",
+    });
+    database.recordTeamCollaborationOutput({
+      content: memberOutput,
+      conversationId: plannedMember.id,
+      runId: memberRun.runId,
+      workItemId: workItem.id,
+    });
+
+    const firstPlan = database.setTeamCollaborationPlan({
+      createdByConversationId: lead.id,
+      reason: "先由开发 Agent 实现，再返回 Team Lead 汇总。",
+      routes: [
+        {
+          fromConversationId: lead.id,
+          purpose: "分派实现",
+          toConversationId: plannedMember.id,
+        },
+        {
+          fromConversationId: plannedMember.id,
+          purpose: "返回实现结果",
+          toConversationId: lead.id,
+        },
+      ],
+    });
+    expect(firstPlan.plan).toMatchObject({ revision: 1, status: "active" });
+    expect(firstPlan.summary).toMatchObject({ participantCount: 2, plannedRouteCount: 2 });
+
+    const plannedMessage = database.sendAgentMessage({
+      content: "请实现功能。",
+      runId: run.runId,
+      senderConversationId: lead.id,
+      targetConversationId: plannedMember.id,
+    });
+    database.recordTeamCollaborationMessage({ message: plannedMessage, workItemId: workItem.id });
+    const adHocMessage = database.sendAgentMessage({
+      content: "请临时复核风险。",
+      runId: run.runId,
+      senderConversationId: lead.id,
+      targetConversationId: adHocMember.id,
+    });
+    database.recordTeamCollaborationMessage({ message: adHocMessage, workItemId: workItem.id });
+
+    const projection = database.getTeamCollaborationProjection(workItem.id);
+    expect(projection.edges).toEqual(expect.arrayContaining([
+      expect.objectContaining({ messageCount: 1, purposes: ["分派实现"], state: "observed" }),
+      expect.objectContaining({ messageCount: 0, purposes: ["返回实现结果"], state: "planned" }),
+      expect.objectContaining({ messageCount: 1, purposes: ["计划外通信"], state: "ad_hoc" }),
+    ]));
+    expect(projection.summary).toMatchObject({
+      adHocRouteCount: 1,
+      messageCount: 2,
+      observedRouteCount: 2,
+      participantCount: 3,
+    });
+    expect(projection.nodes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ avatarIcon: "crown", latestOutput: null, name: "Team Lead" }),
+      expect.objectContaining({
+        avatarIcon: "code",
+        latestOutputRunId: memberRun.runId,
+        name: "开发 Agent",
+      }),
+      expect.objectContaining({ avatarIcon: "shield", latestOutput: null, name: "评审 Agent" }),
+    ]));
+    const developerOutput = projection.nodes.find(
+      (node) => node.name === "开发 Agent",
+    )?.latestOutput;
+    expect(developerOutput).toMatch(/^…/u);
+    expect(developerOutput).toHaveLength(280);
+
+    const revised = database.setTeamCollaborationPlan({
+      createdByConversationId: lead.id,
+      reason: "把临时评审纳入正式计划。",
+      routes: [{
+        fromConversationId: lead.id,
+        purpose: "正式评审",
+        toConversationId: adHocMember.id,
+      }],
+    });
+    expect(revised.plan).toMatchObject({ revision: 2, status: "active" });
+    expect(revised.edges).toEqual(expect.arrayContaining([
+      expect.objectContaining({ messageCount: 1, purposes: ["正式评审"], state: "observed" }),
+      expect.objectContaining({ messageCount: 1, purposes: ["计划外通信"], state: "ad_hoc" }),
+    ]));
+
+    database.finishRun(run.runId, "completed", null);
+    expect(database.finishTeamWorkItemRun({
+      conversationId: lead.id,
+      error: null,
+      resultSummary: "第一项协作任务已完成。",
+      runId: run.runId,
+      status: "completed",
+      workItemId: workItem.id,
+    })).toMatchObject({ status: "waiting_user" });
+    const laterWorkItem = database.createTeamWorkItem({
+      acceptanceCriteria: [],
+      modelSelection,
+      permissionMode: "full_access",
+      priority: "normal",
+      projectId: project.id,
+      requirement: "执行后续的独立协作任务。",
+      teamId: "default-team",
+      title: "后续协作投影",
+    }, modelSelection);
+    database.reserveTeamWorkItemExecution(laterWorkItem.id, lead.id);
+    const laterLeadRun = database.createRunWithUserMessage(
+      lead.id,
+      "开始后续协作任务",
+      modelSelection.modelId,
+    );
+    database.startTeamWorkItem(laterWorkItem.id, lead.id, laterLeadRun.runId);
+    const laterMemberRun = database.createRunWithUserMessage(
+      plannedMember.id,
+      "处理后续任务",
+      modelSelection.modelId,
+    );
+    database.completeRun({
+      assistant: {
+        content: "这是后续 WorkItem 的成员输出。",
+        kind: "turn",
+        messageId: crypto.randomUUID(),
+        modelId: modelSelection.modelId,
+      },
+      conversationId: plannedMember.id,
+      error: null,
+      result: "这是后续 WorkItem 的成员输出。",
+      runId: laterMemberRun.runId,
+      status: "completed",
+    });
+    database.recordTeamCollaborationOutput({
+      content: "这是后续 WorkItem 的成员输出。",
+      conversationId: plannedMember.id,
+      runId: laterMemberRun.runId,
+      workItemId: laterWorkItem.id,
+    });
+    const historicalProjection = database.getTeamCollaborationProjection(workItem.id);
+    expect(historicalProjection.isLive).toBe(false);
+    expect(database.getTeamCollaborationProjection(laterWorkItem.id).isLive).toBe(true);
+    expect(historicalProjection.nodes.find(
+      (node) => node.conversationId === plannedMember.id,
+    )).toMatchObject({
+      latestOutputRunId: memberRun.runId,
+    });
     database.close();
   });
 
@@ -329,6 +2023,27 @@ describe("AgentDatabase", () => {
 
     const reopenedDatabase = new AgentDatabase(databasePath);
     expect(reopenedDatabase.listProjects()).toEqual([pinnedProject, firstProject]);
+    reopenedDatabase.close();
+  });
+
+  it("persists the opt-in project team navigator visibility", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "agent-database-"));
+    temporaryDirectories.push(directory);
+    const databasePath = path.join(directory, "agent.sqlite");
+    const project = {
+      id: "00000000-0000-4000-8000-000000000001",
+      isPinned: false,
+      name: "团队导航项目",
+      rootPath: "D:\\workspace\\team-navigation",
+      showTeamsInNavigator: true,
+    };
+    const firstDatabase = new AgentDatabase(databasePath);
+    firstDatabase.saveProject(project);
+    expect(firstDatabase.listProjects()).toEqual([project]);
+    firstDatabase.close();
+
+    const reopenedDatabase = new AgentDatabase(databasePath);
+    expect(reopenedDatabase.listProjects()).toEqual([project]);
     reopenedDatabase.close();
   });
 
@@ -400,6 +2115,34 @@ describe("AgentDatabase", () => {
       { version: 5 },
       { version: 6 },
       { version: 7 },
+      { version: 8 },
+      { version: 9 },
+      { version: 10 },
+      { version: 11 },
+      { version: 12 },
+      { version: 13 },
+      { version: 14 },
+      { version: 15 },
+      { version: 16 },
+      { version: 17 },
+      { version: 18 },
+      { version: 19 },
+      { version: 20 },
+      { version: 21 },
+      { version: 22 },
+      { version: 23 },
+      { version: 24 },
+      { version: 25 },
+      { version: 26 },
+      { version: 27 },
+      { version: 28 },
+      { version: 29 },
+      { version: 30 },
+      { version: 31 },
+      { version: 32 },
+      { version: 33 },
+      { version: 34 },
+      { version: 35 },
     ]);
     metadata.close();
   });
@@ -578,6 +2321,43 @@ describe("AgentDatabase", () => {
       completed.subagentResultMessage,
     ]);
     database.close();
+  });
+
+  it("persists only catalog-backed Conversation avatar icons", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "agent-database-avatar-"));
+    temporaryDirectories.push(directory);
+    const databasePath = path.join(directory, "agent.sqlite");
+    const database = new AgentDatabase(databasePath);
+    const conversation = database.createConversation(null);
+
+    expect(database.setConversationAvatarIcon(conversation.id, "bug").avatarIcon).toBe("bug");
+    expect(() => database.setConversationAvatarIcon(conversation.id, "<svg />")).toThrow();
+    expect(database.setConversationAvatarIcon(conversation.id, null).avatarIcon).toBeNull();
+    expect(database.setConversationAvatarIcon(conversation.id, "bug").avatarIcon).toBe("bug");
+    database.close();
+
+    const reopened = new AgentDatabase(databasePath);
+    expect(reopened.getConversation(conversation.id).avatarIcon).toBe("bug");
+    reopened.close();
+  });
+
+  it("migrates persisted Subagent profile avatars back to generated pixel identities", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "agent-database-subagent-avatar-"));
+    temporaryDirectories.push(directory);
+    const databasePath = path.join(directory, "agent.sqlite");
+    const database = new AgentDatabase(databasePath);
+    const parent = database.createConversation(null);
+    const subagent = database.forkConversation(parent.id, "subagent");
+    database.setConversationAvatarIcon(subagent.id, "bot");
+    database.close();
+
+    const legacy = new DatabaseSync(databasePath);
+    legacy.exec("DELETE FROM schema_migrations WHERE version >= 21;");
+    legacy.close();
+
+    const migrated = new AgentDatabase(databasePath);
+    expect(migrated.getConversation(subagent.id).avatarIcon).toBeNull();
+    migrated.close();
   });
 
   it("derives an Assistant reply completion time and total Run duration for the timeline", () => {
@@ -777,6 +2557,7 @@ describe("AgentDatabase", () => {
     database.saveContextCheckpoint(conversation.id, lastSequence, "包含旧回答的摘要");
 
     const creation = database.replaceLatestUserMessage({
+      attachmentIds: [],
       content: "修改后的任务",
       conversationId: conversation.id,
       messageId: second.userMessage.id,
@@ -810,12 +2591,68 @@ describe("AgentDatabase", () => {
     });
     database.finishRun(creation.runId, "cancelled", null);
     expect(() => database.replaceLatestUserMessage({
+      attachmentIds: [],
       content: "不允许改旧消息",
       conversationId: conversation.id,
       messageId: first.userMessage.id,
       modelContent: "不允许改旧消息",
       modelId: "test-model",
     })).toThrow("latest sent user message");
+    database.close();
+  });
+
+  it("replaces the latest user message attachment selection with original and draft attachments", () => {
+    const database = new AgentDatabase(":memory:");
+    const conversation = database.createConversation(null);
+    const originalAttachmentId = crypto.randomUUID();
+    const addedAttachmentId = crypto.randomUUID();
+    const createAttachment = (id: string, name: string): void => {
+      database.createConversationAttachment({
+        contextTokens: 8,
+        conversationId: conversation.id,
+        createdAt: new Date().toISOString(),
+        extractedTextPath: null,
+        id,
+        kind: "file",
+        messageId: null,
+        mimeType: "text/plain",
+        name,
+        pendingMessageId: null,
+        projectPath: null,
+        sizeBytes: 16,
+        source: "upload",
+        storedPath: `D:\\managed\\${name}`,
+        truncated: false,
+      });
+    };
+    createAttachment(originalAttachmentId, "original.txt");
+    createAttachment(addedAttachmentId, "added.txt");
+    const original = database.createRunWithUserMessage(
+      conversation.id,
+      "原消息",
+      "test-model",
+      [originalAttachmentId],
+    );
+    database.finishRun(original.runId, "completed", null);
+
+    const replacement = database.replaceLatestUserMessage({
+      attachmentIds: [addedAttachmentId],
+      content: "修改后的消息",
+      conversationId: conversation.id,
+      messageId: original.userMessage.id,
+      modelContent: "修改后的消息",
+      modelId: "test-model",
+    });
+
+    expect(replacement.userMessage.attachments).toEqual([
+      expect.objectContaining({ id: addedAttachmentId, messageId: original.userMessage.id }),
+    ]);
+    expect(database.listModelMessages(conversation.id).at(-1)?.attachmentIds)
+      .toEqual([addedAttachmentId]);
+    expect(database.getConversationAttachment(conversation.id, addedAttachmentId).messageId)
+      .toBe(original.userMessage.id);
+    expect(database.getConversationAttachment(conversation.id, originalAttachmentId).messageId)
+      .toBe(original.userMessage.id);
     database.close();
   });
 
@@ -960,6 +2797,47 @@ describe("AgentDatabase", () => {
     reopenedDatabase.close();
   });
 
+  it("persists hidden turn summaries by their covered message boundary", () => {
+    const database = new AgentDatabase(":memory:");
+    const conversation = database.createConversation(null);
+    const firstRun = database.createRunWithUserMessage(
+      conversation.id,
+      "第一轮问题",
+      "test-model",
+    );
+    database.appendAssistantTurn({
+      content: "第一轮回答",
+      conversationId: conversation.id,
+      messageId: crypto.randomUUID(),
+      modelId: "test-model",
+      runId: firstRun.runId,
+      toolCalls: [],
+    });
+    database.finishRun(firstRun.runId, "completed", null);
+    const firstBoundary = database.listContextMessages(conversation.id).at(-1)?.sequence;
+    if (firstBoundary === undefined) throw new Error("Expected the first turn boundary.");
+
+    database.saveConversationTurnSummary({
+      conversationId: conversation.id,
+      coveredThroughSequence: firstBoundary,
+      runId: firstRun.runId,
+      summary: '{"goals":["完成第一轮"]}',
+    });
+
+    expect(database.getLatestConversationTurnSummary(
+      conversation.id,
+      firstBoundary,
+    )).toMatchObject({
+      conversationId: conversation.id,
+      coveredThroughSequence: firstBoundary,
+      runId: firstRun.runId,
+      summary: '{"goals":["完成第一轮"]}',
+    });
+    expect(database.listContextMessagesForRun(firstRun.runId).map((message) => message.content))
+      .toEqual(["第一轮问题", "第一轮回答"]);
+    database.close();
+  });
+
   it("persists model provider state across reopen and conversation forks", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "agent-database-"));
     temporaryDirectories.push(directory);
@@ -995,7 +2873,7 @@ describe("AgentDatabase", () => {
     const reopenedDatabase = new AgentDatabase(databasePath);
     expect(reopenedDatabase.listModelMessages(conversation.id)[1]?.providerState)
       .toEqual(providerState);
-    const fork = reopenedDatabase.forkConversation(conversation.id);
+    const fork = reopenedDatabase.forkConversation(conversation.id, "side");
     expect(reopenedDatabase.listModelMessages(fork.id)[1]?.providerState).toEqual(providerState);
     reopenedDatabase.close();
   });
@@ -1219,6 +3097,8 @@ describe("AgentDatabase", () => {
       undefined,
       executionSnapshot,
     );
+    expect(first.getLatestRunExecutionSnapshot(conversation.id)?.permissionMode)
+      .toBe("ask_before_changes");
     first.close();
 
     const reopened = new AgentDatabase(databasePath);
@@ -1232,12 +3112,74 @@ describe("AgentDatabase", () => {
     }]);
     expect(reopened.getConversation(conversation.id).lastRunStatus).toBe("queued");
     reopened.markRunRunning(queued.runId);
+    reopened.upsertModelRetry({
+      attempt: 3,
+      conversationId: conversation.id,
+      createdAt: "2026-09-02T10:00:00.000Z",
+      id: "00000000-0000-4000-8000-000000000099",
+      kind: "model_retry",
+      maxAttempts: 5,
+      reason: "HTTP 402: Insufficient Balance",
+      retryInMs: 4_000,
+      runId: queued.runId,
+      status: "retrying",
+      updatedAt: "2026-09-02T10:00:01.000Z",
+    });
     reopened.close();
 
     const afterInFlight = new AgentDatabase(databasePath);
     expect(afterInFlight.listQueuedRunRecoveries()).toEqual([]);
     expect(afterInFlight.getConversation(conversation.id).lastRunStatus).toBe("failed");
+    expect(afterInFlight.listTimeline(conversation.id)).toContainEqual(expect.objectContaining({
+      id: "00000000-0000-4000-8000-000000000099",
+      kind: "model_retry",
+      reason: "HTTP 402: Insufficient Balance",
+      retryInMs: null,
+      status: "failed",
+    }));
     afterInFlight.close();
+  });
+
+  it("repairs a retrying timeline left behind by an older interrupted-run recovery", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "agent-stale-model-retry-"));
+    temporaryDirectories.push(directory);
+    const databasePath = path.join(directory, "agent.sqlite");
+    const first = new AgentDatabase(databasePath);
+    const conversation = first.createConversation(null);
+    const run = first.createRunWithUserMessage(conversation.id, "等待模型重试", "test-model");
+    first.markRunRunning(run.runId);
+    first.upsertModelRetry({
+      attempt: 5,
+      conversationId: conversation.id,
+      createdAt: "2026-09-02T10:00:00.000Z",
+      id: "00000000-0000-4000-8000-000000000098",
+      kind: "model_retry",
+      maxAttempts: 5,
+      reason: "HTTP 402: Insufficient Balance",
+      retryInMs: 16_000,
+      runId: run.runId,
+      status: "retrying",
+      updatedAt: "2026-09-02T10:00:01.000Z",
+    });
+    first.close();
+
+    const legacyRecovery = new DatabaseSync(databasePath);
+    legacyRecovery.prepare(
+      `UPDATE runs
+       SET status = 'failed', error = 'Application stopped before the run finished.',
+           updated_at = '2026-09-02T10:00:02.000Z'
+       WHERE id = ?`,
+    ).run(run.runId);
+    legacyRecovery.close();
+
+    const recovered = new AgentDatabase(databasePath);
+    expect(recovered.listTimeline(conversation.id)).toContainEqual(expect.objectContaining({
+      id: "00000000-0000-4000-8000-000000000098",
+      reason: "HTTP 402: Insufficient Balance",
+      retryInMs: null,
+      status: "failed",
+    }));
+    recovered.close();
   });
 
   it("persists a task list through creation and removes it when closed", async () => {
@@ -1263,20 +3205,20 @@ describe("AgentDatabase", () => {
       { status: "pending", title: "重复创建" },
       { status: "pending", title: "重复创建后的步骤" }
     ])).toThrow("active task list already exists");
-    expect(() => firstDatabase.updateTaskList(conversation.id, [
+    const parallelTasks = firstDatabase.updateTaskList(conversation.id, [
       { status: "running", title: "步骤一" },
       { status: "running", title: "步骤二" }
-    ])).toThrow("only have one running task");
+    ]);
+    expect(parallelTasks.tasks.map((task) => task.status)).toEqual(["running", "running"]);
     firstDatabase.close();
 
     const reopenedDatabase = new AgentDatabase(databasePath);
     expect(reopenedDatabase.getTaskList(conversation.id)?.tasks).toMatchObject([
-      { status: "completed", title: "分析需求" },
-      { reason: "等待用户批准修改", status: "blocked", title: "实现功能" },
-      { status: "pending", title: "验证结果" }
+      { status: "running", title: "步骤一" },
+      { status: "running", title: "步骤二" }
     ]);
     expect(reopenedDatabase.getTaskList(conversation.id)?.tasks.map((task) => task.status))
-      .toEqual(["completed", "blocked", "pending"]);
+      .toEqual(["running", "running"]);
     reopenedDatabase.closeTaskList(conversation.id);
     expect(reopenedDatabase.getTaskList(conversation.id)).toBeNull();
     reopenedDatabase.close();
@@ -1371,6 +3313,7 @@ describe("AgentDatabase", () => {
 
     const message = database.sendAgentMessage({
       content: "文件处理完后请通知我。",
+      replyInstruction: "仅回三点摘要。",
       runId: crypto.randomUUID(),
       senderConversationId: sender.id,
       targetConversationId: target.id,
@@ -1379,9 +3322,10 @@ describe("AgentDatabase", () => {
     expect(database.listUnreadAgentMessages(target.id)).toEqual([message]);
     expect(database.listTimeline(target.id)).toContainEqual(message);
     const modelContent = database.listModelMessages(target.id).at(-1)?.content;
-    expect(modelContent).toContain("发送方对话：负责人");
-    expect(modelContent).toContain(`发送方 conversationId：${sender.id}`);
-    expect(modelContent).toContain("调用 send_agent_message");
+    expect(modelContent).toContain("Sender conversation: 负责人");
+    expect(modelContent).toContain(`Sender conversationId: ${sender.id}`);
+    expect(modelContent).toContain("Call send_agent_message");
+    expect(modelContent).toContain("仅回三点摘要。");
     expect(database.getConversation(target.id).hasUnreadResult).toBe(true);
 
     database.markAgentMessagesRead([message.id]);
@@ -1393,6 +3337,100 @@ describe("AgentDatabase", () => {
       expect(timelineMessage.status).toBe("read");
       expect(typeof timelineMessage.readAt).toBe("string");
     }
+    database.close();
+  });
+
+  it("keeps historical Agent messages readable after the sender is deleted", () => {
+    const database = new AgentDatabase(":memory:");
+    const sender = database.createConversation(null);
+    const target = database.createConversation(null);
+    database.renameConversation(sender.id, "已清理的发送方");
+    const message = database.sendAgentMessage({
+      content: "这条历史消息必须继续可见。",
+      messageType: "notification",
+      runId: crypto.randomUUID(),
+      senderConversationId: sender.id,
+      targetConversationId: target.id,
+    });
+
+    const deletionTask = database.createConversationDeletionTask(sender.id);
+    database.completeConversationDeletionTask(deletionTask.id);
+
+    expect(database.listTimeline(target.id)).toContainEqual(message);
+    database.close();
+  });
+
+  it("uses persistent Team Agent names for message senders and stable conversation titles", () => {
+    const database = new AgentDatabase(":memory:");
+    const directory = structuredClone(DEFAULT_AGENT_DIRECTORY_CONFIGURATION);
+    database.syncTeamDirectory(directory);
+    const leadProfile = directory.agents.find((agent) => agent.id === "team-lead");
+    const architectProfile = directory.agents.find((agent) => agent.id === "solution-architect");
+    if (leadProfile === undefined || architectProfile === undefined) {
+      throw new Error("The default Team Agent fixtures are missing.");
+    }
+    const lead = database.createConversation(null, {
+      agent: {
+        id: leadProfile.id,
+        instructions: leadProfile.instructions,
+        isDefault: leadProfile.isDefault,
+        name: leadProfile.name,
+        role: leadProfile.role,
+      },
+      teamId: "default-team",
+      threadKind: "team_lead",
+    });
+    database.renameConversation(lead.id, "请进行一次可见的团队协作测试");
+    const architect = database.createConversation(null, {
+      agent: {
+        id: architectProfile.id,
+        instructions: architectProfile.instructions,
+        isDefault: architectProfile.isDefault,
+        name: architectProfile.name,
+        role: architectProfile.role,
+      },
+      parentConversationId: lead.id,
+      teamId: "default-team",
+      threadKind: "agent",
+    });
+    const historic = database.sendAgentMessage({
+      content: "你好，架构师！",
+      messageType: "notification",
+      runId: crypto.randomUUID(),
+      senderConversationId: lead.id,
+      targetConversationId: architect.id,
+    });
+    expect(historic.senderTitle).toBe("请进行一次可见的团队协作测试");
+
+    const instance = database.createTeamInstance({
+      name: "默认团队",
+      scope: "global",
+      teamId: "default-team",
+    });
+    database.setTeamInstanceRoot(instance.id, lead.id);
+    database.bindTeamMemberConversation({
+      agentId: architectProfile.id,
+      conversationId: architect.id,
+      teamExecutionConversationId: lead.id,
+    });
+    database.renameConversation(lead.id, "Team Lead · 默认团队");
+    database.renameConversation(architect.id, "架构师 · 默认团队");
+
+    const restoredHistoric = database.listTimeline(architect.id)
+      .find((item) => item.kind === "agent_message" && item.id === historic.id);
+    expect(restoredHistoric).toMatchObject({ senderTitle: "Team Lead · 默认团队" });
+    const current = database.sendAgentMessage({
+      content: "请继续评审。",
+      messageType: "notification",
+      runId: crypto.randomUUID(),
+      senderConversationId: lead.id,
+      targetConversationId: architect.id,
+    });
+    expect(current.senderTitle).toBe("Team Lead · 默认团队");
+
+    const run = database.createRunWithUserMessage(lead.id, "新的团队任务", "test-model");
+    expect(database.getConversation(lead.id).title).toBe("Team Lead · 默认团队");
+    database.finishRun(run.runId, "completed", null);
     database.close();
   });
 
@@ -1505,15 +3543,20 @@ describe("AgentDatabase", () => {
     expect(database.listConversationForks(mainConversation.id)).toEqual([
       sideConversation
     ]);
+    expect(database.listConversationHierarchy().map((conversation) => conversation.id)).toEqual(
+      expect.arrayContaining([mainConversation.id, sideConversation.id]),
+    );
     expect(database.listTimeline(sideConversation.id)).toEqual([]);
     expect(database.isConversationFork(mainConversation.id)).toBe(false);
     expect(database.isConversationFork(sideConversation.id)).toBe(true);
     expect(sideConversation.threadKind).toBe("agent");
     expect(sideConversation.agentId).toBe(parentAgent.id);
     expect(database.getConversationAgentBinding(sideConversation.id)).toEqual(parentAgent);
-    expect(database.listModelMessages(sideConversation.id)).toEqual(
-      database.listModelMessages(mainConversation.id)
-    );
+    expect(database.listModelMessages(sideConversation.id).map((message) => message.content)).toEqual([
+      "主对话已有回复",
+      "压缩之后的新消息",
+      "压缩之后的新回复",
+    ]);
     const sourceCheckpoint = database.getContextCheckpoint(mainConversation.id);
     const sideCheckpoint = database.getContextCheckpoint(sideConversation.id);
     expect(sideCheckpoint).toMatchObject({
@@ -1523,6 +3566,12 @@ describe("AgentDatabase", () => {
     expect(database.listContextMessages(sideConversation.id).find(
       (message) => message.sequence === sideCheckpoint?.coveredThroughSequence
     )?.content).toBe("主对话已有回复");
+    expect(database.listContextMessages(sideConversation.id)
+      .filter((message) => message.sequence > (sideCheckpoint?.coveredThroughSequence ?? 0))
+      .map((message) => message.content)).toEqual([
+        "压缩之后的新消息",
+        "压缩之后的新回复",
+      ]);
 
     const sideRun = database.createRunWithUserMessage(
       sideConversation.id,
@@ -1531,7 +3580,7 @@ describe("AgentDatabase", () => {
     );
     database.finishRun(sideRun.runId, "completed", null);
     expect(database.listModelMessages(mainConversation.id)).toHaveLength(4);
-    expect(database.listModelMessages(sideConversation.id)).toHaveLength(5);
+    expect(database.listModelMessages(sideConversation.id)).toHaveLength(4);
 
     const deletionTask = database.createConversationDeletionTask(mainConversation.id);
     database.completeConversationDeletionTask(deletionTask.id);
@@ -1561,6 +3610,49 @@ describe("AgentDatabase", () => {
     expect(database.listModelMessages(sideConversation.id).map((message) => message.content))
       .toEqual(["从第一条消息开始", "完整上下文回复"]);
     expect(database.listTimeline(sideConversation.id)).toEqual([]);
+    database.close();
+  });
+
+  it("starts a Subagent without inheriting the parent model context", () => {
+    const database = new AgentDatabase(":memory:");
+    const parent = database.createConversation(null);
+    const parentRun = database.createRunWithUserMessage(
+      parent.id,
+      "父对话中的历史任务",
+      "test-model",
+    );
+    database.appendAssistantTurn({
+      content: "父对话中的历史回复",
+      conversationId: parent.id,
+      messageId: "00000000-0000-4000-8000-000000000206",
+      modelId: "test-model",
+      runId: parentRun.runId,
+      toolCalls: [],
+    });
+    database.finishRun(parentRun.runId, "completed", null);
+    const coveredThroughSequence = database.listContextMessages(parent.id).at(-1)?.sequence;
+    if (coveredThroughSequence === undefined) throw new Error("Expected parent context messages.");
+    database.saveContextCheckpoint(
+      parent.id,
+      coveredThroughSequence,
+      JSON.stringify({ goals: ["父对话压缩摘要"] }),
+    );
+
+    const subagent = database.forkConversation(parent.id, "subagent");
+
+    expect(database.listModelMessages(subagent.id)).toEqual([]);
+    expect(database.getContextCheckpoint(subagent.id)).toBeNull();
+    expect(database.listTimeline(subagent.id)).toEqual([]);
+
+    const subagentRun = database.createRunWithUserMessage(
+      subagent.id,
+      "只处理本次明确交办",
+      "test-model",
+    );
+    database.finishRun(subagentRun.runId, "completed", null);
+    expect(database.listModelMessages(subagent.id).map((message) => message.content)).toEqual([
+      "只处理本次明确交办",
+    ]);
     database.close();
   });
 
@@ -1623,7 +3715,9 @@ describe("AgentDatabase", () => {
     ]);
     expect(database.getContextCheckpoint(fork.id)).toBeNull();
     const forkTimeline = database.listTimeline(fork.id);
-    expect(forkTimeline.map((item) => item.kind === "tool" ? item.name : item.content)).toEqual([
+    expect(forkTimeline.map((item) => item.kind === "tool"
+      ? item.name
+      : item.kind === "model_retry" ? item.reason : item.content)).toEqual([
       "第一轮问题",
       "第一轮回复",
     ]);
@@ -1647,7 +3741,7 @@ describe("AgentDatabase", () => {
       "第一轮回复",
     ]);
     expect(database.listTimeline(nestedFork.id).map(
-      (item) => item.kind === "tool" ? item.name : item.content,
+      (item) => item.kind === "tool" ? item.name : item.kind === "model_retry" ? item.reason : item.content,
     )).toEqual(["第一轮问题", "第一轮回复"]);
     expect(database.listTimeline(nestedFork.id).map((item) => item.id)).not.toEqual(
       forkTimeline.map((item) => item.id),
@@ -1660,10 +3754,10 @@ describe("AgentDatabase", () => {
     expect(forkRun.conversation.title).toBe("第一轮问题 (1)");
     database.finishRun(forkRun.runId, "completed", null);
     expect(database.listTimeline(source.id).map(
-      (item) => item.kind === "tool" ? item.name : item.content,
+      (item) => item.kind === "tool" ? item.name : item.kind === "model_retry" ? item.reason : item.content,
     )).toEqual(["第一轮问题", "第一轮回复", "第二轮问题", "第二轮回复"]);
     expect(database.listTimeline(fork.id).map(
-      (item) => item.kind === "tool" ? item.name : item.content,
+      (item) => item.kind === "tool" ? item.name : item.kind === "model_retry" ? item.reason : item.content,
     )).toEqual(["第一轮问题", "第一轮回复", "从分叉位置继续"]);
     expect(() => database.forkConversation(source.id, "sibling", firstRun.userMessage.id))
       .toThrow("completed assistant message");
@@ -1784,14 +3878,81 @@ describe("AgentDatabase", () => {
     });
     database.assignSubagentTaskRun(task.id, childRun.runId);
     expect(database.getConversation(parent.id).activeSubagentCount).toBe(1);
+    expect(() => database.endSubagent(parent.id, child.id)).toThrow("running Subagent");
     expect(database.listConversations()).toEqual(expect.arrayContaining([
       expect.objectContaining({
         activeSubagentCount: 1,
         id: parent.id,
       }),
     ]));
+    const fileTool = {
+      arguments: JSON.stringify({
+        expectedReplacements: 1,
+        newText: "export const ready = true;",
+        oldText: "export const ready = false;",
+        path: "src/status.ts",
+      }),
+      batchId: null,
+      conversationId: child.id,
+      createdAt: new Date().toISOString(),
+      diff: "--- a/src/status.ts\n+++ b/src/status.ts",
+      id: "00000000-0000-4000-8000-000000000217",
+      kind: "tool" as const,
+      name: "replace_in_file",
+      result: "updated",
+      runId: childRun.runId,
+      status: "completed" as const,
+    };
+    database.appendToolStarted({ ...fileTool, result: null, status: "running" });
+    database.completeTool({
+      providerCallId: "replace-status",
+      result: fileTool.result,
+      tool: fileTool,
+    });
+    const patchTool = {
+      arguments: JSON.stringify({
+        patch: [
+          "--- a/src/first.ts",
+          "+++ b/src/first.ts",
+          "@@ -1 +1 @@",
+          "-old",
+          "+new",
+          "--- a/src/second.ts",
+          "+++ b/src/second.ts",
+          "@@ -1 +1 @@",
+          "-old",
+          "+new",
+        ].join("\n"),
+      }),
+      batchId: null,
+      conversationId: child.id,
+      createdAt: new Date().toISOString(),
+      diff: null,
+      id: "00000000-0000-4000-8000-000000000218",
+      kind: "tool" as const,
+      name: "apply_patch",
+      result: "updated",
+      runId: childRun.runId,
+      status: "completed" as const,
+    };
+    database.appendToolStarted({ ...patchTool, result: null, status: "running" });
+    database.completeTool({
+      providerCallId: "patch-two-files",
+      result: patchTool.result,
+      tool: patchTool,
+    });
+    const markerTool = { ...patchTool,
+      id: "00000000-0000-4000-8000-000000000219",
+      arguments: JSON.stringify({ patch: "*** Begin Patch\n*** Update File: src/marker.ts\n@@\n-old\n+new\n*** End Patch" }),
+    };
+    database.appendToolStarted({ ...markerTool, result: null, status: "running" });
+    database.completeTool({ providerCallId: "patch-marker", result: markerTool.result, tool: markerTool });
     database.finishRun(childRun.runId, "completed", null);
-    const fullResult = `检查完成，没有发现问题。\n${"详细检查记录".repeat(400)}`;
+    const fullResult = [
+      "检查完成，没有发现问题；目标测试已经通过。",
+      "---",
+      "这里是只保留在 Subagent 对话中的详细检查记录。",
+    ].join("\n");
     database.completeSubagentTaskByRun({
       error: null,
       result: fullResult,
@@ -1807,8 +3968,28 @@ describe("AgentDatabase", () => {
       senderConversationId: child.id,
       taskId: task.id,
     });
-    expect(message?.content).toContain("检查完成，没有发现问题。");
-    expect(message?.content).toContain("摘要已截断，可读取完整子对话");
+    expect(message?.content).toBe("检查完成，没有发现问题；目标测试已经通过。");
+    expect(message?.content).not.toContain("详细检查记录");
+    expect(database.listContextMessages(parent.id).at(-1)?.content)
+      .toContain("a passing build alone is not functional verification");
+    expect(message?.fileChanges).toEqual([
+      {
+        path: "src/status.ts",
+        toolName: "replace_in_file",
+      },
+      {
+        path: "src/first.ts",
+        toolName: "apply_patch",
+      },
+      {
+        path: "src/second.ts",
+        toolName: "apply_patch",
+      },
+      {
+        path: "src/marker.ts",
+        toolName: "apply_patch",
+      },
+    ]);
     expect(message?.content.length).toBeLessThanOrEqual(2_000);
     expect(message?.content).not.toBe(fullResult);
     expect(database.getSubagentTask(task.id)).toMatchObject({
@@ -1817,19 +3998,74 @@ describe("AgentDatabase", () => {
     });
     expect(database.getConversation(child.id).subagentTaskStatus).toBe("completed");
     expect(database.getConversation(parent.id).activeSubagentCount).toBe(0);
+    const continuationRun = database.createRunForAgentMessage(child.id, "test-model");
+    expect(database.getConversation(parent.id).activeSubagentCount).toBe(1);
+    database.finishRun(continuationRun.runId, "completed", null);
+    expect(database.getConversation(parent.id).activeSubagentCount).toBe(0);
     expect(database.listContextMessages(parent.id).at(-1)?.content).toContain(
-      "[Subagent 任务结果]",
+      "[Subagent task result]",
+    );
+    expect(database.listContextMessages(parent.id).at(-1)?.content).toContain(
+      "- replace_in_file: src/status.ts",
+    );
+    expect(database.listContextMessages(parent.id).at(-1)?.content).toContain(
+      "- apply_patch: src/second.ts",
     );
     expect(database.listTimeline(parent.id).some((item) =>
       item.kind === "agent_message" && item.messageType === "task_result"
     )).toBe(false);
-    expect(() => database.sendAgentMessage({
+    const followUp = database.sendAgentMessage({
       content: "继续处理",
+      deliveryMode: "queue",
+      runId: parentRun.runId,
+      senderConversationId: parent.id,
+      targetConversationId: child.id,
+    });
+    expect(followUp.conversationId).toBe(child.id);
+    expect(() => database.endSubagent(parent.id, child.id)).toThrow("pending assignments");
+    database.markAgentMessagesRead([followUp.id]);
+    expect(database.endSubagent(parent.id, child.id)).toMatchObject({ status: "ended" });
+    expect(database.endSubagent(parent.id, child.id)).toMatchObject({ status: "ended" });
+    expect(database.getConversation(child.id).subagentTaskStatus).toBe("ended");
+    expect(() => database.sendAgentMessage({
+      content: "再次继续处理",
       runId: parentRun.runId,
       senderConversationId: parent.id,
       targetConversationId: child.id,
     })).toThrow("read-only");
     expect(database.deliverSubagentTaskResult(task.id)).toBeNull();
+    database.close();
+  });
+
+  it("bounds a Subagent completion result when it has no explicit receipt divider", () => {
+    const database = new AgentDatabase(":memory:");
+    const parent = database.createConversation(null);
+    const parentRun = database.createRunWithUserMessage(parent.id, "委派任务", "test-model");
+    const child = database.forkConversation(parent.id);
+    const childRun = database.createRunWithUserMessage(child.id, "执行任务", "test-model");
+    const task = database.createSubagentTask({
+      childConversationId: child.id,
+      parentConversationId: parent.id,
+      sourceRunId: parentRun.runId,
+      task: "执行任务",
+      title: "执行任务",
+    });
+    database.assignSubagentTaskRun(task.id, childRun.runId);
+    database.finishRun(childRun.runId, "completed", null);
+    const fullResult = `直接回答。${"详细内容".repeat(600)}`;
+    database.completeSubagentTaskByRun({
+      error: null,
+      result: fullResult,
+      status: "completed",
+      targetRunId: childRun.runId,
+    });
+
+    const message = database.deliverSubagentTaskResult(task.id);
+
+    expect(message?.content).toContain("直接回答。");
+    expect(message?.content).toContain("完成回执已截断，可读取完整子对话");
+    expect(message?.content.length).toBeLessThanOrEqual(2_000);
+    expect(database.getSubagentTask(task.id).result).toBe(fullResult);
     database.close();
   });
 
@@ -1861,7 +4097,7 @@ describe("AgentDatabase", () => {
     expect(typeof recoveredTask.resultMessageId).toBe("string");
     expect(reopened.listUndeliveredSubagentTasks()).toEqual([]);
     expect(reopened.listUnreadAgentMessages(parent.id)).toEqual([
-      expect.objectContaining({ messageType: "task_result", taskId: task.id }),
+      expect.objectContaining({ autoWake: false, messageType: "task_result", taskId: task.id }),
     ]);
     reopened.close();
   });
@@ -1931,9 +4167,16 @@ describe("AgentDatabase", () => {
     expect(remaining.map((message) => message.id)).toEqual([third.id, first.id]);
     expect(database.getConversationAttachment(conversation.id, attachmentId)).toMatchObject({
       messageId: null,
-      pendingMessageId: null,
+      pendingMessageId: second.id,
     });
-    expect(database.listDraftConversationAttachments(conversation.id)).toHaveLength(1);
+    expect(database.listDraftConversationAttachments(conversation.id)).toEqual([]);
+    expect(database.listCancelledPendingMessageAttachmentCleanups(second.id)).toEqual([
+      expect.objectContaining({
+        attachments: [expect.objectContaining({ id: attachmentId })],
+        conversationId: conversation.id,
+        pendingMessageId: second.id,
+      }),
+    ]);
     database.close();
   });
 

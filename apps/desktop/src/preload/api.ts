@@ -1,18 +1,36 @@
+import type { TaskContextScope, SetTaskCompletionPolicyInput, ResolveChatReferencesInput, ListTaskContextsInput, UpdateTaskContextInput, LinkTaskContextInput, MergeTaskContextsInput, ReadTeamChatInput, PostTeamChatInput, MarkTeamChatReadInput } from "@agent/protocol";
+import type { HtmlPreviewRequest } from "@agent/protocol";
+import type { AnswerUserQuestionInput, StopBackgroundCommandInput, ReadBackgroundCommandInput } from "@agent/protocol";
+import type { SaveScheduledTaskInput, ScheduledTaskReference } from "@agent/protocol";
 import { ipcRenderer, type IpcRendererEvent } from "electron";
 import { IPC_CHANNELS } from "../../../../packages/protocol/src/ipc-channels.js";
 // Import the narrow schema module directly. The protocol barrel also exports
 // Skill YAML parsing, which pulls a Node-only `yaml` dependency into the
 // sandboxed preload bundle and prevents Electron from loading the bridge.
 import { applicationSettingsSchema } from "../../../../packages/protocol/src/application-settings.js";
+import { appUpdateStateSchema } from "../../../../packages/protocol/src/app-update.js";
+import {
+  managedBrowserEventSchema,
+  terminalSessionEventSchema,
+  workspaceBrowserTabCloseRequestSchema,
+  workspaceBrowserTabOpenRequestSchema,
+  workspaceTerminalTabCloseRequestSchema,
+  workspaceTerminalTabOpenRequestSchema,
+} from "../../../../packages/protocol/src/developer-tools.js";
 import type {
   DesktopBridge,
   ConversationContextUsageInput,
+  ReadConversationAttachmentPreviewInput,
   ImportConversationAttachmentBytesInput,
   RemoveConversationAttachmentInput,
   CancelRunInput,
   ApproveToolChangeInput,
   ApplicationSettings,
+  ApplicationStorageLocation,
+  BrowserConfiguration,
   ConversationReferenceInput,
+  ConversationTimelinePageInput,
+  ConversationSearchInput,
   ForkConversationInput,
   PendingConversationMessageReferenceInput,
   ReorderPendingConversationMessagesInput,
@@ -26,8 +44,19 @@ import type {
   CreateConfigurationWorkspaceEntryInput,
   CreateProjectEntryInput,
   CreateConversationInput,
+  EnsureTeamMemberConversationInput,
+  CreateTeamInstanceInput,
+  EnsureTeamInstanceMemberConversationInput,
+  ListTeamInstancesInput,
+  RenameTeamInstanceInput,
+  ReorderTeamInstancesInput,
+  SetTeamInstanceArchivedInput,
+  TeamInstanceReferenceInput,
   DiscoverModelsInput,
   IntegrationConfiguration,
+  GitFileDiffInput,
+  GitOperationInput,
+  GitReviewInput,
   DeleteConfigurationWorkspaceEntryInput,
   ListConfigurationWorkspaceEntriesInput,
   ProjectReferenceInput,
@@ -45,18 +74,44 @@ import type {
   SetTeamCoordinatorInput,
   SendConversationMessageInput,
   SendTeamMessageInput,
+  AddTeamWorkItemCommentInput,
+  DeleteTeamWorkItemInput,
+  GetTeamWorkItemExecutionInput,
+  GetTeamCollaborationProjectionInput,
+  ListTeamWorkItemsInput,
+  PublishTeamWorkItemInput,
+  RequestTeamWorkItemReworkInput,
+  SubmitTeamWorkItemInput,
+  UpdateTeamWorkItemInput,
+  UpdateTeamWorkItemPermissionInput,
+  AcceptTeamWorkItemInput,
   PluginCatalogEntry,
+  ManagedBrowserBoundsInput,
+  ManagedBrowserCommandInput,
+  ManagedBrowserNavigateInput,
+  ManagedBrowserOpenInput,
+  ManagedBrowserReferenceInput,
   SetPluginEnabledInput,
   UpdatePendingConversationMessageInput,
   SetConversationArchivedInput,
   SetConversationModelSelectionInput,
+  SetConversationPermissionModeInput,
   SetConversationProjectInput,
   SetConversationPinnedInput,
   SetProjectPinnedInput,
+  SetProjectTeamsInNavigatorInput,
   SkillDocumentReferenceInput,
   SkillDiscoveryResult,
   SkillDocumentSaveInput,
   TerminalConfiguration,
+  TerminalSessionOpenInput,
+  TerminalSessionOutput,
+  TerminalSessionOutputInput,
+  TerminalSessionReferenceInput,
+  TerminalSessionResizeInput,
+  TerminalSessionWriteInput,
+  WorkspaceTerminalTabOpenedInput,
+  WorkspaceBrowserTabOpenedInput,
   WriteConfigurationWorkspaceFileInput,
   WriteProjectFileInput,
   WindowState
@@ -81,6 +136,17 @@ async function invoke<Result>(channel: IpcChannel, input?: unknown): Promise<Res
 
 export function createDesktopBridge(): DesktopBridge {
   return {
+    getAppUpdateState() { return invoke<unknown>(IPC_CHANNELS.appUpdateGetState).then((value) => appUpdateStateSchema.parse(value)); },
+    checkAppUpdate() { return invoke<unknown>(IPC_CHANNELS.appUpdateCheck).then((value) => appUpdateStateSchema.parse(value)); },
+    downloadAppUpdate() { return invoke<unknown>(IPC_CHANNELS.appUpdateDownload).then((value) => appUpdateStateSchema.parse(value)); },
+    pauseAppUpdate() { return invoke<unknown>(IPC_CHANNELS.appUpdatePause).then((value) => appUpdateStateSchema.parse(value)); },
+    installAppUpdate() { return invoke<unknown>(IPC_CHANNELS.appUpdateInstall).then((value) => appUpdateStateSchema.parse(value)); },
+    onAppUpdateChanged(listener) {
+      const handle = (_event: IpcRendererEvent, state: unknown): void => { listener(appUpdateStateSchema.parse(state)); };
+      ipcRenderer.on(IPC_CHANNELS.appUpdateChanged, handle);
+      return () => ipcRenderer.removeListener(IPC_CHANNELS.appUpdateChanged, handle);
+    },
+    htmlPreview(input: HtmlPreviewRequest) { return invoke<BridgeResult<"htmlPreview">>(IPC_CHANNELS.htmlPreview, input); },
     addProject() {
       return invoke<BridgeResult<"addProject">>(IPC_CHANNELS.projectAdd);
     },
@@ -150,6 +216,12 @@ export function createDesktopBridge(): DesktopBridge {
         input,
       );
     },
+    readConversationAttachmentPreview(input: ReadConversationAttachmentPreviewInput) {
+      return invoke<BridgeResult<"readConversationAttachmentPreview">>(
+        IPC_CHANNELS.conversationReadAttachmentPreview,
+        input,
+      );
+    },
     listDraftConversationAttachments(input: ConversationReferenceInput) {
       return invoke<BridgeResult<"listDraftConversationAttachments">>(
         IPC_CHANNELS.conversationListDraftAttachments,
@@ -162,8 +234,111 @@ export function createDesktopBridge(): DesktopBridge {
     async setTeamCoordinator(input: SetTeamCoordinatorInput) {
       await invoke<void>(IPC_CHANNELS.teamSetCoordinator, input);
     },
+    ensureTeamMemberConversation(input: EnsureTeamMemberConversationInput) {
+      return invoke<BridgeResult<"ensureTeamMemberConversation">>(
+        IPC_CHANNELS.teamEnsureMemberConversation,
+        input,
+      );
+    },
+    listTeamInstances(input: ListTeamInstancesInput) {
+      return invoke<BridgeResult<"listTeamInstances">>(IPC_CHANNELS.teamInstanceList, input);
+    },
+    createTeamInstance(input: CreateTeamInstanceInput) {
+      return invoke<BridgeResult<"createTeamInstance">>(IPC_CHANNELS.teamInstanceCreate, input);
+    },
+    renameTeamInstance(input: RenameTeamInstanceInput) {
+      return invoke<BridgeResult<"renameTeamInstance">>(IPC_CHANNELS.teamInstanceRename, input);
+    },
+    reorderTeamInstances(input: ReorderTeamInstancesInput) {
+      return invoke<BridgeResult<"reorderTeamInstances">>(
+        IPC_CHANNELS.teamInstanceReorder,
+        input,
+      );
+    },
+    setTeamInstanceArchived(input: SetTeamInstanceArchivedInput) {
+      return invoke<BridgeResult<"setTeamInstanceArchived">>(
+        IPC_CHANNELS.teamInstanceSetArchived,
+        input,
+      );
+    },
+    deleteTeamInstance(input: TeamInstanceReferenceInput) {
+      return invoke<BridgeResult<"deleteTeamInstance">>(IPC_CHANNELS.teamInstanceDelete, input);
+    },
+    ensureTeamInstanceMemberConversation(input: EnsureTeamInstanceMemberConversationInput) {
+      return invoke<BridgeResult<"ensureTeamInstanceMemberConversation">>(
+        IPC_CHANNELS.teamInstanceEnsureMemberConversation,
+        input,
+      );
+    },
     sendTeamMessage(input: SendTeamMessageInput) {
       return invoke<BridgeResult<"sendTeamMessage">>(IPC_CHANNELS.teamSendMessage, input);
+    },
+    getTaskCompletionPolicy(input: TaskContextScope) { return invoke<BridgeResult<"getTaskCompletionPolicy">>(IPC_CHANNELS.taskCompletionPolicyGet, input); },
+    setTaskCompletionPolicy(input: SetTaskCompletionPolicyInput) { return invoke<BridgeResult<"setTaskCompletionPolicy">>(IPC_CHANNELS.taskCompletionPolicySet, input); },
+    resolveChatReferences(input: ResolveChatReferencesInput) { return invoke<BridgeResult<"resolveChatReferences">>(IPC_CHANNELS.chatReferencesResolve, input); },
+    listTaskContexts(input: ListTaskContextsInput) { return invoke<BridgeResult<"listTaskContexts">>(IPC_CHANNELS.taskContextList, input); },
+    getTaskContext(input: { id: string; beforeSourceSequence?: number; limit?: number }) { return invoke<BridgeResult<"getTaskContext">>(IPC_CHANNELS.taskContextGet, input); },
+    updateTaskContext(input: UpdateTaskContextInput) { return invoke<BridgeResult<"updateTaskContext">>(IPC_CHANNELS.taskContextUpdate, input); },
+    linkTaskContext(input: LinkTaskContextInput) { return invoke<BridgeResult<"linkTaskContext">>(IPC_CHANNELS.taskContextLink, input); },
+    mergeTaskContexts(input: MergeTaskContextsInput) { return invoke<BridgeResult<"mergeTaskContexts">>(IPC_CHANNELS.taskContextMerge, input); },
+    readTeamChat(input: ReadTeamChatInput) { return invoke<BridgeResult<"readTeamChat">>(IPC_CHANNELS.teamChatRead, input); },
+    postTeamChat(input: PostTeamChatInput) { return invoke<BridgeResult<"postTeamChat">>(IPC_CHANNELS.teamChatPost, input); },
+    getTeamChatCoordinationConversation(input: { teamInstanceId: string; agentId?: string }) { return invoke<BridgeResult<"getTeamChatCoordinationConversation">>(IPC_CHANNELS.teamChatCoordinationConversation, input); },
+    getTeamChatMembers(input: { teamInstanceId: string }) { return invoke<BridgeResult<"getTeamChatMembers">>(IPC_CHANNELS.teamChatMembers, input); },
+    markTeamChatRead(input: MarkTeamChatReadInput) { return invoke<BridgeResult<"markTeamChatRead">>(IPC_CHANNELS.teamChatMarkRead, input); },
+    resumeTeamChatDelivery(input: { id: string }) { return invoke<BridgeResult<"resumeTeamChatDelivery">>(IPC_CHANNELS.teamChatResume, input); },
+    cancelTeamChatDelivery(input: { id: string }) { return invoke<BridgeResult<"cancelTeamChatDelivery">>(IPC_CHANNELS.teamChatCancel, input); },
+    pauseTeamChat(input: { teamInstanceId: string }) { return invoke<BridgeResult<"pauseTeamChat">>(IPC_CHANNELS.teamChatPause, input); },
+    listTeamWorkItems(input: ListTeamWorkItemsInput) {
+      return invoke<BridgeResult<"listTeamWorkItems">>(IPC_CHANNELS.teamWorkItemList, input);
+    },
+    getTeamWorkItemExecution(input: GetTeamWorkItemExecutionInput) {
+      return invoke<BridgeResult<"getTeamWorkItemExecution">>(
+        IPC_CHANNELS.teamWorkItemGetExecution,
+        input,
+      );
+    },
+    getTeamCollaborationProjection(input: GetTeamCollaborationProjectionInput) {
+      return invoke<BridgeResult<"getTeamCollaborationProjection">>(
+        IPC_CHANNELS.teamCollaborationGetProjection,
+        input,
+      );
+    },
+    submitTeamWorkItem(input: SubmitTeamWorkItemInput) {
+      return invoke<BridgeResult<"submitTeamWorkItem">>(IPC_CHANNELS.teamWorkItemSubmit, input);
+    },
+    updateTeamWorkItem(input: UpdateTeamWorkItemInput) {
+      return invoke<BridgeResult<"updateTeamWorkItem">>(IPC_CHANNELS.teamWorkItemUpdate, input);
+    },
+    deleteTeamWorkItem(input: DeleteTeamWorkItemInput) {
+      return invoke<BridgeResult<"deleteTeamWorkItem">>(IPC_CHANNELS.teamWorkItemDelete, input);
+    },
+    updateTeamWorkItemPermission(input: UpdateTeamWorkItemPermissionInput) {
+      return invoke<BridgeResult<"updateTeamWorkItemPermission">>(
+        IPC_CHANNELS.teamWorkItemUpdatePermission,
+        input,
+      );
+    },
+    publishTeamWorkItem(input: PublishTeamWorkItemInput) {
+      return invoke<BridgeResult<"publishTeamWorkItem">>(
+        IPC_CHANNELS.teamWorkItemPublish,
+        input,
+      );
+    },
+    addTeamWorkItemComment(input: AddTeamWorkItemCommentInput) {
+      return invoke<BridgeResult<"addTeamWorkItemComment">>(
+        IPC_CHANNELS.teamWorkItemAddComment,
+        input,
+      );
+    },
+    requestTeamWorkItemRework(input: RequestTeamWorkItemReworkInput) {
+      return invoke<BridgeResult<"requestTeamWorkItemRework">>(
+        IPC_CHANNELS.teamWorkItemRequestRework,
+        input,
+      );
+    },
+    acceptTeamWorkItem(input: AcceptTeamWorkItemInput) {
+      return invoke<BridgeResult<"acceptTeamWorkItem">>(IPC_CHANNELS.teamWorkItemAccept, input);
     },
     listPlugins() {
       return invoke<PluginCatalogEntry[]>(IPC_CHANNELS.pluginList);
@@ -198,11 +373,29 @@ export function createDesktopBridge(): DesktopBridge {
     async deleteConversation(input: ConversationReferenceInput) {
       await invoke<void>(IPC_CHANNELS.conversationDelete, input);
     },
+    async deleteConversationUndoable(input: ConversationReferenceInput) {
+      await invoke<void>(IPC_CHANNELS.conversationDeleteUndoable, input);
+    },
+    async restoreDeletedConversation(input: ConversationReferenceInput) {
+      await invoke<void>(IPC_CHANNELS.conversationRestoreDeleted, input);
+    },
     async deleteConfigurationWorkspaceEntry(input: DeleteConfigurationWorkspaceEntryInput) {
       await invoke<void>(IPC_CHANNELS.configurationWorkspaceDeleteEntry, input);
     },
     discoverModels(input: DiscoverModelsInput) {
       return invoke<BridgeResult<"discoverModels">>(IPC_CHANNELS.modelDiscover, input);
+    },
+    listChatGptConnections() {
+      return invoke<BridgeResult<"listChatGptConnections">>(IPC_CHANNELS.modelChatGptList);
+    },
+    connectChatGpt(providerId?: string) {
+      return invoke<BridgeResult<"connectChatGpt">>(IPC_CHANNELS.modelChatGptConnect, providerId === undefined ? {} : { providerId });
+    },
+    disconnectChatGpt(providerId: string) {
+      return invoke<BridgeResult<"disconnectChatGpt">>(IPC_CHANNELS.modelChatGptDisconnect, { providerId });
+    },
+    syncChatGptModels(providerId: string) {
+      return invoke<BridgeResult<"syncChatGptModels">>(IPC_CHANNELS.modelChatGptSync, { providerId });
     },
     testModelConnection(input: TestModelConnectionInput) {
       return invoke<BridgeResult<"testModelConnection">>(
@@ -223,23 +416,125 @@ export function createDesktopBridge(): DesktopBridge {
         IPC_CHANNELS.applicationSettingsGetConfiguration,
       );
     },
+    getApplicationStorageLocation() {
+      return invoke<ApplicationStorageLocation>(
+        IPC_CHANNELS.applicationSettingsGetStorageLocation,
+      );
+    },
+    chooseApplicationStorageLocation() {
+      return invoke<ApplicationStorageLocation | null>(
+        IPC_CHANNELS.applicationSettingsChooseStorageLocation,
+      );
+    },
+    resetApplicationStorageLocation() {
+      return invoke<ApplicationStorageLocation>(
+        IPC_CHANNELS.applicationSettingsResetStorageLocation,
+      );
+    },
     getModelCatalog() {
       return invoke<BridgeResult<"getModelCatalog">>(IPC_CHANNELS.modelGetCatalog);
+    },
+    saveModelCatalog(catalog) {
+      return invoke<BridgeResult<"saveModelCatalog">>(IPC_CHANNELS.modelSaveCatalog, catalog);
     },
     getIntegrationConfiguration() {
       return invoke<BridgeResult<"getIntegrationConfiguration">>(
         IPC_CHANNELS.integrationGetConfiguration
       );
     },
+    getBrowserConfiguration() {
+      return invoke<BridgeResult<"getBrowserConfiguration">>(
+        IPC_CHANNELS.browserGetConfiguration
+      );
+    },
+    getComputerUseConfiguration() { return invoke<BridgeResult<"getComputerUseConfiguration">>(IPC_CHANNELS.computerUseGetConfiguration); },
+    saveComputerUseConfiguration(input: ComputerUseConfiguration, baselineApplications?: ComputerApplication[]) { return invoke<BridgeResult<"saveComputerUseConfiguration">>(IPC_CHANNELS.computerUseSaveConfiguration,
+      baselineApplications === undefined ? input : { configuration: input, baselineApplications }); },
+    chooseComputerApplication() { return invoke<BridgeResult<"chooseComputerApplication">>(IPC_CHANNELS.computerUseChooseApplication); },
+    getComputerUseApplicationIcons() { return invoke<BridgeResult<"getComputerUseApplicationIcons">>(IPC_CHANNELS.computerUseGetApplicationIcons); },
+    getComputerUseStatus() { return invoke<BridgeResult<"getComputerUseStatus">>(IPC_CHANNELS.computerUseGetStatus); },
+    startComputerUse() { return invoke<BridgeResult<"startComputerUse">>(IPC_CHANNELS.computerUseStart); },
+    stopComputerUse() { return invoke<BridgeResult<"stopComputerUse">>(IPC_CHANNELS.computerUseStop); },
+    clearBrowserData() {
+      return invoke<BridgeResult<"clearBrowserData">>(IPC_CHANNELS.browserClearData);
+    },
+    chooseBrowserDownloadDirectory() {
+      return invoke<BridgeResult<"chooseBrowserDownloadDirectory">>(IPC_CHANNELS.browserChooseDownloadDirectory);
+    },
+    getBrowserDefaultDownloadDirectory() {
+      return invoke<BridgeResult<"getBrowserDefaultDownloadDirectory">>(IPC_CHANNELS.browserGetDefaultDownloadDirectory);
+    },
+    getBrowserSavedPasswords() {
+      return invoke<BridgeResult<"getBrowserSavedPasswords">>(IPC_CHANNELS.browserGetSavedPasswords);
+    },
+    revealBrowserPassword(input) {
+      return invoke<BridgeResult<"revealBrowserPassword">>(IPC_CHANNELS.browserRevealPassword, input);
+    },
+    listScheduledTasks() { return invoke<BridgeResult<"listScheduledTasks">>(IPC_CHANNELS.scheduledTaskList); },
+    saveScheduledTask(input: SaveScheduledTaskInput) { return invoke<BridgeResult<"saveScheduledTask">>(IPC_CHANNELS.scheduledTaskSave, input); },
+    deleteScheduledTask(input: ScheduledTaskReference) { return invoke<BridgeResult<"deleteScheduledTask">>(IPC_CHANNELS.scheduledTaskDelete, input); },
+    runScheduledTask(input: ScheduledTaskReference) { return invoke<BridgeResult<"runScheduledTask">>(IPC_CHANNELS.scheduledTaskRun, input); },
     getTerminalConfiguration() {
       return invoke<BridgeResult<"getTerminalConfiguration">>(
         IPC_CHANNELS.terminalGetConfiguration
       );
     },
+    getGitReviewSnapshot(input: GitReviewInput) {
+      return invoke<BridgeResult<"getGitReviewSnapshot">>(IPC_CHANNELS.gitReviewGetSnapshot, input);
+    },
+    getGitFileDiff(input: GitFileDiffInput) {
+      return invoke<BridgeResult<"getGitFileDiff">>(IPC_CHANNELS.gitReviewGetFileDiff, input);
+    },
+    runGitOperation(input: GitOperationInput) {
+      return invoke<BridgeResult<"runGitOperation">>(IPC_CHANNELS.gitReviewRunOperation, input);
+    },
+    openTerminalSession(input: TerminalSessionOpenInput) {
+      return invoke<BridgeResult<"openTerminalSession">>(IPC_CHANNELS.terminalSessionOpen, input);
+    },
+    readTerminalSessionOutput(input: TerminalSessionOutputInput) {
+      return invoke<TerminalSessionOutput>(IPC_CHANNELS.terminalSessionReadOutput, input);
+    },
+    async writeTerminalSession(input: TerminalSessionWriteInput) {
+      await invoke<void>(IPC_CHANNELS.terminalSessionWrite, input);
+    },
+    async resizeTerminalSession(input: TerminalSessionResizeInput) {
+      await invoke<void>(IPC_CHANNELS.terminalSessionResize, input);
+    },
+    async closeTerminalSession(input: TerminalSessionReferenceInput) {
+      await invoke<void>(IPC_CHANNELS.terminalSessionClose, input);
+    },
+    async confirmWorkspaceTerminalTabOpened(input: WorkspaceTerminalTabOpenedInput) {
+      await invoke<void>(IPC_CHANNELS.workspaceTerminalOpened, input);
+    },
+    async confirmWorkspaceBrowserTabOpened(input: WorkspaceBrowserTabOpenedInput) {
+      await invoke<void>(IPC_CHANNELS.workspaceBrowserOpened, input);
+    },
+    openManagedBrowser(input: ManagedBrowserOpenInput) {
+      return invoke<BridgeResult<"openManagedBrowser">>(IPC_CHANNELS.managedBrowserOpen, input);
+    },
+    async navigateManagedBrowser(input: ManagedBrowserNavigateInput) {
+      await invoke<void>(IPC_CHANNELS.managedBrowserNavigate, input);
+    },
+    async commandManagedBrowser(input: ManagedBrowserCommandInput) {
+      await invoke<void>(IPC_CHANNELS.managedBrowserCommand, input);
+    },
+    captureManagedBrowser(input: ManagedBrowserReferenceInput) {
+      return invoke<BridgeResult<"captureManagedBrowser">>(IPC_CHANNELS.managedBrowserCapture, input);
+    },
+    setManagedBrowserBounds(input: ManagedBrowserBoundsInput) {
+      ipcRenderer.send(IPC_CHANNELS.managedBrowserSetBounds, input);
+      return Promise.resolve();
+    },
+    async closeManagedBrowser(input: ManagedBrowserReferenceInput) {
+      await invoke<void>(IPC_CHANNELS.managedBrowserClose, input);
+    },
     importSkillDocument() {
       return invoke<BridgeResult<"importSkillDocument">>(
         IPC_CHANNELS.skillImportDocument
       );
+    },
+    deleteModelProvider(providerId: string) {
+      return invoke<BridgeResult<"deleteModelProvider">>(IPC_CHANNELS.modelDeleteProvider, { providerId });
     },
     getModelApiKey(providerId: string) {
       return invoke<BridgeResult<"getModelApiKey">>(IPC_CHANNELS.modelGetApiKey, {
@@ -300,11 +595,26 @@ export function createDesktopBridge(): DesktopBridge {
         input
       );
     },
+    searchConversations(input: ConversationSearchInput) {
+      return invoke<BridgeResult<"searchConversations">>(
+        IPC_CHANNELS.conversationSearch,
+        input,
+      );
+    },
     listConversationPendingMessages(input: ConversationReferenceInput) {
       return invoke<BridgeResult<"listConversationPendingMessages">>(
         IPC_CHANNELS.conversationListPendingMessages,
         input
       );
+    },
+    async openProjectDirectory(input: ProjectReferenceInput) {
+      await invoke<void>(IPC_CHANNELS.projectOpenDirectory, input);
+    },
+    getConversationPendingQueuePaused(input: ConversationReferenceInput) {
+      return invoke<boolean>(IPC_CHANNELS.conversationGetPendingQueuePaused, input);
+    },
+    setConversationPendingQueuePaused(input: ConversationReferenceInput & { paused: boolean }) {
+      return invoke<boolean>(IPC_CHANNELS.conversationSetPendingQueuePaused, input);
     },
     markConversationResultViewed(input: ConversationReferenceInput) {
       return invoke<BridgeResult<"markConversationResultViewed">>(
@@ -312,8 +622,17 @@ export function createDesktopBridge(): DesktopBridge {
         input
       );
     },
+    listUserQuestions(input: ConversationReferenceInput) { return invoke<BridgeResult<"listUserQuestions">>(IPC_CHANNELS.userQuestionList, input); },
+    answerUserQuestion(input: AnswerUserQuestionInput) { return invoke<BridgeResult<"answerUserQuestion">>(IPC_CHANNELS.userQuestionAnswer, input); },
+    markUserQuestionViewed(input: { questionId: string }) { return invoke<BridgeResult<"markUserQuestionViewed">>(IPC_CHANNELS.userQuestionMarkViewed, input); },
+    listBackgroundCommands(input: ConversationReferenceInput) { return invoke<BridgeResult<"listBackgroundCommands">>(IPC_CHANNELS.backgroundCommandList, input); },
+    readBackgroundCommand(input: ReadBackgroundCommandInput) { return invoke<BridgeResult<"readBackgroundCommand">>(IPC_CHANNELS.backgroundCommandRead, input); },
+    stopBackgroundCommand(input: StopBackgroundCommandInput) { return invoke<BridgeResult<"stopBackgroundCommand">>(IPC_CHANNELS.backgroundCommandStop, input); },
     listConversations() {
       return invoke<BridgeResult<"listConversations">>(IPC_CHANNELS.conversationList);
+    },
+    listConversationHierarchy() {
+      return invoke<BridgeResult<"listConversationHierarchy">>(IPC_CHANNELS.conversationListHierarchy);
     },
     listConversationForks(input: ConversationReferenceInput) {
       return invoke<BridgeResult<"listConversationForks">>(
@@ -341,6 +660,9 @@ export function createDesktopBridge(): DesktopBridge {
         );
       };
     },
+    async setConversationStreamSubscriptions(conversationIds: readonly string[]) {
+      await invoke<void>(IPC_CHANNELS.conversationSetStreamSubscriptions, conversationIds);
+    },
     onApplicationSettingsChanged(listener) {
       const handleApplicationSettingsChanged = (
         _event: IpcRendererEvent,
@@ -357,6 +679,48 @@ export function createDesktopBridge(): DesktopBridge {
           handleApplicationSettingsChanged,
         );
       };
+    },
+    onTerminalSessionEvent(listener) {
+      const handle = (_event: IpcRendererEvent, value: unknown): void => {
+        listener(terminalSessionEventSchema.parse(value));
+      };
+      ipcRenderer.on(IPC_CHANNELS.terminalSessionEvent, handle);
+      return () => ipcRenderer.removeListener(IPC_CHANNELS.terminalSessionEvent, handle);
+    },
+    onWorkspaceTerminalTabOpenRequested(listener) {
+      const handle = (_event: IpcRendererEvent, value: unknown): void => {
+        listener(workspaceTerminalTabOpenRequestSchema.parse(value));
+      };
+      ipcRenderer.on(IPC_CHANNELS.workspaceTerminalOpenRequested, handle);
+      return () => ipcRenderer.removeListener(IPC_CHANNELS.workspaceTerminalOpenRequested, handle);
+    },
+    onWorkspaceTerminalTabCloseRequested(listener) {
+      const handle = (_event: IpcRendererEvent, value: unknown): void => {
+        listener(workspaceTerminalTabCloseRequestSchema.parse(value));
+      };
+      ipcRenderer.on(IPC_CHANNELS.workspaceTerminalCloseRequested, handle);
+      return () => ipcRenderer.removeListener(IPC_CHANNELS.workspaceTerminalCloseRequested, handle);
+    },
+    onWorkspaceBrowserTabOpenRequested(listener) {
+      const handle = (_event: IpcRendererEvent, value: unknown): void => {
+        listener(workspaceBrowserTabOpenRequestSchema.parse(value));
+      };
+      ipcRenderer.on(IPC_CHANNELS.workspaceBrowserOpenRequested, handle);
+      return () => ipcRenderer.removeListener(IPC_CHANNELS.workspaceBrowserOpenRequested, handle);
+    },
+    onWorkspaceBrowserTabCloseRequested(listener) {
+      const handle = (_event: IpcRendererEvent, value: unknown): void => {
+        listener(workspaceBrowserTabCloseRequestSchema.parse(value));
+      };
+      ipcRenderer.on(IPC_CHANNELS.workspaceBrowserCloseRequested, handle);
+      return () => ipcRenderer.removeListener(IPC_CHANNELS.workspaceBrowserCloseRequested, handle);
+    },
+    onManagedBrowserEvent(listener) {
+      const handle = (_event: IpcRendererEvent, value: unknown): void => {
+        listener(managedBrowserEventSchema.parse(value));
+      };
+      ipcRenderer.on(IPC_CHANNELS.managedBrowserEvent, handle);
+      return () => ipcRenderer.removeListener(IPC_CHANNELS.managedBrowserEvent, handle);
     },
     onWindowStateChanged(listener) {
       const handleWindowStateChanged = (
@@ -414,6 +778,18 @@ export function createDesktopBridge(): DesktopBridge {
         input
       );
     },
+    listConversationTimelinePage(input: ConversationTimelinePageInput) {
+      return invoke<BridgeResult<"listConversationTimelinePage">>(
+        IPC_CHANNELS.conversationListTimelinePage,
+        input,
+      );
+    },
+    setConversationPermissionMode(input: SetConversationPermissionModeInput) {
+      return invoke<BridgeResult<"setConversationPermissionMode">>(
+        IPC_CHANNELS.conversationSetPermissionMode,
+        input
+      );
+    },
     setConversationPinned(input: SetConversationPinnedInput) {
       return invoke<BridgeResult<"setConversationPinned">>(
         IPC_CHANNELS.conversationSetPinned,
@@ -425,6 +801,15 @@ export function createDesktopBridge(): DesktopBridge {
         IPC_CHANNELS.projectSetPinned,
         input
       );
+    },
+    setProjectTeamsInNavigator(input: SetProjectTeamsInNavigatorInput) {
+      return invoke<BridgeResult<"setProjectTeamsInNavigator">>(
+        IPC_CHANNELS.projectSetTeamsInNavigator,
+        input
+      );
+    },
+    deleteSkillDocument(input: SkillDocumentReferenceInput) {
+      return invoke<BridgeResult<"deleteSkillDocument">>(IPC_CHANNELS.skillDeleteDocument, input);
     },
     readSkillDocument(input: SkillDocumentReferenceInput) {
       return invoke<BridgeResult<"readSkillDocument">>(
@@ -498,6 +883,12 @@ export function createDesktopBridge(): DesktopBridge {
         input
       );
     },
+    saveBrowserConfiguration(input: BrowserConfiguration) {
+      return invoke<BridgeResult<"saveBrowserConfiguration">>(
+        IPC_CHANNELS.browserSaveConfiguration,
+        input
+      );
+    },
     saveTerminalConfiguration(input: TerminalConfiguration) {
       return invoke<BridgeResult<"saveTerminalConfiguration">>(
         IPC_CHANNELS.terminalSaveConfiguration,
@@ -519,3 +910,4 @@ export function createDesktopBridge(): DesktopBridge {
     },
   };
 }
+import type { ComputerApplication, ComputerUseConfiguration } from "@agent/protocol";

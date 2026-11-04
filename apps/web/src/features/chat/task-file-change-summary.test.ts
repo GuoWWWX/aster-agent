@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { ConversationTimelineItem, ConversationToolItem } from "@agent/protocol";
 
-import { summarizeTaskFileChanges } from "./task-file-change-summary.js";
+import { collectFileChangeReview, conversationChangeAnchors, conversationChangeSummaries, summarizeTaskFileChanges } from "./task-file-change-summary.js";
 
 function tool(
   id: string,
@@ -26,6 +26,23 @@ function tool(
 }
 
 describe("summarizeTaskFileChanges", () => {
+  it("keeps repeated edits under one file and places completed run cards after their last visible item", () => {
+    const diff = "--- a/src/app.ts\n+++ b/src/app.ts\n@@ -1 +1 @@\n-before\n+after\n";
+    const first = tool("first", "2026-10-15T00:00:00Z", diff);
+    const repeated = tool("repeated", "2026-10-15T00:00:01Z", diff);
+    const next = { ...tool("next", "2026-10-15T00:00:02Z", diff), runId: "next-run" };
+    const timeline = [first, repeated, tool("failed", "2026-10-15T00:00:03Z", diff, "failed"), next];
+    expect(collectFileChangeReview([first, repeated])).toEqual([{ path: "src/app.ts", additions: 2, deletions: 2, diffs: [diff, diff] }]);
+    const summaries = conversationChangeSummaries(timeline);
+    expect(summaries.get(first.runId!)?.files).toHaveLength(1);
+    expect(summaries.get(first.runId!)?.additions).toBe(2);
+    const anchors = [{ id: "work", kind: "run_activity", runIds: [first.runId!] }, { id: "reply", kind: "message", role: "assistant", runId: first.runId }, { id: "live", kind: "message", role: "user", runId: "next-run" }];
+    const cards = conversationChangeAnchors(summaries, anchors, "next-run");
+    expect([...cards.keys()]).toEqual(["reply"]);
+    expect(conversationChangeAnchors(summaries, [anchors[0]!], null).get("work")).toHaveLength(1);
+    expect(conversationChangeAnchors(summaries, [{ id: "continued", kind: "message", continuationMessages: [{ runId: first.runId }] }], null).get("continued")).toHaveLength(1);
+  });
+
   it("counts successful file diffs created during the current task list", () => {
     const summary = summarizeTaskFileChanges([
       tool("00000000-0000-4000-8000-000000000010", "2026-08-16T07:59:59.000Z", [
@@ -73,5 +90,20 @@ describe("summarizeTaskFileChanges", () => {
         { additions: 2, deletions: 0, path: "notes.md" },
       ],
     });
+  });
+
+  it("places file changes after terminal notices and a cancelled continuation, stopping at the next user turn", () => {
+    const edit = tool("edit", "2026-10-18T00:00:00Z", "--- a/app.ts\n+++ b/app.ts\n+fixed\n");
+    const summaries = conversationChangeSummaries([edit]);
+    const anchors = [
+      { id: "work", kind: "run_activity", runIds: [edit.runId!] },
+      { id: "summary", kind: "message", role: "assistant", runId: edit.runId },
+      { id: "failure", kind: "message", role: "assistant", runId: edit.runId },
+      { id: "cancelled-continuation", kind: "message", role: "assistant", runId: "continuation" },
+      { id: "next-user", kind: "message", role: "user", runId: "new-request" },
+      { id: "next-answer", kind: "message", role: "assistant", runId: "new-request" },
+    ];
+    expect([...conversationChangeAnchors(summaries, anchors, null).keys()]).toEqual(["cancelled-continuation"]);
+    expect(conversationChangeAnchors(summaries, anchors, "continuation").size).toBe(0);
   });
 });

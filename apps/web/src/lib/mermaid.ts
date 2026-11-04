@@ -1,11 +1,13 @@
+import { mermaidConfig } from "./mermaid-theme.js";
+import { layoutMermaidKanban, styleMermaidEdgeLabels, ensureMermaidContrast } from "./mermaid-layout.js";
+import { normalizeMermaidThemes, resolveMermaidTheme, type MermaidThemeId, type MermaidThemeSettings } from "./mermaid-theme-settings.js";
 import { calculateRasterSize, svgDataUrl } from "./svg-image.js";
 
 /**
  * Mermaid 渲染服务。
  *
- * 编辑器装饰层、Word 预览、DOCX 导出三处都要拿同一张图，所以渲染、缓存、
- * 栅格化都收在这里。mermaid 本体约 500KB，用动态 import 让它只在文档里
- * 真的出现 mermaid 代码块时才下载。
+ * 对话展示、Markdown 文档和图片复制共用渲染、缓存和栅格化。
+ * Mermaid 按需动态加载。
  */
 
 type RenderResult = { svg: string; width: number; height: number };
@@ -14,52 +16,71 @@ const svgCache = new Map<string, RenderResult>();
 const pngCache = new Map<string, string>();
 /** 同一段源码并发渲染时共用一个 promise，避免重复初始化 mermaid。 */
 const inflight = new Map<string, Promise<RenderResult>>();
+// Mermaid's theme is global: initialization and rendering must run together.
+let renderQueue: Promise<void> = Promise.resolve();
 
 let mermaidReady: Promise<typeof import("mermaid").default> | undefined;
-let currentTheme: "default" | "dark" = "default";
+let currentTheme = "";
+let activeThemes = normalizeMermaidThemes();
 
-async function loadMermaid(dark: boolean) {
+export function setMermaidThemes(settings?: MermaidThemeSettings) {
+  activeThemes = normalizeMermaidThemes(settings);
+}
+
+async function loadMermaid(dark: boolean, selectedTheme: MermaidThemeId) {
   const wanted = dark ? "dark" : "default";
+  const identity = `${wanted}:${selectedTheme}`;
   if (!mermaidReady) {
     mermaidReady = import("mermaid").then(({ default: mermaid }) => {
-      mermaid.initialize({
-        startOnLoad: false,
-        theme: wanted,
-        // securityLevel 保持 strict：图里的文本来自用户文档，
-        // 放开会让 mermaid 允许内联脚本和外部资源。
-        securityLevel: "strict",
-        fontFamily: "inherit",
-      });
-      currentTheme = wanted;
+      mermaid.initialize(mermaidConfig(wanted, selectedTheme));
+      currentTheme = identity;
       return mermaid;
     });
   }
 
   const mermaid = await mermaidReady;
-  if (currentTheme !== wanted) {
-    // 主题变了要重新初始化并清缓存，否则深色模式下拿到的还是浅色图。
-    mermaid.initialize({ startOnLoad: false, theme: wanted, securityLevel: "strict", fontFamily: "inherit" });
-    currentTheme = wanted;
-    svgCache.clear();
-    pngCache.clear();
+  if (currentTheme !== identity) {
+    // 主题变了要重新初始化 mermaid 引擎，但保留已有的 svgCache 和 pngCache：
+    // cacheKey 同时区分画布深浅和所选主题，保留缓存可让用户来回切换时直接复用，
+    // 彻底避免图表高度瞬间坍缩导致页面滚动位置丢失。
+    mermaid.initialize(mermaidConfig(wanted, selectedTheme));
+    currentTheme = identity;
   }
   return mermaid;
 }
 
-function cacheKey(source: string, dark: boolean) {
-  return `${dark ? "d" : "l"}:${source}`;
+/**
+ * 对用户输入的 Mermaid 源码做方向与格式的轻量容错归一化：
+ * 1. 容错方向小写：Mermaid 官方 lexer 仅识别大写 LR/RL/TB/TD/BT，
+ *    用户手打小写 "flowchart lr"、"graph tb" 或 "direction lr" 时自动归一为大写，
+ *    彻底避免因大小写敏感导致解析失败或方向失灵。
+ */
+export function normalizeMermaidSource(source: string): string {
+  let s = source.trim();
+  s = s.replace(/^([ \t]*(?:flowchart|graph))[ \t]+(lr|rl|tb|td|bt)\b/im, (_m: string, prefix: string, dir: string) => {
+    return `${prefix} ${dir.toUpperCase()}`;
+  });
+  s = s.replace(/^([ \t]*direction)[ \t]+(lr|rl|tb|td|bt)\b/gim, (_m: string, prefix: string, dir: string) => {
+    return `${prefix} ${dir.toUpperCase()}`;
+  });
+  return s;
+}
+
+function cacheKey(source: string, dark: boolean, settings = activeThemes) {
+  return `${dark ? "d" : "l"}:${resolveMermaidTheme(source, dark, settings)}:${source}`;
 }
 
 let renderSeq = 0;
 
 /** 读缓存，命中时调用方可以同步拿到图，避免闪一下空白再出现。 */
 export function getCachedMermaidSvg(source: string, dark: boolean): RenderResult | undefined {
-  return svgCache.get(cacheKey(source.trim(), dark));
+  return svgCache.get(cacheKey(normalizeMermaidSource(source), dark));
 }
 
-export async function renderMermaid(source: string, dark: boolean): Promise<RenderResult> {
-  const trimmed = source.trim();
-  const key = cacheKey(trimmed, dark);
+export async function renderMermaid(source: string, dark: boolean, settings = activeThemes): Promise<RenderResult> {
+  const normalized = normalizeMermaidSource(source);
+  const selectedTheme = resolveMermaidTheme(normalized, dark, settings);
+  const key = cacheKey(normalized, dark, settings);
 
   const cached = svgCache.get(key);
   if (cached) return cached;
@@ -67,17 +88,18 @@ export async function renderMermaid(source: string, dark: boolean): Promise<Rend
   const pending = inflight.get(key);
   if (pending) return pending;
 
-  const task = (async () => {
-    const mermaid = await loadMermaid(dark);
+  const task = renderQueue.then(async () => {
+    const mermaid = await loadMermaid(dark, selectedTheme);
     renderSeq += 1;
     // id 必须唯一：mermaid 会用它做 DOM 元素 id 和 SVG 内部的 clip-path 引用，
     // 重复 id 会让同一页里的多张图互相串。
-    const { svg } = await mermaid.render(`mk-mermaid-${renderSeq}`, trimmed);
+    const { svg } = await mermaid.render(`mk-mermaid-${renderSeq}`, normalized);
     const size = measureSvg(svg);
-    const result = { svg, ...size };
+    const result = { svg: readableEdgeLabels(svg, size, dark), ...size };
     svgCache.set(key, result);
     return result;
-  })();
+  });
+  renderQueue = task.then(() => {}, () => {});
 
   inflight.set(key, task);
   try {
@@ -87,26 +109,221 @@ export async function renderMermaid(source: string, dark: boolean): Promise<Rend
   }
 }
 
+/** 标签背景透明后，要按标签实际落点的底色选字色，而不是对整张图强制白字。 */
+function readableEdgeLabels(svg: string, size: { width: number; height: number }, dark: boolean): string {
+  const host = document.createElement("div");
+  host.style.cssText = "position:fixed;left:0;top:0;visibility:hidden;pointer-events:none";
+  host.innerHTML = svg;
+  const root = host.querySelector("svg")!;
+  const originalSize = [root.getAttribute("width"), root.getAttribute("height")];
+  root.setAttribute("width", String(size.width));
+  root.setAttribute("height", String(size.height));
+  document.body.append(host);
+  try {
+    if (layoutMermaidKanban(root)) {
+      size.height = Math.ceil(root.viewBox.baseVal.height);
+      root.setAttribute("height", String(size.height));
+    }
+    styleMermaidEdgeLabels(root, dark);
+
+    // 嵌套子图防遮挡与标题避让：使用相对于 SVG 的绝对屏幕全局几何坐标，精准判定父子包含关系
+    const rootBbox = root.getBoundingClientRect();
+    const clusterElements = Array.from(root.querySelectorAll<SVGGElement>(".cluster"));
+    const clusterData = clusterElements.map((c) => {
+      const rect = c.querySelector<SVGRectElement>("rect");
+      const label = c.querySelector<SVGGElement>(".cluster-label");
+      const rectBbox = rect ? rect.getBoundingClientRect() : null;
+      const labelBbox = label ? label.getBoundingClientRect() : null;
+      const localRectY = rect ? parseFloat(rect.getAttribute("y") || "0") : 0;
+      const localRectH = rect ? parseFloat(rect.getAttribute("height") || "0") : 0;
+      const globalX = rectBbox ? rectBbox.left - rootBbox.left : 0;
+      const globalY = rectBbox ? rectBbox.top - rootBbox.top : 0;
+      const globalW = rectBbox ? rectBbox.width : 0;
+      const globalH = rectBbox ? rectBbox.height : 0;
+      return { cluster: c, rect, label, localRectY, localRectH, globalX, globalY, globalW, globalH, labelBbox };
+    });
+
+    for (const parent of clusterData) {
+      if (!parent.rect || !parent.label) continue;
+      const parentLabelFo = parent.label.querySelector("foreignObject");
+      const parentLabelH = parentLabelFo ? parseFloat(parentLabelFo.getAttribute("height") || "24") : 24;
+      const parentLabelMatch = parent.label.getAttribute("transform")?.match(/translate\(([^,]+),\s*([^)]+)\)/);
+      if (!parentLabelMatch) continue;
+      const parentLabelX = parentLabelMatch[1];
+      const parentLabelY = parseFloat(parentLabelMatch[2]!);
+      const parentLabelBottom = parent.labelBbox ? parent.labelBbox.bottom - rootBbox.top : (parent.globalY + parentLabelH);
+
+      // 仅当子 cluster 在全局坐标上真正被包含在 parent 内部（且有明显内缩）或 DOM 包含时才判定为嵌套子图，
+      // 彻底避免同级平行的多个子图因局部坐标同为 (8, 8) 而被误判为嵌套，进而导致负坐标裁切
+      const children = clusterData.filter((c) =>
+        c !== parent && c.rect &&
+        (parent.cluster.contains(c.cluster) || (
+          c.globalX >= parent.globalX + 2 &&
+          c.globalX + c.globalW <= parent.globalX + parent.globalW - 2 &&
+          c.globalY >= parent.globalY + 2 &&
+          c.globalY + c.globalH <= parent.globalY + parent.globalH - 2
+        ))
+      );
+
+      if (children.length === 0) continue;
+      const topChild = children.reduce((min, c) => (c.globalY < min.globalY ? c : min), children[0]!);
+      if (!topChild?.rect) continue;
+      const minSafeGap = 16;
+      const currentGap = topChild.globalY - parentLabelBottom;
+
+      if (currentGap < minSafeGap) {
+        const deficit = minSafeGap - currentGap;
+        // 向上扩展父卡片时受限于父卡片本地坐标，不得使其变为负数以免顶沿被视口裁剪
+        const maxSafeUpShift = Math.max(0, parent.localRectY);
+        const upShift = Math.min(maxSafeUpShift, Math.ceil(deficit * 0.5));
+        const downShift = deficit - upShift;
+
+        if (upShift > 0) {
+          parent.rect.setAttribute("y", String(parent.localRectY - upShift));
+          parent.rect.setAttribute("height", String(parent.localRectH + upShift));
+          parent.label.setAttribute("transform", `translate(${parentLabelX}, ${parentLabelY - upShift})`);
+        }
+
+        if (downShift > 0) {
+          topChild.rect.setAttribute("y", String(topChild.localRectY + downShift));
+          topChild.rect.setAttribute("height", String(Math.max(20, topChild.localRectH - downShift)));
+          if (topChild.label) {
+            const childLabelMatch = topChild.label.getAttribute("transform")?.match(/translate\(([^,]+),\s*([^)]+)\)/);
+            if (childLabelMatch) {
+              topChild.label.setAttribute("transform", `translate(${childLabelMatch[1]}, ${parseFloat(childLabelMatch[2]!) + downShift * 0.7})`);
+            }
+          }
+        }
+      }
+    }
+
+    // 卡片标题与连线文字防重叠避让：检测 cluster-label 与 edgeLabel 是否发生空间撞车
+    for (const cluster of clusterData) {
+      if (!cluster.label) continue;
+      const clusterBbox = cluster.label.getBoundingClientRect();
+      if (!clusterBbox.width || !clusterBbox.height) continue;
+
+      for (const edge of root.querySelectorAll<SVGGElement>("g.edgeLabel")) {
+        const edgeBbox = edge.getBoundingClientRect();
+        if (!edgeBbox.width || !edgeBbox.height) continue;
+
+        const xOverlap = Math.max(0, Math.min(clusterBbox.right, edgeBbox.right) - Math.max(clusterBbox.left, edgeBbox.left));
+        const yOverlap = Math.max(0, Math.min(clusterBbox.bottom, edgeBbox.bottom) - Math.max(clusterBbox.top, edgeBbox.top));
+
+        if (xOverlap > 10 && yOverlap > 0) {
+          const edgeMatch = edge.getAttribute("transform")?.match(/translate\(([^,]+),\s*([^)]+)\)/);
+          if (edgeMatch) {
+            const shiftY = yOverlap + 14;
+            edge.setAttribute("transform", `translate(${edgeMatch[1]}, ${parseFloat(edgeMatch[2]!) - shiftY})`);
+          }
+        }
+      }
+    }
+
+    // 时序图 autonumber 序号文字垂直居中校准：消除 Mermaid 原生硬编码的 y 偏移，绝对对齐圆球中心
+    for (const seq of root.querySelectorAll<SVGTextElement>(".sequenceNumber, text[class*='sequenceNumber']")) {
+      const currentY = parseFloat(seq.getAttribute("y") || "0");
+      if (currentY) {
+        seq.setAttribute("y", String(currentY - 4.5));
+      }
+      seq.style.setProperty("dominant-baseline", "central", "important");
+      seq.style.setProperty("text-anchor", "middle", "important");
+      seq.style.setProperty("font-size", "11px", "important");
+      seq.style.setProperty("font-weight", "700", "important");
+    }
+
+    ensureMermaidContrast(root, dark);
+
+    // 全图 ViewBox 动态安全呼吸边距自适应：检测最顶、最底、最左、最右的几何边界，
+    // 确保任何图形、圆角边框、标题文字与视口边缘至少有 12~16px 的充裕呼吸留白，100% 杜绝裁切与紧贴压抑。
+    const vbAttr = root.getAttribute("viewBox");
+    if (vbAttr) {
+      const vbParts = vbAttr.trim().split(/[\s,]+/).map(Number);
+      if (vbParts.length === 4 && vbParts.every(Number.isFinite)) {
+        let [vx = 0, vy = 0, vw = 0, vh = 0] = vbParts;
+
+        let minTop = Infinity;
+        let maxBottom = -Infinity;
+        let minLeft = Infinity;
+        let maxRight = -Infinity;
+
+        for (const el of root.querySelectorAll<SVGGraphicsElement>(".cluster rect, .cluster-label, .node, g.edgeLabel, .edgePaths path, rect.actor, text.actor, .statediagram-state")) {
+          const b = el.getBoundingClientRect();
+          if (b.width === 0 && b.height === 0) continue;
+          const top = b.top - rootBbox.top;
+          const bottom = b.bottom - rootBbox.top;
+          const left = b.left - rootBbox.left;
+          const right = b.right - rootBbox.left;
+          if (top < minTop) minTop = top;
+          if (bottom > maxBottom) maxBottom = bottom;
+          if (left < minLeft) minLeft = left;
+          if (right > maxRight) maxRight = right;
+        }
+
+        const SAFE_PAD_TOP = 16;
+        const SAFE_PAD_BOTTOM = 16;
+        const SAFE_PAD_SIDE = 12;
+
+        if (minTop < SAFE_PAD_TOP) {
+          const deltaTop = SAFE_PAD_TOP - minTop;
+          vy -= deltaTop;
+          vh += deltaTop;
+        }
+        if (Number.isFinite(maxBottom) && (vh - maxBottom < SAFE_PAD_BOTTOM)) {
+          vh += (SAFE_PAD_BOTTOM - (vh - maxBottom));
+        }
+        if (minLeft < SAFE_PAD_SIDE) {
+          const deltaLeft = SAFE_PAD_SIDE - minLeft;
+          vx -= deltaLeft;
+          vw += deltaLeft;
+        }
+        if (Number.isFinite(maxRight) && (vw - maxRight < SAFE_PAD_SIDE)) {
+          vw += (SAFE_PAD_SIDE - (vw - maxRight));
+        }
+
+        root.setAttribute("viewBox", `${vx} ${vy} ${vw} ${vh}`);
+        size.width = Math.ceil(vw);
+        size.height = Math.ceil(vh);
+      }
+    }
+
+    ["width", "height"].forEach((name, i) => {
+      const value = originalSize[i];
+      if (value === "100%" || value == null) {
+        root.setAttribute(name, String(i === 0 ? size.width : size.height));
+      } else {
+        root.setAttribute(name, value);
+      }
+    });
+    return root.outerHTML;
+  } finally {
+    host.remove();
+  }
+}
+
 /**
  * 从 SVG 文本里读出尺寸。
  *
  * 优先 viewBox：mermaid 输出的 width/height 常常是 `100%`，直接拿去做
- * canvas 尺寸会得到 NaN。
+ * canvas 尺寸会得到 NaN。支持科学计数法与逗号/空格分隔格式。
  */
-function measureSvg(svg: string): { width: number; height: number } {
-  const viewBox = svg.match(/viewBox="([\d.\-\s]+)"/);
+export function measureSvg(svg: string): { width: number; height: number } {
+  const viewBox = svg.match(/\bviewBox="([^"]+)"/i);
   if (viewBox) {
-    const parts = viewBox[1]?.trim().split(/\s+/).map(Number) ?? [];
-    const width = parts[2];
-    const height = parts[3];
-    if (parts.length === 4 && width !== undefined && height !== undefined && width > 0 && height > 0) {
+    const parts = (viewBox[1] ?? "").trim().split(/[\s,]+/).map(Number);
+    const width = parts[2] ?? 0; const height = parts[3] ?? 0;
+    if (parts.length === 4 && Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0) {
       return { width, height };
     }
   }
 
-  const width = Number(svg.match(/\bwidth="(\d+(?:\.\d+)?)"/)?.[1]);
-  const height = Number(svg.match(/\bheight="(\d+(?:\.\d+)?)"/)?.[1]);
-  if (width > 0 && height > 0) return { width, height };
+  const widthMatch = svg.match(/\bwidth="([\d.]+(?:e[+-]?\d+)?)(?:px)?"/i);
+  const heightMatch = svg.match(/\bheight="([\d.]+(?:e[+-]?\d+)?)(?:px)?"/i);
+  const width = Number(widthMatch?.[1]);
+  const height = Number(heightMatch?.[1]);
+  if (Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0) {
+    return { width, height };
+  }
 
   return { width: 800, height: 400 };
 }
@@ -114,9 +331,7 @@ function measureSvg(svg: string): { width: number; height: number } {
 /**
  * 把渲染好的 SVG 栅格化成 PNG data URL。
  *
- * DOCX 不支持 SVG——Pandoc 遇到 SVG 会直接跳过那张图，所以导出前必须转成
- * 位图。scale 默认 2 是为了在 Word 里放大看仍然清晰；再高会让文档体积
- * 明显膨胀。
+ * 复制图表时生成可直接粘贴的位图。scale 默认 2 保持放大后的清晰度。
  */
 export async function mermaidToPngDataUrl(source: string, dark: boolean, scale = 2): Promise<string> {
   const trimmed = source.trim();
@@ -125,7 +340,8 @@ export async function mermaidToPngDataUrl(source: string, dark: boolean, scale =
   if (cached) return cached;
 
   const { svg, width, height } = await renderMermaid(trimmed, dark);
-  const dataUrl = await svgToPng(svg, width, height, scale);
+  // PNG 导出使用白色画布，不能把深色编辑器画布上的白字直接带过去。
+  const dataUrl = await svgToPng(readableEdgeLabels(svg, { width, height }, false), width, height, scale);
   pngCache.set(key, dataUrl);
   return dataUrl;
 }
@@ -136,20 +352,19 @@ function svgToPng(svg: string, width: number, height: number, scale: number): Pr
     // tainted，随后 toDataURL 抛 SecurityError。
     const image = new Image();
     let settled = false;
-    const timeout: { value?: number } = {};
 
     const fail = (cause: unknown) => {
       if (settled) return;
       settled = true;
-      if (timeout.value !== undefined) window.clearTimeout(timeout.value);
+      if (timeout !== undefined) window.clearTimeout(timeout);
       reject(cause instanceof Error ? cause : new Error("图表转图片失败"));
     };
 
-    timeout.value = window.setTimeout(() => fail(new Error("图表转图片超时")), 10_000);
+    const timeout = window.setTimeout(() => fail(new Error("图表转图片超时")), 10_000);
 
     image.onload = () => {
       if (settled) return;
-      if (timeout.value !== undefined) window.clearTimeout(timeout.value);
+      if (timeout !== undefined) window.clearTimeout(timeout);
       try {
         const rasterSize = calculateRasterSize(width, height, scale);
         const canvas = document.createElement("canvas");

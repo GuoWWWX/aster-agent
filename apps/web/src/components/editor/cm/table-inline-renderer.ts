@@ -1,5 +1,6 @@
 import MarkdownIt from "markdown-it";
-import type { Token } from "markdown-it";
+import type { Token, MarkdownIt as MarkdownItInstance } from "markdown-it";
+import katex from "katex";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { FileText, Globe2 } from "lucide-react";
@@ -9,31 +10,70 @@ import {
   normalizeBareExternalLink,
 } from "../../../lib/document-links.js";
 import { obsidianWikilinkPlugin } from "../../../lib/obsidian-wikilinks.js";
+import { findInlineMarkdownMath, normalizeMathSource } from "../../../lib/markdown-math.js";
 import { relaxedStrongPlugin } from "../../../lib/relaxed-strong.js";
+import { relaxedEmphasisPlugin } from "../../../lib/relaxed-emphasis.js";
+import { markdownInlineHtmlPlugin, splitMarkdownInlineHtml, type MarkdownInlineHtmlTag } from "../../../lib/markdown-inline-html.js";
+
+type TableInlineElementTag =
+  | "strong" | "em" | "s" | "u" | "mark" | "sub" | "sup" | "small" | "kbd" | "code"
+  | "span" | "abbr" | "q" | "cite" | "var" | "samp" | "time" | "ruby" | "rt" | "rp"
+  | "a" | "div" | "p" | "details" | "summary" | "pre" | "blockquote"
+  | "ul" | "ol" | "li" | "dl" | "dt" | "dd" | "table" | "thead" | "tbody" | "tr" | "th" | "td" | "caption";
 
 export type TableInlineNode =
   | { type: "text"; value: string }
   | { type: "code"; value: string }
+  | { type: "math"; value: string; source: string }
   | { type: "break" }
   | { type: "image"; src: string; alt: string; title?: string }
+  | { type: "void"; tag: "hr" | "wbr" }
   | {
     type: "element";
-    tag: "strong" | "em" | "s" | "a";
+    tag: TableInlineElementTag;
     href?: string;
     title?: string;
     wikilinkTarget?: string;
+    open?: boolean;
+    dateTime?: string;
     children: TableInlineNode[];
   };
 
+function tableInlineMathPlugin(md: MarkdownItInstance) {
+  md.inline.ruler.before("escape", "table_math_inline", (state, silent) => {
+    const start = state.pos;
+    const possibleOpener = state.src[start] === "$"
+      || (state.src[start] === "\\" && state.src[start + 1] === "(");
+    if (!possibleOpener) return false;
+
+    const [range] = findInlineMarkdownMath(state.src.slice(start));
+    if (!range || range.from !== 0) return false;
+    if (!silent) {
+      const token = state.push("math_inline", "math", 0);
+      token.content = state.src.slice(start + range.contentFrom, start + range.contentTo);
+      token.markup = state.src.slice(start, start + range.contentFrom);
+      token.meta = { source: state.src.slice(start, start + range.to) };
+    }
+    state.pos = start + range.to;
+    return true;
+  });
+}
+
 const parser = new MarkdownIt({ html: false, linkify: true, typographer: false })
+  .use(markdownInlineHtmlPlugin)
+  .use(tableInlineMathPlugin)
   .use(obsidianWikilinkPlugin)
-  .use(relaxedStrongPlugin);
+  .use(relaxedStrongPlugin)
+  .use(relaxedEmphasisPlugin);
 
 type PendingInlineElement = {
-  tag: "strong" | "em" | "s" | "a";
+  tag: TableInlineElementTag;
+  sourceTag?: string;
   href?: string;
   title?: string;
   wikilinkTarget?: string;
+  open?: boolean;
+  dateTime?: string;
   children: TableInlineNode[];
   autoLink?: boolean;
   trailingText?: string;
@@ -53,20 +93,71 @@ export function parseTableInlineMarkdown(source: string): TableInlineNode[] {
   const target = () => stack[stack.length - 1]?.children ?? root;
 
   for (const token of children) {
-    if (token.type === "text") {
-      const active = stack[stack.length - 1];
-      if (active?.tag === "a" && active.autoLink && active.href && /^https?:\/\//i.test(token.content)) {
-        const href = normalizeBareExternalLink(token.content);
-        active.href = href;
-        appendText(target(), href);
-        if (href.length < token.content.length) active.trailingText = token.content.slice(href.length);
-        continue;
+    if (token.type === "text" || token.type === "html_inline") {
+      const parts = token.type === "html_inline" ? splitMarkdownInlineHtml(token.content) : [{ type: "text" as const, value: token.content }];
+      for (const part of parts) {
+        if (part.type === "tag") {
+          if (part.name === "br") {
+            target().push({ type: "break" });
+            continue;
+          }
+          if (part.name === "hr" || part.name === "wbr") {
+            target().push({ type: "void", tag: part.name });
+            continue;
+          }
+          if (part.name === "img" && !part.closing) {
+            const src = part.attributes.src ?? "";
+            if (src && parser.validateLink(src)) {
+              const title = part.attributes.title || undefined;
+              target().push({ type: "image", src, alt: part.attributes.alt ?? "", ...(title ? { title } : {}) });
+            } else {
+              appendText(target(), part.raw);
+            }
+            continue;
+          }
+          const element = htmlInlineElement(part);
+          if (!element) {
+            appendText(target(), part.raw);
+            continue;
+          }
+          if (!part.closing) {
+            stack.push({ ...element, sourceTag: part.name, children: [] });
+            continue;
+          }
+          const active = stack[stack.length - 1];
+          if (active?.sourceTag !== part.name) {
+            appendText(target(), part.raw);
+            continue;
+          }
+          const closed = stack.pop();
+          if (closed) {
+            const { trailingText, ...node } = closed;
+            delete node.autoLink;
+            delete node.sourceTag;
+            target().push({ type: "element", ...node });
+            if (trailingText) appendText(target(), trailingText);
+          }
+          continue;
+        }
+        const active = stack[stack.length - 1];
+        if (active?.tag === "a" && active.autoLink && active.href && /^https?:\/\//i.test(part.value)) {
+          const href = normalizeBareExternalLink(part.value);
+          active.href = href;
+          appendText(target(), href);
+          if (href.length < part.value.length) active.trailingText = part.value.slice(href.length);
+          continue;
+        }
+        appendText(target(), part.value);
       }
-      appendText(target(), token.content);
       continue;
     }
     if (token.type === "code_inline") {
       target().push({ type: "code", value: token.content });
+      continue;
+    }
+    if (token.type === "math_inline") {
+      const source = typeof token.meta?.source === "string" ? token.meta.source : `$${token.content}$`;
+      target().push({ type: "math", value: token.content, source });
       continue;
     }
     if (token.type === "softbreak" || token.type === "hardbreak") {
@@ -75,25 +166,25 @@ export function parseTableInlineMarkdown(source: string): TableInlineNode[] {
     }
     const openingTag = openingElement(token);
     if (openingTag) {
-      stack.push({ ...openingTag, children: [] });
+      stack.push({ ...openingTag, sourceTag: openingTag.tag, children: [] });
       continue;
     }
     const closeTag = closingTag(token);
     if (closeTag && stack[stack.length - 1]?.tag === closeTag) {
       const element = stack.pop();
       if (element) {
-        const { autoLink: _autoLink, trailingText, ...node } = element;
-        void _autoLink;
+        const { trailingText, ...node } = element;
+        delete node.autoLink;
+        delete node.sourceTag;
         target().push({ type: "element", ...node });
         if (trailingText) appendText(target(), trailingText);
       }
       continue;
     }
     if (token.type === "image") {
-      const srcValue = token.attrGet("src");
-      const src = typeof srcValue === "string" ? srcValue : "";
+      const src = String(token.attrGet("src") ?? "");
       const titleValue = token.attrGet("title");
-      const title = typeof titleValue === "string" ? titleValue : undefined;
+      const title = titleValue == null ? undefined : String(titleValue);
       if (src && parser.validateLink(src)) {
         target().push({ type: "image", src, alt: token.content, ...(title ? { title } : {}) });
       }
@@ -106,8 +197,9 @@ export function parseTableInlineMarkdown(source: string): TableInlineNode[] {
   while (stack.length > 0) {
     const element = stack.pop();
     if (element) {
-      const { autoLink: _autoLink, trailingText, ...node } = element;
-      void _autoLink;
+      const { trailingText, ...node } = element;
+      delete node.autoLink;
+      delete node.sourceTag;
       target().push({ type: "element", ...node });
       if (trailingText) appendText(target(), trailingText);
     }
@@ -115,8 +207,41 @@ export function parseTableInlineMarkdown(source: string): TableInlineNode[] {
   return root;
 }
 
+function canonicalHtmlElementTag(name: string): TableInlineElementTag | null {
+  if (name === "b") return "strong";
+  if (name === "i") return "em";
+  if (name === "del" || name === "strike") return "s";
+  if (name === "ins") return "u";
+  if (name === "strong" || name === "em" || name === "s" || name === "u" || name === "mark"
+    || name === "sub" || name === "sup" || name === "small" || name === "kbd" || name === "code"
+    || name === "span" || name === "abbr" || name === "q" || name === "cite" || name === "var"
+    || name === "samp" || name === "time" || name === "ruby" || name === "rt" || name === "rp"
+    || name === "a" || name === "div" || name === "p" || name === "details" || name === "summary"
+    || name === "pre" || name === "blockquote" || name === "ul" || name === "ol" || name === "li"
+    || name === "dl" || name === "dt" || name === "dd" || name === "table" || name === "thead"
+    || name === "tbody" || name === "tr" || name === "th" || name === "td" || name === "caption") return name;
+  return null;
+}
+
+function htmlInlineElement(tag: MarkdownInlineHtmlTag): Omit<PendingInlineElement, "children" | "sourceTag"> | null {
+  const elementTag = canonicalHtmlElementTag(tag.name);
+  if (!elementTag) return null;
+  const title = tag.attributes.title || undefined;
+  if (elementTag === "a") {
+    const href = tag.attributes.href ?? "";
+    if (href && !parser.validateLink(href)) return null;
+    return { tag: elementTag, ...(href ? { href } : {}), ...(title ? { title } : {}) };
+  }
+  return {
+    tag: elementTag,
+    ...(title ? { title } : {}),
+    ...(elementTag === "details" && Object.prototype.hasOwnProperty.call(tag.attributes, "open") ? { open: true } : {}),
+    ...(elementTag === "time" && tag.attributes.datetime ? { dateTime: tag.attributes.datetime } : {}),
+  };
+}
+
 function openingElement(token: Token): {
-  tag: "strong" | "em" | "s" | "a";
+  tag: TableInlineElementTag;
   href?: string;
   title?: string;
   wikilinkTarget?: string;
@@ -126,10 +251,9 @@ function openingElement(token: Token): {
   if (token.type === "em_open") return { tag: "em" };
   if (token.type === "s_open") return { tag: "s" };
   if (token.type === "link_open") {
-    const hrefValue = token.attrGet("href");
-    const href = typeof hrefValue === "string" ? hrefValue : "";
+    const href = String(token.attrGet("href") ?? "");
     const titleValue = token.attrGet("title");
-    const title = typeof titleValue === "string" ? titleValue : undefined;
+      const title = titleValue == null ? undefined : String(titleValue);
     const wikilinkTarget = typeof token.meta?.mkWikilinkTarget === "string"
       ? token.meta.mkWikilinkTarget
       : undefined;
@@ -146,7 +270,7 @@ function openingElement(token: Token): {
   return null;
 }
 
-function closingTag(token: Token): "strong" | "em" | "s" | "a" | null {
+function closingTag(token: Token): TableInlineElementTag | null {
   if (token.type === "strong_close") return "strong";
   if (token.type === "em_close") return "em";
   if (token.type === "s_close") return "s";
@@ -162,6 +286,23 @@ function appendNodes(parent: HTMLElement, nodes: readonly TableInlineNode[]) {
       const code = document.createElement("code");
       code.textContent = node.value;
       parent.append(code);
+    } else if (node.type === "math") {
+      const math = document.createElement("span");
+      math.className = "mk-cm-math-inline mk-cm-table-math-inline";
+      math.setAttribute("aria-label", node.value);
+      try {
+        math.innerHTML = katex.renderToString(normalizeMathSource(node.value), {
+          displayMode: false,
+          throwOnError: true,
+          output: "html",
+          strict: false,
+          trust: false,
+        });
+      } catch {
+        math.classList.add("is-invalid");
+        math.textContent = node.source;
+      }
+      parent.append(math);
     } else if (node.type === "break") {
       parent.append(document.createElement("br"));
     } else if (node.type === "image") {
@@ -171,6 +312,8 @@ function appendNodes(parent: HTMLElement, nodes: readonly TableInlineNode[]) {
       image.loading = "lazy";
       if (node.title) image.title = node.title;
       parent.append(image);
+    } else if (node.type === "void") {
+      parent.append(document.createElement(node.tag));
     } else if (node.tag === "a" && node.wikilinkTarget) {
       const target = node.wikilinkTarget;
       const kind = isExternalDocumentLink(target) ? "external" : "document";
@@ -192,13 +335,15 @@ function appendNodes(parent: HTMLElement, nodes: readonly TableInlineNode[]) {
       parent.append(link);
     } else {
       const element = document.createElement(node.tag);
+      if (node.title) element.setAttribute("title", node.title);
       if (node.tag === "a" && node.href) {
         element.setAttribute("href", node.href);
         element.setAttribute("rel", "noreferrer");
         element.dataset.mkLinkTarget = node.href;
-        if (node.title) element.setAttribute("title", node.title);
         element.addEventListener("click", (event) => event.preventDefault());
       }
+      if (node.tag === "details" && node.open) element.setAttribute("open", "");
+      if (node.tag === "time" && node.dateTime) element.setAttribute("datetime", node.dateTime);
       appendNodes(element, node.children);
       parent.append(element);
     }
@@ -210,5 +355,13 @@ export function renderTableInlineMarkdown(source: string): HTMLElement {
   content.className = "mk-cm-table-cell-content";
   appendNodes(content, parseTableInlineMarkdown(source));
   if (!content.hasChildNodes()) content.append(document.createElement("br"));
+  return content;
+}
+
+/** Same HTML/Markdown rendering for body widgets and table cells. */
+export function renderMarkdownHtml(source: string, block: boolean): HTMLElement {
+  const content = document.createElement(block ? "div" : "span");
+  content.className = "mk-markdown-html";
+  appendNodes(content, parseTableInlineMarkdown(source));
   return content;
 }

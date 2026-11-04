@@ -1,9 +1,6 @@
-import {
-  CONTEXT_MESSAGE_OVERHEAD_TOKENS,
-  estimateContextTokens,
-  type ConversationContextUsage,
-} from "@agent/protocol";
-import type { CSSProperties, ReactElement } from "react";
+import { type ConversationContextUsage } from "@agent/protocol";
+import { ArrowDown, ArrowUp, Gauge, Target, Timer } from "lucide-react";
+import { Fragment, type CSSProperties, type ReactElement } from "react";
 
 import {
   Popover,
@@ -15,45 +12,66 @@ import "./context-usage-indicator.css";
 type ContextPressure = "normal" | "warning" | "critical" | "unknown";
 
 type ContextUsageIndicatorProps = {
-  composerValue: string;
   contextWindowTokens: number;
   modelName: string | null;
   usage: ConversationContextUsage | null;
 };
 
+type ContextUsageRow = {
+  level: 0 | 1;
+  label: string;
+  tokens: number;
+};
+
+type ProviderCacheInlineMetric = {
+  kind: "cache" | "input" | "output" | "latency" | "throughput";
+  label: string;
+  shortLabel: string;
+  tone: "caution" | "danger" | "good" | "neutral" | "success" | "warning";
+  value: string;
+};
+
 export function ContextUsageIndicator({
-  composerValue,
   contextWindowTokens,
   modelName,
   usage,
 }: ContextUsageIndicatorProps): ReactElement {
-  const pendingInputTokens = estimatePendingInputTokens(composerValue);
-  const estimatedInputTokens = (usage?.estimatedInputTokens ?? 0) + pendingInputTokens;
+  const skillReserveTokens = usage?.skillReserveTokens ?? 0;
+  const usedInputTokens = Math.max((usage?.estimatedInputTokens ?? 0) - skillReserveTokens, 0);
   const outputReserveTokens = usage?.outputReserveTokens ?? 0;
-  const occupiedTokens = estimatedInputTokens + outputReserveTokens;
+  const reservedTokens = skillReserveTokens + outputReserveTokens;
+  const budgetedTokens = usedInputTokens + reservedTokens;
   const compressionThresholdTokens = usage?.compressionThresholdTokens ?? 0;
-  const percentage = contextWindowTokens > 0
-    ? Math.min(100, Math.round((occupiedTokens / contextWindowTokens) * 100))
+  const capacityTokens = contextWindowTokens > 0
+    ? contextWindowTokens
+    : compressionThresholdTokens;
+  const compressionLimitTokens = compressionThresholdTokens > 0
+    ? compressionThresholdTokens
+    : capacityTokens;
+  const percentage = capacityTokens > 0
+    ? Math.min(100, Math.round((usedInputTokens / capacityTokens) * 100))
     : 0;
   const pressure = usage === null
     ? "unknown"
-    : getContextPressure(compressionThresholdTokens, occupiedTokens);
-  const availableTokens = Math.max(contextWindowTokens - occupiedTokens, 0);
+    : getContextPressure(compressionThresholdTokens, budgetedTokens);
+  const remainingBeforeCompressionTokens = Math.max(compressionLimitTokens - budgetedTokens, 0);
+  const rows = usage === null
+    ? []
+    : getContextUsageRows(usage);
   const buttonLabel = contextButtonLabel({
     contextWindowTokens,
     compressionThresholdTokens,
-    occupiedTokens,
+    usedInputTokens,
     percentage,
     pressure,
     usage,
   });
-
   return (
     <Popover>
       <PopoverTrigger asChild>
         <button
           aria-label={buttonLabel}
-          className="context-usage-indicator__trigger"
+          className="context-usage-indicator__trigger inline-flex size-6 shrink-0 items-center justify-center rounded-[var(--app-radius)] text-emerald-600 outline-none transition-colors hover:bg-[var(--app-hover)] focus-visible:ring-2 focus-visible:ring-[var(--app-focus-ring)]"
           data-pressure={pressure}
           title={buttonLabel}
           type="button"
@@ -86,38 +104,41 @@ export function ContextUsageIndicator({
         {usage === null ? (
           <p className="context-usage-indicator__loading">正在统计上下文…</p>
         ) : (
-          <dl className="context-usage-indicator__details">
-            <UsageRow label="输入上下文（估算）" value={formatTokenCount(estimatedInputTokens)} />
-            {pendingInputTokens > 0 ? (
-              <UsageRow label="当前输入" value={formatTokenCount(pendingInputTokens)} />
-            ) : null}
-            <UsageRow label="回复预留" value={formatTokenCount(outputReserveTokens)} />
-            <UsageRow
-              label="模型窗口"
-              value={contextWindowTokens > 0 ? formatTokenCount(contextWindowTokens) : "未配置"}
-            />
-            {contextWindowTokens > 0 ? (
-              <UsageRow label="剩余可用" value={formatTokenCount(availableTokens)} />
-            ) : null}
-            <UsageRow
-              label="自动压缩阈值"
-              value={compressionThresholdLabel(usage)}
-            />
-            <UsageRow label="系统指令" value={formatTokenCount(usage.estimatedSystemTokens)} />
-            <UsageRow label="会话历史" value={formatTokenCount(usage.estimatedConversationTokens)} />
-            {usage.estimatedAttachmentTokens > 0 ? (
-              <UsageRow label="文件与图片" value={formatTokenCount(usage.estimatedAttachmentTokens)} />
-            ) : null}
-            {usage.estimatedReferenceTokens > 0 ? (
-              <UsageRow label="引用对话" value={formatTokenCount(usage.estimatedReferenceTokens)} />
-            ) : null}
-            {usage.estimatedToolTokens > 0 ? (
-              <UsageRow label="工具结果与调用" value={formatTokenCount(usage.estimatedToolTokens)} />
-            ) : null}
-            {usage.estimatedToolDefinitionTokens > 0 ? (
-              <UsageRow label="工具定义" value={formatTokenCount(usage.estimatedToolDefinitionTokens)} />
-            ) : null}
-          </dl>
+          <>
+            <section className="context-usage-indicator__budget" aria-label="当前上下文预算">
+              <div>
+                <p>{capacityTokens > 0 ? "已使用 / 总容量" : "已使用"}</p>
+                <strong>
+                  {capacityTokens > 0
+                    ? `${formatTokenCount(usedInputTokens)} / ${formatTokenCount(capacityTokens)}`
+                    : formatTokenCount(usedInputTokens)}
+                </strong>
+              </div>
+              {compressionLimitTokens > 0 ? (
+                <div>
+                  <p>{compressionThresholdTokens > 0 ? "距自动压缩" : "可用余量"}</p>
+                  <strong>{formatTokenCount(remainingBeforeCompressionTokens)}</strong>
+                </div>
+              ) : null}
+            </section>
+
+            <p className="context-usage-indicator__estimate-note">
+              Token 为本地估算，模型服务端的实际计量可能略有差异。
+            </p>
+
+            <section className="context-usage-indicator__section">
+              <dl className="context-usage-indicator__details">
+                {rows.map((row) => (
+                  <UsageRow
+                    key={row.label}
+                    label={row.label}
+                    level={row.level}
+                    value={formatTokenCount(row.tokens)}
+                  />
+                ))}
+              </dl>
+            </section>
+          </>
         )}
 
         <p className="context-usage-indicator__status" data-pressure={pressure}>
@@ -133,20 +154,420 @@ export function ContextUsageIndicator({
   );
 }
 
-function UsageRow({ label, value }: { label: string; value: string }): ReactElement {
+export function ProviderCacheStatus({
+  usage,
+}: {
+  usage: ConversationContextUsage | null;
+}): ReactElement {
+  const metrics = providerCacheInlineMetrics(usage);
+  const cacheMetrics = metrics.filter((metric) => metric.kind === "cache");
+  const accessibleLabel = `${metrics.map((metric) => (
+    `${metric.label} ${metric.value}`
+  )).join("，")}，点击查看明细`;
+
   return (
-    <div>
+    <Popover>
+      <PopoverTrigger asChild>
+        <button
+          aria-label={accessibleLabel}
+          className="pointer-events-auto mx-auto mt-1.5 flex min-h-4 w-fit max-w-[calc(100%_-_32px)] flex-wrap items-center justify-center gap-1.5 whitespace-nowrap rounded-[var(--app-radius)] px-1 py-0.5 text-[length:var(--app-font-size-body)] font-normal tabular-nums text-[var(--app-muted-foreground)] outline-none focus-visible:ring-1 focus-visible:ring-[var(--app-focus-ring)]"
+          title={accessibleLabel}
+          type="button"
+        >
+          {metrics.filter((metric) => metric.kind !== "cache").map((metric, index) => (
+            <Fragment key={metric.label}>
+              {index > 0 ? (
+                <span aria-hidden="true" className="text-[var(--app-border)]">·</span>
+              ) : null}
+              {metric.kind === "latency" || metric.kind === "throughput" ? (
+                <span
+                  className="inline-flex min-w-0 items-center gap-1"
+                  data-cache-metric={metric.label}
+                  data-tone={metric.tone}
+                >
+                  {metric.kind === "latency" ? <Timer aria-hidden="true" size={13} /> : <Gauge aria-hidden="true" size={13} />}
+                  <ProviderMetricLabel metric={metric} />
+                  <span className={providerCacheToneTextClassName(metric.tone)}>
+                    {metric.value}
+                  </span>
+                </span>
+              ) : (
+                <span
+                  className="inline-flex min-w-0 items-center gap-1"
+                  data-token-direction={metric.kind === "input" ? "up" : "down"}
+                  data-tone={metric.tone}
+                >
+                  {metric.kind === "input" ? (
+                    <ArrowUp
+                      aria-hidden="true"
+                      className={providerCacheToneTextClassName(metric.tone)}
+                      size={13}
+                      strokeWidth={2}
+                    />
+                  ) : (
+                    <ArrowDown
+                      aria-hidden="true"
+                      className={providerCacheToneTextClassName(metric.tone)}
+                      size={13}
+                      strokeWidth={2}
+                    />
+                  )}
+                  <ProviderMetricLabel metric={metric} />
+                  <span className="font-normal text-[var(--app-foreground)]">
+                    {metric.value}
+                  </span>
+                </span>
+              )}
+            </Fragment>
+          ))}
+          <span aria-hidden="true" className="text-[var(--app-border)]">·</span>
+          <span className="inline-flex items-center gap-1.5" data-cache-group>
+            <Target aria-hidden="true" size={13} />
+            {cacheMetrics.map((metric) => (
+              <span key={metric.label} className="inline-flex items-center gap-1" data-cache-metric={metric.label} data-tone={metric.tone}>
+                <ProviderMetricLabel metric={metric} />
+                <span className={providerCacheToneTextClassName(metric.tone)}>{metric.value}</span>
+              </span>
+            ))}
+          </span>
+        </button>
+      </PopoverTrigger>
+      <PopoverContent align="center" className="context-usage-indicator__content">
+        {usage === null ? (
+          <p className="text-[var(--app-muted-foreground)]">尚未收到服务端计量；完成一次模型请求后显示实际值。</p>
+        ) : (
+          <ProviderCacheDetails usage={usage} />
+        )}
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+function ProviderMetricLabel({
+  metric,
+}: {
+  metric: ProviderCacheInlineMetric;
+}): ReactElement {
+  if (metric.kind === "cache") return <span aria-hidden="true">{metric.shortLabel}</span>;
+  return (
+    <>
+      <span
+        aria-hidden="true"
+        className="provider-cache-status__label--full"
+        data-label-variant="full"
+      >
+        {metric.label}
+      </span>
+      <span
+        aria-hidden="true"
+        className="provider-cache-status__label--short"
+        data-label-variant="short"
+      >
+        {metric.shortLabel}
+      </span>
+    </>
+  );
+}
+
+function ProviderCacheDetails({
+  usage,
+}: {
+  usage: ConversationContextUsage;
+}): ReactElement {
+  const cache = usage.providerCache;
+  const latest = cache?.latest ?? null;
+  const cumulative = cache?.cumulative;
+  const latestCacheLabel = latest?.hitRate === null || latest === null
+    ? "未上报"
+    : formatCachePercentage(latest.hitRate);
+  const cumulativeCacheLabel = cumulative?.hitRate === null || cumulative === undefined
+    ? "未上报"
+    : formatCachePercentage(cumulative.hitRate);
+
+  return (
+    <section
+      aria-label="模型 Token 与缓存计量"
+      className="mb-2.5 rounded-[var(--app-radius-small)] border border-[var(--app-border)] bg-[var(--app-panel-subtle)] px-2 py-1.5"
+    >
+      <div className="flex items-center justify-between gap-3">
+        <p className="m-0 text-[length:var(--app-font-size-auxiliary)] font-semibold text-[var(--app-muted-foreground)]">
+          Token 与缓存（服务端实际）
+        </p>
+        <strong className="shrink-0 text-[length:var(--app-font-size-subtitle)] tabular-nums text-emerald-600 dark:text-emerald-400">
+          {latest === null ? "暂无数据" : `最近一次 ${latestCacheLabel}`}
+        </strong>
+      </div>
+      <p className="my-1 text-[length:var(--app-font-size-auxiliary)] text-[var(--app-muted-foreground)]">
+        本次指最近一次已上报实际用量的模型 API 请求，不是整轮任务。新请求等待、执行工具或取消时保留最近实际值，收到新计量后再更新。
+        平均值按有缓存明细的输入 Token 加权；未上报不算作零命中。
+        速度为服务端输出 Token 数除以首个输出到响应结束的时长，不含首字等待；缺少计量时显示 --。
+        {latest?.hitRate == null && cache?.lastReportedHitRate !== undefined
+          ? ` 本次缓存明细未上报；上次有效命中率为 ${formatCachePercentage(cache.lastReportedHitRate)}，不作为本次值。`
+          : null}
+      </p>
+      {latest === null ? (
+        <p className="mb-0 mt-1 text-[length:var(--app-font-size-auxiliary)] leading-5 text-[var(--app-muted-foreground)]">
+          完成一次模型请求后显示真实缓存命中情况。
+        </p>
+      ) : (
+        <dl className="mb-0 mt-1.5 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-[length:var(--app-font-size-auxiliary)] leading-5">
+          <dt className="text-[var(--app-muted-foreground)]">最近输入</dt>
+          <dd className="m-0 text-right tabular-nums text-[var(--app-foreground)]">
+            {formatReportedTokenCount(latest.inputTokens)} tokens
+          </dd>
+          <dt className="text-[var(--app-muted-foreground)]">最近输出</dt>
+          <dd className="m-0 text-right tabular-nums text-[var(--app-foreground)]">
+            {formatReportedTokenCount(latest.outputTokens)} tokens
+          </dd>
+          <dt className="text-[var(--app-muted-foreground)]">最近缓存命中</dt>
+          <dd className="m-0 text-right tabular-nums text-[var(--app-foreground)]">
+            {latest.cachedInputTokens === null
+              ? "Provider 未上报"
+              : `${formatReportedTokenCount(latest.cachedInputTokens)} tokens`}
+          </dd>
+          <dt className="text-[var(--app-muted-foreground)]">最近命中率</dt>
+          <dd className="m-0 text-right font-semibold tabular-nums text-emerald-600 dark:text-emerald-400">
+            {latestCacheLabel}
+          </dd>
+          <dt className="text-[var(--app-muted-foreground)]">累计命中率</dt>
+          <dd className="m-0 text-right font-semibold tabular-nums text-emerald-600 dark:text-emerald-400">
+            {cumulativeCacheLabel}
+          </dd>
+          <dt className="text-[var(--app-muted-foreground)]">有效响应</dt>
+          <dd className="m-0 text-right tabular-nums text-[var(--app-foreground)]">
+            {cumulative?.reportedRequestCount ?? 0} / {cumulative?.requestCount ?? 0} 次包含缓存明细
+          </dd>
+          {(latest.cacheCreationInputTokens ?? 0) > 0
+            || (cumulative?.cacheCreationInputTokens ?? 0) > 0 ? (
+              <>
+                <dt className="text-[var(--app-muted-foreground)]">缓存写入</dt>
+                <dd className="m-0 text-right tabular-nums text-[var(--app-foreground)]">
+                  最近 {formatReportedTokenCount(latest.cacheCreationInputTokens ?? 0)} tokens · 累计 {formatReportedTokenCount(cumulative?.cacheCreationInputTokens ?? 0)} tokens
+                </dd>
+              </>
+            ) : null}
+        </dl>
+      )}
+      {latest !== null ? (
+        <p className="mb-0 mt-1.5 border-t border-[var(--app-border)] pt-1.5 text-[length:var(--app-font-size-caption)] leading-4 text-[var(--app-muted-foreground)]">
+          失败请求不计入；累计命中率按当前模型成功响应中已上报的输入 Token 加权计算。
+        </p>
+      ) : null}
+    </section>
+  );
+}
+
+function UsageRow({
+  label,
+  level,
+  value,
+}: {
+  label: string;
+  level: 0 | 1;
+  value: string;
+}): ReactElement {
+  return (
+    <div data-level={level}>
       <dt>{label}</dt>
       <dd>{value}</dd>
     </div>
   );
 }
 
-function estimatePendingInputTokens(content: string): number {
-  const trimmed = content.trim();
-  return trimmed.length === 0
-    ? 0
-    : estimateContextTokens(trimmed) + CONTEXT_MESSAGE_OVERHEAD_TOKENS;
+export function getContextUsageRows(
+  usage: ConversationContextUsage,
+): ContextUsageRow[] {
+  const systemMessageTokens = Math.max(
+    usage.estimatedSystemTokens - usage.skillReserveTokens - usage.estimatedTaskListTokens,
+    0,
+  );
+  const baseSystemTokens = Math.max(
+    systemMessageTokens - usage.estimatedSkillCatalogTokens,
+    0,
+  );
+  const systemContextTokens = systemMessageTokens
+    + usage.estimatedTaskListTokens
+    + usage.estimatedToolDefinitionTokens;
+  const currentConversationTokens = usage.estimatedConversationTokens
+    + usage.estimatedToolTokens
+    + usage.estimatedAttachmentTokens
+    + usage.estimatedReferenceTokens;
+  const reserveTokens = usage.outputReserveTokens + usage.skillReserveTokens;
+
+  return [
+    {
+      label: "系统上下文",
+      level: 0,
+      tokens: systemContextTokens,
+    },
+    {
+      label: "基础系统提示词",
+      level: 1,
+      tokens: baseSystemTokens,
+    },
+    {
+      label: "内置工具",
+      level: 1,
+      tokens: usage.estimatedToolDefinitionTokens,
+    },
+    {
+      label: "MCP 工具",
+      level: 1,
+      tokens: 0,
+    },
+    {
+      label: "Skill 目录",
+      level: 1,
+      tokens: usage.estimatedSkillCatalogTokens,
+    },
+    {
+      label: "当前任务清单",
+      level: 1,
+      tokens: usage.estimatedTaskListTokens,
+    },
+    {
+      label: "当前有效会话",
+      level: 0,
+      tokens: currentConversationTokens,
+    },
+    {
+      label: "对话文本与压缩摘要",
+      level: 1,
+      tokens: usage.estimatedConversationTokens,
+    },
+    {
+      label: "工具调用与结果",
+      level: 1,
+      tokens: usage.estimatedToolTokens,
+    },
+    {
+      label: "文件、图片与引用",
+      level: 1,
+      tokens: usage.estimatedAttachmentTokens + usage.estimatedReferenceTokens,
+    },
+    {
+      label: "预留容量",
+      level: 0,
+      tokens: reserveTokens,
+    },
+    {
+      label: "模型回复",
+      level: 1,
+      tokens: usage.outputReserveTokens,
+    },
+    {
+      label: "Skill 加载",
+      level: 1,
+      tokens: usage.skillReserveTokens,
+    },
+  ];
+}
+
+export function providerCacheLabel(
+  usage: ConversationContextUsage | null,
+): string {
+  if (usage === null || usage.providerCache?.latest === null || usage.providerCache === undefined) {
+    return "缓存 --";
+  }
+  const hitRate = usage.providerCache.latest.hitRate ?? usage.providerCache.lastReportedHitRate ?? null;
+  if (usage.providerCache.latest.hitRate === null && hitRate !== null) {
+    return `上次缓存 ${formatCachePercentage(hitRate)}`;
+  }
+  return hitRate === null
+    ? "缓存未上报"
+    : `缓存 ${formatCachePercentage(hitRate)}`;
+}
+
+export function providerCacheInlineMetrics(
+  usage: ConversationContextUsage | null,
+): ProviderCacheInlineMetric[] {
+  const latest = usage?.providerCache?.latest ?? null;
+  const cumulative = usage?.providerCache?.cumulative;
+  const hitRate = latest?.hitRate ?? null;
+  const latency = usage?.providerCache?.firstTokenLatencyMs;
+  const speed = usage?.providerCache?.outputTokensPerSecond;
+  const inputTokens = latest?.inputTokens;
+  const outputTokens = latest?.outputTokens;
+  return [
+    {
+      kind: "latency",
+      label: "首字",
+      shortLabel: "首字",
+      tone: "neutral",
+      value: latency == null ? "--" : latency < 1_000 ? `${latency}ms` : `${(latency / 1_000).toFixed(2)}s`,
+    },
+    {
+      kind: "input",
+      label: "发送",
+      shortLabel: "发送",
+      tone: "success",
+      value: inputTokens == null ? "--" : formatReportedTokenCount(inputTokens),
+    },
+    {
+      kind: "output",
+      label: "返回",
+      shortLabel: "返回",
+      tone: "danger",
+      value: outputTokens == null ? "--" : formatReportedTokenCount(outputTokens),
+    },
+    {
+      kind: "throughput",
+      label: "速度",
+      shortLabel: "速度",
+      tone: "neutral",
+      value: `${speed == null ? "--" : speed.toFixed(1)} tok/s`,
+    },
+    {
+      kind: "cache",
+      label: "本次命中率",
+      shortLabel: "本次",
+      tone: providerCacheTone(hitRate),
+      value: hitRate === null
+        ? latest === null ? "--" : "未上报"
+        : formatCachePercentage(hitRate),
+    },
+    {
+      kind: "cache",
+      label: "平均命中率",
+      shortLabel: "平均",
+      tone: providerCacheTone(cumulative?.hitRate),
+      value: cumulative?.hitRate === null || cumulative === undefined
+        ? (cumulative?.requestCount ?? 0) > 0 ? "未上报" : "--"
+        : formatCachePercentage(cumulative.hitRate),
+    },
+  ];
+}
+
+function providerCacheTone(
+  hitRate: number | null | undefined,
+): ProviderCacheInlineMetric["tone"] {
+  if (hitRate === null || hitRate === undefined) return "neutral";
+  if (hitRate >= 0.9) return "success";
+  if (hitRate >= 0.8) return "good";
+  if (hitRate >= 0.7) return "caution";
+  if (hitRate >= 0.6) return "warning";
+  return "danger";
+}
+
+function providerCacheToneTextClassName(
+  tone: ProviderCacheInlineMetric["tone"],
+): string {
+  if (tone === "success") return "text-emerald-600 dark:text-emerald-400";
+  if (tone === "good") return "text-emerald-600 dark:text-emerald-400";
+  if (tone === "caution") return "text-amber-500 dark:text-amber-300";
+  if (tone === "warning") return "text-orange-600 dark:text-orange-400";
+  if (tone === "danger") return "text-red-600 dark:text-red-400";
+  return "text-[var(--app-status-neutral-fg)]";
+}
+
+function formatCachePercentage(value: number): string {
+  const percentage = Math.min(Math.max(value, 0), 1) * 100;
+  if (percentage > 0 && percentage < 0.1) return "<0.1%";
+  return `${percentage.toLocaleString("en-US", { maximumFractionDigits: 1 })}%`;
+}
+
+function formatReportedTokenCount(value: number): string {
+  return value.toLocaleString("en-US");
 }
 
 function getContextPressure(
@@ -169,14 +590,14 @@ function getContextPressure(
 function contextButtonLabel({
   contextWindowTokens,
   compressionThresholdTokens,
-  occupiedTokens,
+  usedInputTokens,
   percentage,
   pressure,
   usage,
 }: {
   contextWindowTokens: number;
   compressionThresholdTokens: number;
-  occupiedTokens: number;
+  usedInputTokens: number;
   percentage: number;
   pressure: ContextPressure;
   usage: ConversationContextUsage | null;
@@ -189,10 +610,13 @@ function contextButtonLabel({
     : pressure === "warning"
       ? "接近压缩阈值"
       : "上下文充足";
-  const windowLabel = contextWindowTokens > 0
-    ? `${formatTokenCount(occupiedTokens)} / ${formatTokenCount(contextWindowTokens)}（${percentage}%）`
-    : formatTokenCount(occupiedTokens);
-  return `${status}：${windowLabel}，阈值 ${formatTokenCount(compressionThresholdTokens)}，点击查看明细`;
+  const capacityTokens = contextWindowTokens > 0
+    ? contextWindowTokens
+    : compressionThresholdTokens;
+  const windowLabel = capacityTokens > 0
+    ? `${formatTokenCount(usedInputTokens)} / ${formatTokenCount(capacityTokens)}（${percentage}%）`
+    : formatTokenCount(usedInputTokens);
+  return `${status}：已使用 ${windowLabel}，点击查看明细`;
 }
 
 function contextStatusMessage(
@@ -216,11 +640,6 @@ function contextStatusMessage(
     return "上下文充足；较早历史已不再纳入本轮请求。";
   }
   return "上下文充足。";
-}
-
-function compressionThresholdLabel(usage: ConversationContextUsage): string {
-  const mode = usage.compressionMode === "percentage" ? "百分比" : "Token";
-  return `${mode} · ${formatTokenCount(usage.compressionThresholdTokens)}`;
 }
 
 function formatTokenCount(value: number): string {

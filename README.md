@@ -1,59 +1,54 @@
 # Aster
 
-> 最新开发版包含 ChatGPT 登录授权和更新后的使用说明，请查看 [develop 分支](https://github.com/GuoWWWX/aster-agent/tree/develop)。当前 `main` 是较早的发布基线。
+Aster 是一个本地优先的桌面 AI Agent 工作台。你可以在项目或临时对话中让 Agent 阅读文件、执行经授权的操作，并查看工具调用、命令输出和文件变更。
 
-> 一个本地优先的桌面 AI Agent 工作台：让用户在明确授权的项目中与 Agent 协作，并查看、审批和追溯实际执行过程。
+[开始使用](#开始使用) · [模型配置](#配置模型) · [开发与构建](#开发与构建) · [贡献指南](./CONTRIBUTING.md) · [MIT 许可证](./LICENSE)
 
-Aster 的目标不是把模型回复停留在聊天窗口，而是形成一条受控的本地执行闭环：理解目标、读取项目、调用工具、展示变更与命令结果、持久化过程，并在需要时继续处理任务。
+## 主要功能
 
-## 当前能力
+- **对话与协作**：项目对话、临时对话、Subagent、快速协作和团队群聊，保留任务与执行过程。
+- **本地工具**：文件读取与搜索、Patch、命令、终端、Web 搜索和受管浏览器；文件变更与工具结果可以在工作区查看。
+- **权限与审批**：支持请求批准、帮我批准和完全访问三种模式。写文件、执行命令等操作遵循当前权限设置。
+- **模型与扩展**：配置多个供应商和模型，支持 ChatGPT 套餐登录，以及 OpenAI Chat Completions、OpenAI Responses、Anthropic Messages 和 Google Gemini 接口格式；支持 MCP 和按需加载的 Skill。
+- **文件与预览**：查看和编辑工作区文件，预览 HTML、Vue、React 内容；配置支持的生图模型后可生成和查看图片。
+- **本地数据**：对话历史、附件、配置和业务数据保存在本机；模型请求和启用的联网工具仍会连接相应服务。
 
-- 项目对话与临时对话；对话、运行过程和任务清单可持久化。
-- 本地文件读取、搜索、Patch、命令执行和 Web 搜索等受控工具能力。
-- 文件写入、Patch、命令等副作用遵循权限与用户审批。
-- 多模型 Provider 与模型配置；支持 MCP、Skill、Agent、Subagent 和长期团队工作流。
-- React 工作台既可在浏览器预览，也可作为 Electron Renderer 运行。
+详细能力和限制见[业务上下文](./doc/14-业务上下文.md)与[工具体系](./doc/11-AI工具体系与生命周期设计.md)。模型出现在列表中不代表账号一定有调用权限。
 
-详细产品与架构事实见 [文档索引](./doc/文档索引.md)。规划中的能力会在设计文档中明确标注，不能视为已发布功能。
+## 开始使用
 
-## 技术栈
+当前主要在 Windows 上开发和验证，提供 Windows x64 构建入口。公开发布的安装包可从 [GitHub Releases](https://github.com/GuoWWWX/aster-agent/releases) 获取；如尚无发布，可先从源码运行。`main` 是发布基线；下列命令使用包含当前开发功能的 `develop` 分支。
 
-- Electron 43 + TypeScript 6：桌面主进程、Preload 与本机能力。
-- React 19 + Vite 8：工作台界面。
-- LangChain / LangGraph：Agent 执行编排。
-- Zod 4：跨进程与外部输入合同校验。
-- SQLite：会话、运行和业务事实的本地持久化。
-- pnpm 10：Monorepo 工作区管理。
-
-## 仓库结构
-
-```text
-apps/
-  desktop/       Electron Main、Preload、本地 Runtime 与存储
-  web/           React 工作台
-packages/
-  protocol/      跨进程 Schema、DTO 与共享合同
-doc/             产品、架构、接口和工程规范
-.github/         GitHub CI 与 PR 模板
-```
-
-## 开始开发
-
-### 前置条件
-
-- Node.js `>=24 <25`（见 [`.node-version`](./.node-version)）
-- pnpm `>=10 <11`
-- Windows 为当前主要开发与验证平台
+准备好 Git、Node.js `>=24 <25` 和 pnpm `>=10 <11`，然后在 PowerShell 中运行：
 
 ```powershell
+git clone --branch develop https://github.com/GuoWWWX/aster-agent.git
+cd aster-agent
 corepack enable
-pnpm install
+pnpm install --frozen-lockfile
 pnpm dev
 ```
 
-`pnpm dev` 会启动 Vite 和 Electron。Web Renderer 的地址为 `http://127.0.0.1:5173`。
+`pnpm dev` 启动 Electron 和本地 Vite 服务。前端修改通过热更新生效，Main 或 Preload 修改会自动重启 Electron。也可以使用等价的 `pnpm start`。
 
-可选的本地模型环境变量放在仓库根目录 `.env.local`；该文件已被 Git 忽略，绝不提交真实密钥。
+### 配置模型
+
+API Key 方式：
+
+1. 打开应用的“设置 → 模型配置”，添加供应商。
+2. 填写供应商名称、API 格式、请求地址和 API Key，然后添加模型 ID。
+3. 使用“测试模型”检查连接，并选择默认模型。API 调用是否收费、可用模型和额度由相应供应商决定。
+
+ChatGPT 套餐方式：
+
+1. 在同一设置页的“ChatGPT 登录授权”区域选择 **Continue with ChatGPT**，在 OpenAI 页面登录并授权使用套餐。
+2. 返回 Aster 后同步账号可用模型，在供应商列表或对话输入框中选择模型；如有需要，可重新授权、断开账号或前往 ChatGPT 管理用量。
+
+此方式使用 OpenAI 官方的 [Sign in with ChatGPT](https://developers.openai.com/siwc/token-sharing-open-source) 和 Responses API，不读取 ChatGPT 历史对话。可用账号、模型和额度以 OpenAI 实际授权为准；付费或远程托管场景请先查看官方接入条件。该功能处于预览阶段，部分工具和请求参数受[官方限制](https://developers.openai.com/siwc/token-sharing-open-source/preview-limitations)。
+
+供应商 API Key 保存在本机 `<ASTER_HOME>/settings.jsonc` 中，**当前为明文**；ChatGPT 授权令牌单独使用系统安全存储加密。默认数据目录是用户主目录下的 `.aster`；请保护该目录，不要提交、分享或上传含密钥的配置文件。目录和备份说明见 [Aster 目录结构与 JSONC 配置](./doc/24-Aster目录结构与JSONC配置.md)。
+
+也可以在仓库根目录创建被 Git 忽略的 `.env.local`，用于首次导入模型配置：
 
 ```dotenv
 AGENT_MODEL_BASE_URL=https://example.com/v1
@@ -61,48 +56,57 @@ AGENT_MODEL_API_KEY=replace-with-your-key
 AGENT_MODEL_ID=your-model-id
 ```
 
-## 验证命令
+已有供应商配置时，环境变量不会覆盖它。
+
+## 开发与构建
+
+| 命令 | 用途 |
+| --- | --- |
+| `pnpm dev` | 日常开发，启动桌面应用和 Vite |
+| `pnpm lint` | 检查脚本及工作区代码 |
+| `pnpm typecheck` | 检查 TypeScript 类型 |
+| `pnpm test` | 运行项目测试 |
+| `pnpm build` | 编译生产产物，不启动应用 |
+| `pnpm package:dir` | 构建 Windows x64 解包目录 |
+| `pnpm package:win` | 构建 Windows x64 NSIS 安装包 |
+
+安装包和更新元数据生成在 `release/`，本地构建不会自动上传。当前配置没有 Windows 代码签名；首次公开分发二进制产物前，还需要核对其包含的第三方许可证和版权声明。
+
+### 发布和更新
+
+包含更新功能的 Windows 安装版启动后会自动检查 GitHub Releases，发现新版本时在左侧栏底部提示。用户可在“设置 → 关于”检查更新、下载或暂停，并在下载校验完成后选择重启安装。中断后的下载会从本地已保存的位置继续；检查到更新的版本后可转而下载最新版本。
+
+安装程序和旧版 blockmap 可用时，更新器直接比较当前版本与最新版本，尽量复用未变化的数据，不必依次安装中间版本。如果旧安装程序、blockmap 或服务器的范围下载不可用，会回退到完整下载安装包。下载结果始终校验 SHA-512；配置了发行者签名时还会检查 Windows 签名。
+
+维护者发布正式版时，将根目录和 `apps/desktop/package.json` 的版本同步为相同的正式版本号，将代码合并到 `main` 后推送对应的 `v版本号` 标签。GitHub Actions 的 [Windows release](./.github/workflows/release.yml) 会运行质量检查，构建并创建 GitHub Release，上传安装程序、`.blockmap` 和 `latest.yml`。请保留历史 Release 的 blockmap，以便旧版用户进行差量下载；删除后仍可完整更新。旧的、不含更新功能的安装版需要先手动安装一次包含更新功能的新版本。开发模式不执行自动更新。
+
+开发服务默认使用 `http://127.0.0.1:5173`。多个 worktree 并行开发时，可为当前 worktree 指定独立端口：
 
 ```powershell
-pnpm lint
-pnpm typecheck
-pnpm test
-pnpm build
+$env:ELECTRON_RENDERER_URL = "http://127.0.0.1:5174"
+pnpm dev
 ```
 
-提交前还应执行：
+开发启动会校验 Renderer 来源，避免连接到其他 worktree。配置、验收和 Git 工作流见 [贡献指南](./CONTRIBUTING.md)；后台控制接口见[本机控制接口与终端调用](./doc/25-本机控制接口与终端调用.md)。
 
-```powershell
-git diff --check
-git status --short
+## 项目结构
+
+```text
+apps/desktop/       Electron Main、Preload、Agent Runtime 和本地存储
+apps/web/           React 工作台
+packages/protocol/  跨进程 Schema、DTO 和共享合同
+scripts/            开发启动、控制接口和打包校验
+doc/                产品、架构、接口与工程文档
 ```
 
-## 贡献与协作
+Renderer 通过 AgentClient 和 Preload 与 Main 通信，Main 负责模型、工具、权限和持久化。对话历史使用 JSONL，SQLite 保存项目、团队等业务事实。更多说明见[文档索引](./doc/文档索引.md)。
 
-本仓库使用 Git Flow：`main` 是已发布基线，`develop` 是下一版本集成线，日常工作从 `feature/*` 或 `fix/*` 分支通过 PR 合入。完整约定见：
+## 贡献与安全
 
-- [贡献指南](./CONTRIBUTING.md)
-- [Git 与 GitHub 协作规范](./doc/18-Git与GitHub协作规范.md)
-- [后端编码规范](./doc/13-后端编码规范.md)
-- [界面迁移与设计系统规范](./doc/07-界面迁移与设计系统规范.md)
+欢迎通过 Issue 反馈问题或提交 Pull Request。开发分支、验证要求和贡献约定见 [CONTRIBUTING.md](./CONTRIBUTING.md)。当前 CI 由维护者手动触发，推送和 PR 不会自动运行检查。
 
-请不要直接向 `main` 或 `develop` 推送，也不要在公共分支上改写历史。
+Aster 可以在用户授权范围内访问文件并执行命令。请根据实际需求选择权限模式，避免在 Issue、日志或截图中公开密钥。安全问题的私下报告方式见 [SECURITY.md](./SECURITY.md)。
 
-## 发布状态
+## 许可证与第三方内容
 
-当前仓库尚未配置可分发安装包、代码签名或自动更新。发布与更新方案会以 GitHub Release 为制品来源：正式版本由 `vX.Y.Z` 标签触发构建，客户端后续按 Stable/Beta 通道检查更新。该能力在自动更新实现和端到端验证完成前不视为可用。
-
-公开发布前仍需由项目负责人确认：
-
-- Windows 代码签名证书，以及未来 macOS 的签名与公证账户。
-- 首发支持的平台、架构与 Beta 用户范围。
-
-## 安全说明
-
-本软件能够在用户授权范围内访问本地项目并运行命令。使用前请审阅权限设置；不要把 API Key、访问令牌、私钥或包含敏感信息的 `.env` 文件提交到仓库或粘贴到 Issue/PR。
-
-安全问题请勿通过公开 Issue 披露，报告方式见 [SECURITY.md](./SECURITY.md)。
-
-## 许可证
-
-项目代码按 [MIT License](./LICENSE) 发布。Markdown 编辑器包含从 [md-king](https://github.com/GuoWWWX/md-king) 迁入或改编的代码，其[原始许可证](./licenses/md-king-LICENSE.txt)予以保留；其他依赖及品牌标识适用各自的许可和使用条款。
+Aster 的项目代码按 [MIT License](./LICENSE) 发布。迁入的 `md-king` 代码、依赖包及供应商品牌标识分别保留其原有许可和权利；来源与注意事项见 [第三方声明](./THIRD_PARTY_NOTICES.md)。

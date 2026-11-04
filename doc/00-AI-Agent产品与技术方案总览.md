@@ -288,8 +288,7 @@ Agent Runtime 负责 Team Lead、任务调度、Agent 生命周期以及模型�
 list_files       read_file        search_text
 apply_patch      write_file       git_status
 git_diff         run_command      terminal_input
-browser_open     browser_snapshot browser_click
-browser_type     browser_wait     browser_screenshot
+browser_control  load_skill       read_skill_reference
 ```
 
 每个工具至少包含：工具标识、用途说明、输入 Schema、权限级别、超时、可取消性、结果大小限制和审计字段。
@@ -395,7 +394,7 @@ Session（会话）
 
 `WorkItem` 是用户持续投递的一项需求或想法；`Task` 是可调度、可验收且绑定单一项目的执行单元。Team Lead Thread、常驻 Agent Thread 和临时 Agent Run 分别持久化，不能共享一段无限增长的原始上下文。
 
-这里的 `Thread` 表示逻辑对话链，不是操作系统线程。Agent 空闲时只保留数据库状态；产生 Run 后才由共享异步调度器、固定 Worker Pool 和受限子进程池执行，不为每个 Agent 常驻一个线程或进程。
+这里的 `Thread` 表示逻辑对话链，不是操作系统线程。当前各 Run 保存独立状态和取消信号，共享 Electron Main 的 Node.js 事件循环并异步等待模型网络响应；同一 Conversation 只允许一个活动 Run，不为每个 Agent 常驻一个线程或进程。命令按调用启动子进程，当前没有应用级固定 Worker Pool 或统一子进程池；CPU 工作池属于测量后的后续规划，不能与 Node 底层 libuv 线程池混为一谈。详见[运行与线程模型](./08-模型接入、MCP、Skill与Agent对话设计.md#64-运行与线程模型)。〔FACT｜`apps/desktop/src/main/agent/run-coordinator.ts:55`、`apps/desktop/src/main/agent/langgraph-executor.ts:578`、`apps/desktop/src/main/tools/command-session-runner.ts:231`〕
 
 当前会话的完整事实以 SQLite 事件和本地 Artifact 为准。Zustand 只保存当前页面需要的内存状态，不作为会话唯一数据源。
 
@@ -837,7 +836,7 @@ future web-server ──> agent-core / storage / tools
 - 第一阶段不引入 Java 后端，也不要求 Rust 执行层。
 - 文件、Shell、Git、浏览器和 MCP 都必须经过统一工具及权限边界。
 - 会话采用事件记录，支持审计和恢复。
-- 对话主存储采用 SQLite，大型结果使用 Artifact 文件目录，JSON 仅用于导入导出。
+- 对话属性与完整过程以每个 Conversation 的 JSONL 为唯一持久化来源；`db.sqlite` 不保存对话副本，大型结果使用 Artifact 文件目录。
 - 第一阶段先建立闭环和稳定性，不建设多人平台与插件市场。
 - Team Lead 长期存在并持续接单；简单任务直接处理，复杂任务才委派或组队。
 - Team 可登记多个 Project，但每个 Task 只有一个主 Project，跨项目需求拆成子任务。

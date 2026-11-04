@@ -37,4 +37,17 @@ describe("integration configuration", () => {
 
     expect(skillConfigurationListSchema.safeParse([skill, skill]).success).toBe(false);
   });
+
+  it("accepts the full SKILL.md description limit", () => {
+    expect(skillConfigurationListSchema.safeParse([{
+      description: "a".repeat(1_024),
+      enabled: true,
+      entryPath: "review/SKILL.md",
+      id: "review",
+      mcpDependencies: [],
+      name: "review",
+      scope: "user",
+      version: "",
+    }]).success).toBe(true);
+  });
 });

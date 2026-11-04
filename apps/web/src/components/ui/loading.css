@@ -1,0 +1,34 @@
+/* CSS triggers #2 and #4: shared shimmer pseudo-element, keyframes and reduced motion. */
+.app-spinner {
+  animation: app-loading-spin 1s linear infinite;
+}
+
+.app-loading-bone {
+  position: relative;
+  overflow: hidden;
+  background: var(--app-border);
+}
+
+.app-loading-bone::after {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(100deg, transparent 20%, color-mix(in srgb, var(--app-foreground) 9%, transparent) 50%, transparent 80%);
+  content: "";
+  transform: translateX(-100%);
+  animation: app-loading-shimmer 1.65s ease-in-out infinite;
+}
+
+@keyframes app-loading-spin {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes app-loading-shimmer {
+  to { transform: translateX(100%); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app-spinner,
+  .app-loading-bone::after {
+    animation: none;
+  }
+}

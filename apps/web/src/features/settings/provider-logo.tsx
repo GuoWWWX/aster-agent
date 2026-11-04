@@ -2,7 +2,6 @@ import anthropic from "@iconify-icons/simple-icons/anthropic";
 import baidu from "@iconify-icons/simple-icons/baidu";
 import cloudflare from "@iconify-icons/simple-icons/cloudflare";
 import deepseek from "@iconify-icons/simple-icons/deepseek";
-import google from "@iconify-icons/simple-icons/google";
 import huggingface from "@iconify-icons/simple-icons/huggingface";
 import kimi from "@iconify-icons/simple-icons/kimi";
 import meta from "@iconify-icons/simple-icons/meta";
@@ -29,9 +28,12 @@ import {
 } from "../../components/ui/popover.js";
 
 import "./provider-logo.css";
+import geminiLogo from "./brand-assets/gemini.png";
+import zaiLogo from "./brand-assets/zai.svg";
 
 export type ProviderIconOption = {
   brandIcon?: IconifyIcon;
+  imageUrl?: string;
   label: string;
   mark: string;
   value: ModelProviderIcon;
@@ -41,12 +43,12 @@ export const PROVIDER_ICON_OPTIONS: readonly ProviderIconOption[] = [
   { label: "自动首字母", mark: "Aa", value: "auto" },
   { brandIcon: openai, label: "OpenAI", mark: "AI", value: "openai" },
   { brandIcon: anthropic, label: "Anthropic", mark: "A", value: "anthropic" },
-  { brandIcon: google, label: "Google Gemini", mark: "G", value: "google" },
+  { imageUrl: geminiLogo, label: "Google Gemini", mark: "G", value: "google" },
   { brandIcon: x, label: "xAI", mark: "x", value: "xai" },
   { brandIcon: deepseek, label: "DeepSeek", mark: "DS", value: "deepseek" },
   { brandIcon: qwen, label: "通义千问", mark: "Q", value: "qwen" },
   { brandIcon: kimi, label: "Moonshot / Kimi", mark: "K", value: "moonshot" },
-  { label: "智谱", mark: "智", value: "zhipu" },
+  { imageUrl: zaiLogo, label: "智谱 / Z.ai", mark: "Z", value: "zhipu" },
   { brandIcon: minimax, label: "MiniMax", mark: "MM", value: "minimax" },
   { brandIcon: baidu, label: "百度千帆", mark: "百", value: "baidu" },
   { brandIcon: mistral, label: "Mistral AI", mark: "M", value: "mistral" },
@@ -115,7 +117,8 @@ export function ProviderLogo({
         className,
       ].filter(Boolean).join(" ")}
     >
-      {option.brandIcon === undefined ? mark : <Icon icon={option.brandIcon} />}
+      {option.imageUrl !== undefined ? <img alt="" draggable={false} src={option.imageUrl} />
+        : option.brandIcon === undefined ? mark : <Icon icon={option.brandIcon} />}
     </span>
   );
 }
@@ -124,10 +127,12 @@ export function ProviderIconPicker({
   icon,
   providerName,
   onIconChange,
+  inDialog = false,
 }: {
   icon: ModelProviderIcon;
   providerName: string;
   onIconChange: (icon: ModelProviderIcon) => void;
+  inDialog?: boolean;
 }): ReactElement {
   const [isOpen, setIsOpen] = useState(false);
   const selectedOption = optionFor(icon);
@@ -149,7 +154,7 @@ export function ProviderIconPicker({
       </PopoverTrigger>
       <PopoverContent
         align="end"
-        className="provider-icon-picker__content"
+        className={inDialog ? "provider-icon-picker__content z-[110]" : "provider-icon-picker__content"}
         collisionPadding={8}
         side="bottom"
         sideOffset={5}

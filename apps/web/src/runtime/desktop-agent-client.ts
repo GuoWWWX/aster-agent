@@ -1,11 +1,23 @@
+import type { TaskContextScope, TaskCompletionPolicy, SetTaskCompletionPolicyInput, ResolveChatReferencesInput, ChatReference, ListTaskContextsInput, TaskContextPage, TaskContextDetail, UpdateTaskContextInput, TaskContext, LinkTaskContextInput, MergeTaskContextsInput, ReadTeamChatInput, TeamChatPage, PostTeamChatInput, TeamChatMessage, TeamChatMember, MarkTeamChatReadInput } from "@agent/protocol";
+import type { ChatGptConnection, ChatGptConnectResult } from "@agent/protocol";
+import type { HtmlPreview, HtmlPreviewRequest } from "@agent/protocol";
+import type { AnswerUserQuestionInput, UserQuestion, BackgroundCommand, StopBackgroundCommandInput, BackgroundCommandOutput, ReadBackgroundCommandInput } from "@agent/protocol";
+import type { ScheduledTask, SaveScheduledTaskInput, ScheduledTaskReference } from "@agent/protocol";
 import type {
   CapabilitySet,
+  AddTeamWorkItemCommentInput,
+  DeleteTeamWorkItemInput,
   ApplicationSettings,
+  ApplicationStorageLocation,
+  BrowserConfiguration,
+  BrowserSavedPassword,
+  BrowserPasswordReference,
   ApproveToolChangeInput,
   CancelRunInput,
   ConversationContextUsage,
   ConversationContextUsageInput,
   ConversationAttachment,
+  ConversationAttachmentPreview,
   ConversationMessageSubmission,
   ConversationPendingMessage,
   ContextCompressionConfiguration,
@@ -15,22 +27,42 @@ import type {
   CreateSkillDocumentInput,
   CreateConfigurationWorkspaceEntryInput,
   ConversationReferenceInput,
+  ConversationSearchInput,
+  ConversationSearchResult,
   ForkConversationInput,
   ConversationSummary,
   ConversationTaskList,
   ConversationTimelineItem,
+  ConversationTimelinePage,
+  ConversationTimelinePageInput,
   CreateProjectEntryInput,
   DeleteConfigurationWorkspaceEntryInput,
   CreateConversationInput,
+  CreateTeamInstanceInput,
+  EnsureTeamMemberConversationInput,
+  EnsureTeamInstanceMemberConversationInput,
   DesktopBridge,
   DiscoverModelsInput,
   DiscoveredModel,
+  GitFileDiff,
+  GitFileDiffInput,
+  GitOperationInput,
+  GitReviewInput,
+  GitReviewSnapshot,
   IntegrationConfiguration,
+  ImportConversationAttachmentBytesInput,
   ListConfigurationWorkspaceEntriesInput,
   ListProjectEntriesInput,
   ModelConnectionTestResult,
   ModelCatalog,
   ModelRuntimeStatus,
+  ManagedBrowserBoundsInput,
+  ManagedBrowserCommandInput,
+  ManagedBrowserNavigateInput,
+  ManagedBrowserOpenInput,
+  ManagedBrowserReferenceInput,
+  ManagedBrowserSession,
+  ManagedBrowserSnapshot,
   ProjectDirectoryListing,
   ProjectEntry,
   ProjectFile,
@@ -38,6 +70,7 @@ import type {
   ProjectReferenceInput,
   ReadProjectFileInput,
   ReadProjectPreviewImageInput,
+  ReadConversationAttachmentPreviewInput,
   ReadConfigurationWorkspaceFileInput,
   ReorderConversationsInput,
   ReplaceLatestConversationMessageInput,
@@ -55,9 +88,11 @@ import type {
   UpdatePendingConversationMessageInput,
   SetConversationArchivedInput,
   SetConversationModelSelectionInput,
+  SetConversationPermissionModeInput,
   SetConversationProjectInput,
   SetConversationPinnedInput,
   SetProjectPinnedInput,
+  SetProjectTeamsInNavigatorInput,
   RuntimeInfo,
   RunAccepted,
   SkillDocument,
@@ -65,14 +100,46 @@ import type {
   SkillDocumentReferenceInput,
   SkillDocumentSaveInput,
   TerminalConfiguration,
+  TerminalSession,
+  TerminalSessionOpenInput,
+  TerminalSessionOutput,
+  TerminalSessionOutputInput,
+  TerminalSessionReferenceInput,
+  TerminalSessionResizeInput,
+  TerminalSessionWriteInput,
+  WorkspaceTerminalTabOpenedInput,
+  WorkspaceBrowserTabOpenedInput,
   WriteConfigurationWorkspaceFileInput,
   WriteProjectFileInput,
   WindowState,
+  ListTeamWorkItemsInput,
+  PublishTeamWorkItemInput,
+  ListTeamInstancesInput,
+  RequestTeamWorkItemReworkInput,
+  SubmitTeamWorkItemInput,
+  UpdateTeamWorkItemInput,
+  UpdateTeamWorkItemPermissionInput,
+  AcceptTeamWorkItemInput,
+  TeamWorkItemExecutionView,
+  TeamCollaborationProjection,
+  TeamMemberConversationView,
+  TeamWorkItemView,
+  TeamInstanceReferenceInput,
+  TeamInstanceView,
+  RenameTeamInstanceInput,
+  ReorderTeamInstancesInput,
+  SetTeamInstanceArchivedInput,
 } from "@agent/protocol";
 
 import type {
   AgentClient,
   ConversationRunEventListener,
+  ManagedBrowserEventListener,
+  TerminalSessionEventListener,
+  WorkspaceTerminalTabOpenRequestListener,
+  WorkspaceTerminalTabCloseRequestListener,
+  WorkspaceBrowserTabOpenRequestListener,
+  WorkspaceBrowserTabCloseRequestListener,
   WindowStateListener,
 } from "./agent-client.js";
 
@@ -81,6 +148,22 @@ import type {
  * dependency and keeps host-specific globals outside UI components.
  */
 export class DesktopAgentClientAdapter implements AgentClient {
+  public getAppUpdateState() { return this.desktopBridge.getAppUpdateState(); }
+  public checkAppUpdate() { return this.desktopBridge.checkAppUpdate(); }
+  public downloadAppUpdate() { return this.desktopBridge.downloadAppUpdate(); }
+  public pauseAppUpdate() { return this.desktopBridge.pauseAppUpdate(); }
+  public installAppUpdate() { return this.desktopBridge.installAppUpdate(); }
+  public onAppUpdateChanged(listener: (state: import("@agent/protocol").AppUpdateState) => void) {
+    return this.desktopBridge.onAppUpdateChanged(listener);
+  }
+  public htmlPreview(input: HtmlPreviewRequest): Promise<HtmlPreview | null> { return this.desktopBridge.htmlPreview(input); }
+  private readonly conversationRunEventListeners = new Set<ConversationRunEventListener>();
+  private readonly conversationStreamScopes = new Map<ConversationRunEventListener, readonly string[]>();
+  private streamSubscriptionUpdatePending = false;
+  private requestedStreamScope: string | null = null;
+  private streamReplayRequested = false;
+  private disposeConversationRunEventBridge: (() => void) | null = null;
+
   public constructor(private readonly desktopBridge: DesktopBridge) {}
 
   public addProject(): Promise<ProjectSummary | null> {
@@ -119,6 +202,42 @@ export class DesktopAgentClientAdapter implements AgentClient {
     return this.desktopBridge.createConversation(input);
   }
 
+  public listTeamInstances(input: ListTeamInstancesInput): Promise<TeamInstanceView[]> {
+    return this.desktopBridge.listTeamInstances(input);
+  }
+
+  public createTeamInstance(input: CreateTeamInstanceInput): Promise<TeamInstanceView> {
+    return this.desktopBridge.createTeamInstance(input);
+  }
+
+  public renameTeamInstance(input: RenameTeamInstanceInput): Promise<TeamInstanceView> {
+    return this.desktopBridge.renameTeamInstance(input);
+  }
+
+  public reorderTeamInstances(input: ReorderTeamInstancesInput): Promise<TeamInstanceView[]> {
+    return this.desktopBridge.reorderTeamInstances(input);
+  }
+
+  public setTeamInstanceArchived(input: SetTeamInstanceArchivedInput): Promise<TeamInstanceView> {
+    return this.desktopBridge.setTeamInstanceArchived(input);
+  }
+
+  public deleteTeamInstance(input: TeamInstanceReferenceInput): Promise<void> {
+    return this.desktopBridge.deleteTeamInstance(input);
+  }
+
+  public ensureTeamInstanceMemberConversation(
+    input: EnsureTeamInstanceMemberConversationInput,
+  ): Promise<TeamMemberConversationView> {
+    return this.desktopBridge.ensureTeamInstanceMemberConversation(input);
+  }
+
+  public ensureTeamMemberConversation(
+    input: EnsureTeamMemberConversationInput,
+  ): Promise<TeamMemberConversationView> {
+    return this.desktopBridge.ensureTeamMemberConversation(input);
+  }
+
   public selectConversationWorkspace(
     input: ConversationReferenceInput,
   ): Promise<ConversationSummary | null> {
@@ -147,6 +266,18 @@ export class DesktopAgentClientAdapter implements AgentClient {
     input: ConversationReferenceInput,
   ): Promise<ConversationAttachment[]> {
     return this.desktopBridge.chooseConversationAttachments(input);
+  }
+
+  public importConversationAttachmentBytes(
+    input: ImportConversationAttachmentBytesInput,
+  ): Promise<ConversationAttachment[]> {
+    return this.desktopBridge.importConversationAttachmentBytes(input);
+  }
+
+  public readConversationAttachmentPreview(
+    input: ReadConversationAttachmentPreviewInput,
+  ): Promise<ConversationAttachmentPreview> {
+    return this.desktopBridge.readConversationAttachmentPreview(input);
   }
 
   public listDraftConversationAttachments(
@@ -192,6 +323,12 @@ export class DesktopAgentClientAdapter implements AgentClient {
   public deleteConversation(input: ConversationReferenceInput): Promise<void> {
     return this.desktopBridge.deleteConversation(input);
   }
+  public deleteConversationUndoable(input: ConversationReferenceInput): Promise<void> {
+    return this.desktopBridge.deleteConversationUndoable(input);
+  }
+  public restoreDeletedConversation(input: ConversationReferenceInput): Promise<void> {
+    return this.desktopBridge.restoreDeletedConversation(input);
+  }
 
   public deleteConfigurationWorkspaceEntry(
     input: DeleteConfigurationWorkspaceEntryInput,
@@ -201,6 +338,22 @@ export class DesktopAgentClientAdapter implements AgentClient {
 
   public discoverModels(input: DiscoverModelsInput): Promise<DiscoveredModel[]> {
     return this.desktopBridge.discoverModels(input);
+  }
+
+  public listChatGptConnections(): Promise<ChatGptConnection[]> {
+    return this.desktopBridge.listChatGptConnections();
+  }
+
+  public connectChatGpt(providerId?: string): Promise<ChatGptConnectResult> {
+    return this.desktopBridge.connectChatGpt(providerId);
+  }
+
+  public disconnectChatGpt(providerId: string): Promise<boolean> {
+    return this.desktopBridge.disconnectChatGpt(providerId);
+  }
+
+  public syncChatGptModels(providerId: string): Promise<ModelRuntimeStatus> {
+    return this.desktopBridge.syncChatGptModels(providerId);
   }
 
   public testModelConnection(input: TestModelConnectionInput): Promise<ModelConnectionTestResult> {
@@ -217,8 +370,16 @@ export class DesktopAgentClientAdapter implements AgentClient {
     return this.desktopBridge.getModelApiKey(providerId);
   }
 
+  public deleteModelProvider(providerId: string): Promise<ModelRuntimeStatus> {
+    return this.desktopBridge.deleteModelProvider(providerId);
+  }
+
   public getModelCatalog(): Promise<ModelCatalog> {
     return this.desktopBridge.getModelCatalog();
+  }
+
+  public saveModelCatalog(catalog: ModelCatalog): Promise<ModelCatalog> {
+    return this.desktopBridge.saveModelCatalog(catalog);
   }
 
   public getModelStatus(): Promise<ModelRuntimeStatus> {
@@ -233,12 +394,152 @@ export class DesktopAgentClientAdapter implements AgentClient {
     return this.desktopBridge.getApplicationSettings();
   }
 
+  public getApplicationStorageLocation(): Promise<ApplicationStorageLocation> {
+    return this.desktopBridge.getApplicationStorageLocation();
+  }
+
+  public chooseApplicationStorageLocation(): Promise<ApplicationStorageLocation | null> {
+    return this.desktopBridge.chooseApplicationStorageLocation();
+  }
+
+  public resetApplicationStorageLocation(): Promise<ApplicationStorageLocation> {
+    return this.desktopBridge.resetApplicationStorageLocation();
+  }
+
   public getIntegrationConfiguration(): Promise<IntegrationConfiguration> {
     return this.desktopBridge.getIntegrationConfiguration();
   }
 
+  public getComputerUseConfiguration() { return this.desktopBridge.getComputerUseConfiguration(); }
+  public saveComputerUseConfiguration(input: ComputerUseConfiguration, baselineApplications?: ComputerApplication[]) { return this.desktopBridge.saveComputerUseConfiguration(input, baselineApplications); }
+  public chooseComputerApplication() { return this.desktopBridge.chooseComputerApplication(); }
+  public getComputerUseApplicationIcons() { return this.desktopBridge.getComputerUseApplicationIcons(); }
+  public getComputerUseStatus() { return this.desktopBridge.getComputerUseStatus(); }
+  public startComputerUse() { return this.desktopBridge.startComputerUse(); }
+  public stopComputerUse() { return this.desktopBridge.stopComputerUse(); }
+  public getBrowserConfiguration(): Promise<BrowserConfiguration> {
+    return this.desktopBridge.getBrowserConfiguration();
+  }
+
+  public clearBrowserData(): Promise<void> {
+    return this.desktopBridge.clearBrowserData();
+  }
+  public chooseBrowserDownloadDirectory(): Promise<string | null> {
+    return this.desktopBridge.chooseBrowserDownloadDirectory();
+  }
+  public getBrowserDefaultDownloadDirectory(): Promise<string> {
+    return this.desktopBridge.getBrowserDefaultDownloadDirectory();
+  }
+  public getBrowserSavedPasswords(): Promise<BrowserSavedPassword[]> {
+    return this.desktopBridge.getBrowserSavedPasswords();
+  }
+  public revealBrowserPassword(input: BrowserPasswordReference): Promise<string | null> {
+    return this.desktopBridge.revealBrowserPassword(input);
+  }
+
+  public listScheduledTasks(): Promise<ScheduledTask[]> { return this.desktopBridge.listScheduledTasks(); }
+  public saveScheduledTask(input: SaveScheduledTaskInput): Promise<ScheduledTask> { return this.desktopBridge.saveScheduledTask(input); }
+  public deleteScheduledTask(input: ScheduledTaskReference): Promise<void> { return this.desktopBridge.deleteScheduledTask(input); }
+  public runScheduledTask(input: ScheduledTaskReference): Promise<ScheduledTask> { return this.desktopBridge.runScheduledTask(input); }
+
   public getTerminalConfiguration(): Promise<TerminalConfiguration> {
     return this.desktopBridge.getTerminalConfiguration();
+  }
+
+  public getGitReviewSnapshot(input: GitReviewInput): Promise<GitReviewSnapshot> {
+    return this.desktopBridge.getGitReviewSnapshot(input);
+  }
+
+  public getGitFileDiff(input: GitFileDiffInput): Promise<GitFileDiff> {
+    return this.desktopBridge.getGitFileDiff(input);
+  }
+
+  public runGitOperation(input: GitOperationInput): Promise<GitReviewSnapshot> {
+    return this.desktopBridge.runGitOperation(input);
+  }
+
+  public openTerminalSession(input: TerminalSessionOpenInput): Promise<TerminalSession> {
+    return this.desktopBridge.openTerminalSession(input);
+  }
+
+  public readTerminalSessionOutput(input: TerminalSessionOutputInput): Promise<TerminalSessionOutput> {
+    return this.desktopBridge.readTerminalSessionOutput(input);
+  }
+
+  public writeTerminalSession(input: TerminalSessionWriteInput): Promise<void> {
+    return this.desktopBridge.writeTerminalSession(input);
+  }
+
+  public resizeTerminalSession(input: TerminalSessionResizeInput): Promise<void> {
+    return this.desktopBridge.resizeTerminalSession(input);
+  }
+
+  public closeTerminalSession(input: TerminalSessionReferenceInput): Promise<void> {
+    return this.desktopBridge.closeTerminalSession(input);
+  }
+
+  public onTerminalSessionEvent(listener: TerminalSessionEventListener): () => void {
+    return this.desktopBridge.onTerminalSessionEvent(listener);
+  }
+
+  public confirmWorkspaceTerminalTabOpened(input: WorkspaceTerminalTabOpenedInput): Promise<void> {
+    return this.desktopBridge.confirmWorkspaceTerminalTabOpened(input);
+  }
+
+  public onWorkspaceTerminalTabOpenRequested(
+    listener: WorkspaceTerminalTabOpenRequestListener,
+  ): () => void {
+    return this.desktopBridge.onWorkspaceTerminalTabOpenRequested(listener);
+  }
+
+  public onWorkspaceTerminalTabCloseRequested(
+    listener: WorkspaceTerminalTabCloseRequestListener,
+  ): () => void {
+    return this.desktopBridge.onWorkspaceTerminalTabCloseRequested(listener);
+  }
+
+  public confirmWorkspaceBrowserTabOpened(input: WorkspaceBrowserTabOpenedInput): Promise<void> {
+    return this.desktopBridge.confirmWorkspaceBrowserTabOpened(input);
+  }
+
+  public onWorkspaceBrowserTabOpenRequested(
+    listener: WorkspaceBrowserTabOpenRequestListener,
+  ): () => void {
+    return this.desktopBridge.onWorkspaceBrowserTabOpenRequested(listener);
+  }
+
+  public onWorkspaceBrowserTabCloseRequested(
+    listener: WorkspaceBrowserTabCloseRequestListener,
+  ): () => void {
+    return this.desktopBridge.onWorkspaceBrowserTabCloseRequested(listener);
+  }
+
+  public openManagedBrowser(input: ManagedBrowserOpenInput): Promise<ManagedBrowserSession> {
+    return this.desktopBridge.openManagedBrowser(input);
+  }
+
+  public navigateManagedBrowser(input: ManagedBrowserNavigateInput): Promise<void> {
+    return this.desktopBridge.navigateManagedBrowser(input);
+  }
+
+  public commandManagedBrowser(input: ManagedBrowserCommandInput): Promise<void> {
+    return this.desktopBridge.commandManagedBrowser(input);
+  }
+
+  public captureManagedBrowser(input: ManagedBrowserReferenceInput): Promise<ManagedBrowserSnapshot> {
+    return this.desktopBridge.captureManagedBrowser(input);
+  }
+
+  public setManagedBrowserBounds(input: ManagedBrowserBoundsInput): Promise<void> {
+    return this.desktopBridge.setManagedBrowserBounds(input);
+  }
+
+  public closeManagedBrowser(input: ManagedBrowserReferenceInput): Promise<void> {
+    return this.desktopBridge.closeManagedBrowser(input);
+  }
+
+  public onManagedBrowserEvent(listener: ManagedBrowserEventListener): () => void {
+    return this.desktopBridge.onManagedBrowserEvent(listener);
   }
 
   public getRuntimeInfo(): Promise<RuntimeInfo> {
@@ -259,14 +560,34 @@ export class DesktopAgentClientAdapter implements AgentClient {
     return this.desktopBridge.listConversationTimeline(input);
   }
 
+  public listConversationTimelinePage(
+    input: ConversationTimelinePageInput,
+  ): Promise<ConversationTimelinePage> {
+    return this.desktopBridge.listConversationTimelinePage(input);
+  }
+
+  public searchConversations(input: ConversationSearchInput): Promise<ConversationSearchResult[]> {
+    return this.desktopBridge.searchConversations(input);
+  }
+
   public listConversationPendingMessages(
     input: ConversationReferenceInput,
   ): Promise<ConversationPendingMessage[]> {
     return this.desktopBridge.listConversationPendingMessages(input);
   }
+  public getConversationPendingQueuePaused(input: ConversationReferenceInput): Promise<boolean> {
+    return this.desktopBridge.getConversationPendingQueuePaused(input);
+  }
+  public setConversationPendingQueuePaused(input: ConversationReferenceInput & { paused: boolean }): Promise<boolean> {
+    return this.desktopBridge.setConversationPendingQueuePaused(input);
+  }
 
   public listConversations(): Promise<ConversationSummary[]> {
     return this.desktopBridge.listConversations();
+  }
+
+  public listConversationHierarchy(): Promise<ConversationSummary[]> {
+    return this.desktopBridge.listConversationHierarchy();
   }
 
   public listConversationForks(
@@ -280,6 +601,13 @@ export class DesktopAgentClientAdapter implements AgentClient {
   ): Promise<ConversationSummary> {
     return this.desktopBridge.markConversationResultViewed(input);
   }
+
+  public listUserQuestions(input: ConversationReferenceInput): Promise<UserQuestion[]> { return this.desktopBridge.listUserQuestions(input); }
+  public answerUserQuestion(input: AnswerUserQuestionInput): Promise<UserQuestion> { return this.desktopBridge.answerUserQuestion(input); }
+  public markUserQuestionViewed(input: { questionId: string }): Promise<UserQuestion> { return this.desktopBridge.markUserQuestionViewed(input); }
+  public listBackgroundCommands(input: ConversationReferenceInput): Promise<BackgroundCommand[]> { return this.desktopBridge.listBackgroundCommands(input); }
+  public readBackgroundCommand(input: ReadBackgroundCommandInput): Promise<BackgroundCommandOutput> { return this.desktopBridge.readBackgroundCommand(input); }
+  public stopBackgroundCommand(input: StopBackgroundCommandInput): Promise<BackgroundCommand> { return this.desktopBridge.stopBackgroundCommand(input); }
 
   public listProjectEntries(
     input: ListProjectEntriesInput,
@@ -295,6 +623,72 @@ export class DesktopAgentClientAdapter implements AgentClient {
 
   public listProjects(): Promise<ProjectSummary[]> {
     return this.desktopBridge.listProjects();
+  }
+
+  public getTaskCompletionPolicy(input: TaskContextScope): Promise<TaskCompletionPolicy> { return this.desktopBridge.getTaskCompletionPolicy(input); }
+  public setTaskCompletionPolicy(input: SetTaskCompletionPolicyInput): Promise<TaskCompletionPolicy> { return this.desktopBridge.setTaskCompletionPolicy(input); }
+  public resolveChatReferences(input: ResolveChatReferencesInput): Promise<ChatReference[]> { return this.desktopBridge.resolveChatReferences(input); }
+  public listTaskContexts(input: ListTaskContextsInput): Promise<TaskContextPage> { return this.desktopBridge.listTaskContexts(input); }
+  public getTaskContext(input: { id: string; beforeSourceSequence?: number; limit?: number }): Promise<TaskContextDetail> { return this.desktopBridge.getTaskContext(input); }
+  public updateTaskContext(input: UpdateTaskContextInput): Promise<TaskContext> { return this.desktopBridge.updateTaskContext(input); }
+  public linkTaskContext(input: LinkTaskContextInput): Promise<void> { return this.desktopBridge.linkTaskContext(input); }
+  public mergeTaskContexts(input: MergeTaskContextsInput): Promise<TaskContext> { return this.desktopBridge.mergeTaskContexts(input); }
+  public readTeamChat(input: ReadTeamChatInput): Promise<TeamChatPage> { return this.desktopBridge.readTeamChat(input); }
+  public postTeamChat(input: PostTeamChatInput): Promise<TeamChatMessage> { return this.desktopBridge.postTeamChat(input); }
+  public getTeamChatCoordinationConversation(input: { teamInstanceId: string; agentId?: string }): Promise<ConversationSummary> { return this.desktopBridge.getTeamChatCoordinationConversation(input); }
+  public getTeamChatMembers(input: { teamInstanceId: string }): Promise<TeamChatMember[]> { return this.desktopBridge.getTeamChatMembers(input); }
+  public markTeamChatRead(input: MarkTeamChatReadInput): Promise<void> { return this.desktopBridge.markTeamChatRead(input); }
+  public resumeTeamChatDelivery(input: { id: string }): Promise<void> { return this.desktopBridge.resumeTeamChatDelivery(input); }
+  public cancelTeamChatDelivery(input: { id: string }): Promise<void> { return this.desktopBridge.cancelTeamChatDelivery(input); }
+  public pauseTeamChat(input: { teamInstanceId: string }): Promise<void> { return this.desktopBridge.pauseTeamChat(input); }
+  public listTeamWorkItems(input: ListTeamWorkItemsInput): Promise<TeamWorkItemView[]> {
+    return this.desktopBridge.listTeamWorkItems(input);
+  }
+
+  public getTeamWorkItemExecution(workItemId: string): Promise<TeamWorkItemExecutionView> {
+    return this.desktopBridge.getTeamWorkItemExecution({ workItemId });
+  }
+
+  public getTeamCollaborationProjection(workItemId: string): Promise<TeamCollaborationProjection> {
+    return this.desktopBridge.getTeamCollaborationProjection({ workItemId });
+  }
+
+  public submitTeamWorkItem(input: SubmitTeamWorkItemInput): Promise<TeamWorkItemView> {
+    return this.desktopBridge.submitTeamWorkItem(input);
+  }
+
+  public updateTeamWorkItem(input: UpdateTeamWorkItemInput): Promise<TeamWorkItemView> {
+    return this.desktopBridge.updateTeamWorkItem(input);
+  }
+
+  public deleteTeamWorkItem(input: DeleteTeamWorkItemInput): Promise<void> {
+    return this.desktopBridge.deleteTeamWorkItem(input);
+  }
+
+  public updateTeamWorkItemPermission(
+    input: UpdateTeamWorkItemPermissionInput,
+  ): Promise<TeamWorkItemView> {
+    return this.desktopBridge.updateTeamWorkItemPermission(input);
+  }
+
+  public publishTeamWorkItem(input: PublishTeamWorkItemInput): Promise<TeamWorkItemView> {
+    return this.desktopBridge.publishTeamWorkItem(input);
+  }
+
+  public addTeamWorkItemComment(
+    input: AddTeamWorkItemCommentInput,
+  ): Promise<TeamWorkItemView> {
+    return this.desktopBridge.addTeamWorkItemComment(input);
+  }
+
+  public requestTeamWorkItemRework(
+    input: RequestTeamWorkItemReworkInput,
+  ): Promise<TeamWorkItemView> {
+    return this.desktopBridge.requestTeamWorkItemRework(input);
+  }
+
+  public acceptTeamWorkItem(input: AcceptTeamWorkItemInput): Promise<TeamWorkItemView> {
+    return this.desktopBridge.acceptTeamWorkItem(input);
   }
 
   public readProjectFile(input: ReadProjectFileInput): Promise<ProjectFile> {
@@ -320,6 +714,9 @@ export class DesktopAgentClientAdapter implements AgentClient {
   public removeProject(input: ProjectReferenceInput): Promise<void> {
     return this.desktopBridge.removeProject(input);
   }
+  public openProjectDirectory(input: ProjectReferenceInput): Promise<void> {
+    return this.desktopBridge.openProjectDirectory(input);
+  }
 
   public minimizeWindow(): Promise<void> {
     return this.desktopBridge.minimizeWindow();
@@ -327,8 +724,48 @@ export class DesktopAgentClientAdapter implements AgentClient {
 
   public onConversationRunEvent(
     listener: ConversationRunEventListener,
+    streamingConversationIds: readonly string[] = [],
   ): () => void {
-    return this.desktopBridge.onConversationRunEvent(listener);
+    this.conversationStreamScopes.set(listener, streamingConversationIds);
+    this.streamReplayRequested ||= streamingConversationIds.length > 0;
+    this.scheduleStreamSubscriptions();
+    this.conversationRunEventListeners.add(listener);
+    this.disposeConversationRunEventBridge ??= this.desktopBridge.onConversationRunEvent((event) => {
+      for (const currentListener of [...this.conversationRunEventListeners]) {
+        currentListener(event);
+      }
+    });
+
+    let disposed = false;
+    return () => {
+      if (disposed) return;
+      disposed = true;
+      this.conversationRunEventListeners.delete(listener);
+      this.conversationStreamScopes.delete(listener);
+      this.scheduleStreamSubscriptions();
+      if (this.conversationRunEventListeners.size === 0) {
+        this.disposeConversationRunEventBridge?.();
+        this.disposeConversationRunEventBridge = null;
+      }
+    };
+  }
+
+  private scheduleStreamSubscriptions(): void {
+    if (this.streamSubscriptionUpdatePending) return;
+    this.streamSubscriptionUpdatePending = true;
+    queueMicrotask(() => {
+      this.streamSubscriptionUpdatePending = false;
+      const ids = [...new Set([...this.conversationStreamScopes.values()].flat())].sort();
+      const key = ids.join(",");
+      const replay = this.streamReplayRequested;
+      this.streamReplayRequested = false;
+      if (key === this.requestedStreamScope && !replay) return;
+      this.requestedStreamScope = key;
+      void this.desktopBridge.setConversationStreamSubscriptions(ids).catch(error => {
+        this.requestedStreamScope = null;
+        console.error("Unable to update conversation stream subscriptions.", error);
+      });
+    });
   }
 
   public onApplicationSettingsChanged(
@@ -357,6 +794,12 @@ export class DesktopAgentClientAdapter implements AgentClient {
     input: SetConversationModelSelectionInput,
   ): Promise<ConversationSummary> {
     return this.desktopBridge.setConversationModelSelection(input);
+  }
+
+  public setConversationPermissionMode(
+    input: SetConversationPermissionModeInput,
+  ): Promise<ConversationSummary> {
+    return this.desktopBridge.setConversationPermissionMode(input);
   }
 
   public renameProject(input: RenameProjectInput): Promise<ProjectSummary> {
@@ -389,8 +832,18 @@ export class DesktopAgentClientAdapter implements AgentClient {
     return this.desktopBridge.setProjectPinned(input);
   }
 
+  public setProjectTeamsInNavigator(
+    input: SetProjectTeamsInNavigatorInput,
+  ): Promise<ProjectSummary> {
+    return this.desktopBridge.setProjectTeamsInNavigator(input);
+  }
+
   public readSkillDocument(input: SkillDocumentReferenceInput): Promise<SkillDocument> {
     return this.desktopBridge.readSkillDocument(input);
+  }
+
+  public deleteSkillDocument(input: SkillDocumentReferenceInput): Promise<void> {
+    return this.desktopBridge.deleteSkillDocument(input);
   }
 
   public sendConversationMessage(
@@ -455,6 +908,12 @@ export class DesktopAgentClientAdapter implements AgentClient {
     return this.desktopBridge.saveIntegrationConfiguration(input);
   }
 
+  public saveBrowserConfiguration(
+    input: BrowserConfiguration,
+  ): Promise<BrowserConfiguration> {
+    return this.desktopBridge.saveBrowserConfiguration(input);
+  }
+
   public saveTerminalConfiguration(
     input: TerminalConfiguration,
   ): Promise<TerminalConfiguration> {
@@ -475,3 +934,4 @@ export class DesktopAgentClientAdapter implements AgentClient {
     return this.desktopBridge.toggleMaximizeWindow();
   }
 }
+import type { ComputerApplication, ComputerUseConfiguration } from "@agent/protocol";

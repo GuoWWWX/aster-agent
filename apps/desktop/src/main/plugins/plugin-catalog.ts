@@ -1,4 +1,6 @@
 import { createHash } from "node:crypto";
+import { existsSync } from "node:fs";
+import { createRequire } from "node:module";
 import {
   lstat,
   mkdir,
@@ -10,10 +12,11 @@ import path from "node:path";
 
 import { z } from "zod";
 
-import {
-  AgentDatabase,
-  type PluginCatalogRecord,
-} from "../storage/agent-database.js";
+import { SettingsJsoncFile } from "../settings/settings-jsonc-file.js";
+
+type SqliteModule = typeof import("node:sqlite");
+const requireNodeBuiltin = createRequire(__filename);
+const { DatabaseSync } = requireNodeBuiltin("node:sqlite") as SqliteModule;
 
 const PLUGIN_MANIFEST_FILE = "plugin.json";
 const MAX_PLUGIN_COUNT = 200;
@@ -43,6 +46,17 @@ export const pluginManifestSchema = z.object({
 
 export type PluginManifest = z.infer<typeof pluginManifestSchema>;
 
+export type PluginCatalogRecord = {
+  contentHash: string;
+  enabled: boolean;
+  id: string;
+  manifestJson: string;
+  name: string;
+  rootPath: string;
+  updatedAt: string;
+  version: string;
+};
+
 export type PluginCatalogRejection = {
   directoryName: string;
   reason: string;
@@ -54,6 +68,19 @@ export type PluginCatalogSynchronization = {
 };
 
 type DiscoveredPlugin = Omit<PluginCatalogRecord, "enabled" | "updatedAt">;
+
+const pluginSettingListSchema = z.array(z.object({
+  enabled: z.boolean(),
+  id: z.string().trim().regex(/^[a-z0-9][a-z0-9._-]{0,127}$/u),
+}).strict()).max(MAX_PLUGIN_COUNT).superRefine((plugins, context) => {
+  const ids = new Set<string>();
+  plugins.forEach((plugin, index) => {
+    if (ids.has(plugin.id)) {
+      context.addIssue({ code: "custom", message: "Duplicate Plugin id.", path: [index, "id"] });
+    }
+    ids.add(plugin.id);
+  });
+});
 
 function isPathInside(rootPath: string, candidatePath: string): boolean {
   const relative = path.relative(rootPath, candidatePath);
@@ -81,8 +108,10 @@ function describeError(error: unknown): string {
  * MCP and template content, but cannot run JavaScript or bypass ToolRuntime.
  */
 export class PluginCatalog {
+  private plugins: PluginCatalogRecord[] = [];
+
   public constructor(
-    private readonly database: AgentDatabase,
+    private readonly settings: SettingsJsoncFile,
     private readonly pluginsPath: string,
   ) {}
 
@@ -113,19 +142,47 @@ export class PluginCatalog {
       }
     }
 
-    this.database.syncPluginCatalog(plugins);
+    const enabledById = new Map(this.getPluginSettings().map((plugin) => [
+      plugin.id,
+      plugin.enabled,
+    ]));
+    const updatedAt = new Date().toISOString();
+    this.plugins = plugins.map((plugin) => ({
+      ...plugin,
+      enabled: enabledById.get(plugin.id) ?? true,
+      updatedAt,
+    })).sort((left, right) => left.name.localeCompare(
+      right.name,
+      undefined,
+      { sensitivity: "base" },
+    ));
     return {
-      plugins: this.database.listPluginCatalog(),
+      plugins: this.list(),
       rejected,
     };
   }
 
   public list(): PluginCatalogRecord[] {
-    return this.database.listPluginCatalog();
+    return structuredClone(this.plugins);
   }
 
   public setEnabled(pluginId: string, enabled: boolean): PluginCatalogRecord {
-    return this.database.setPluginEnabled(pluginId, enabled);
+    const plugin = this.plugins.find((candidate) => candidate.id === pluginId);
+    if (plugin === undefined) throw new Error("Plugin was not found.");
+    const settings = this.getPluginSettings();
+    const nextSettings = settings.some((candidate) => candidate.id === pluginId)
+      ? settings.map((candidate) => candidate.id === pluginId
+          ? { ...candidate, enabled }
+          : candidate)
+      : [...settings, { enabled, id: pluginId }];
+    this.settings.write("plugins", pluginSettingListSchema, nextSettings);
+    plugin.enabled = enabled;
+    plugin.updatedAt = new Date().toISOString();
+    return structuredClone(plugin);
+  }
+
+  private getPluginSettings(): z.infer<typeof pluginSettingListSchema> {
+    return this.settings.read("plugins", pluginSettingListSchema, []);
   }
 
   private async readPlugin(candidatePath: string): Promise<DiscoveredPlugin> {
@@ -206,5 +263,35 @@ export class PluginCatalog {
       throw new Error(`${description} must be a regular directory.`);
     }
     return path.resolve(await realpath(candidatePath));
+  }
+}
+
+export function migrateLegacyPluginSettings(
+  settings: SettingsJsoncFile,
+  databasePath: string,
+): void {
+  if (settings.has("plugins")) return;
+  if (!existsSync(databasePath)) {
+    settings.write("plugins", pluginSettingListSchema, []);
+    return;
+  }
+  const database = new DatabaseSync(databasePath, { readOnly: true });
+  try {
+    const table = database.prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'plugin_catalog'",
+    ).get() as { name?: unknown } | undefined;
+    if (table?.name !== "plugin_catalog") {
+      settings.write("plugins", pluginSettingListSchema, []);
+      return;
+    }
+    const rows = database.prepare(
+      "SELECT id, enabled FROM plugin_catalog ORDER BY id",
+    ).all() as Array<{ enabled: unknown; id: unknown }>;
+    settings.write("plugins", pluginSettingListSchema, rows.map((row) => ({
+      enabled: row.enabled === 1,
+      id: String(row.id),
+    })));
+  } finally {
+    database.close();
   }
 }

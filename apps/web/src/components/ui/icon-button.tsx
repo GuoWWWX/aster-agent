@@ -6,6 +6,7 @@ import type {
 } from "react";
 
 import { cn } from "../../lib/cn.js";
+import { TooltipAnchor } from "./tooltip.js";
 
 const iconButtonVariants = cva(
   "inline-flex shrink-0 items-center justify-center rounded-[var(--app-radius)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-focus-ring)] disabled:pointer-events-none disabled:opacity-40",
@@ -19,6 +20,8 @@ const iconButtonVariants = cva(
       variant: {
         active:
           "bg-[var(--app-accent)] text-[var(--app-accent-foreground)] hover:bg-[#1d4ed8]",
+        selected:
+          "bg-[var(--app-selection)] text-[var(--app-selection-foreground)] shadow-[var(--app-selection-shadow)] ring-1 ring-inset ring-[var(--app-selection-border)]",
         destructive:
           "text-[var(--app-muted-foreground)] hover:bg-[var(--app-destructive)] hover:text-[var(--app-destructive-foreground)]",
         quiet:
@@ -41,27 +44,32 @@ type IconButtonProps = Omit<
   VariantProps<typeof iconButtonVariants> & {
     children: ReactNode;
     label: string;
+    tooltip?: string;
+    tooltipSide?: "top" | "right" | "bottom" | "left";
   };
 
 export function IconButton({
   children,
   className,
   label,
+  tooltip,
+  tooltipSide,
   size,
   type = "button",
   variant,
   ...buttonProps
 }: IconButtonProps): ReactElement {
   return (
-    <button
-      {...buttonProps}
-      aria-label={label}
-      className={cn(iconButtonVariants({ size, variant }), className)}
-      data-slot="icon-button"
-      title={label}
-      type={type}
-    >
-      {children}
-    </button>
+    <TooltipAnchor side={tooltipSide} content={tooltip ?? label} disabled={buttonProps.disabled === true}>
+      <button
+        {...buttonProps}
+        aria-label={label}
+        className={cn(iconButtonVariants({ size, variant }), className)}
+        data-slot="icon-button"
+        type={type}
+      >
+        {children}
+      </button>
+    </TooltipAnchor>
   );
 }

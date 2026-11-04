@@ -1,0 +1,254 @@
+diff --git a/dist/index.js b/dist/index.js
+index e8906db3b1e87bfc568b75d72b7ed3d8d1d3c09a..e42a1c42cf580512b4ec5d903109c292655251a0 100644
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -56,6 +56,7 @@ var FocusScope = /* @__PURE__ */ React.forwardRef(
+       ...scopeProps
+     } = props;
+     const [container, setContainer] = React.useState(null);
++    const ownerDocument = container?.ownerDocument ?? globalThis.document;
+     const onMountAutoFocus = (0, import_react_use_callback_ref.useCallbackRef)(onMountAutoFocusProp);
+     const onUnmountAutoFocus = (0, import_react_use_callback_ref.useCallbackRef)(onUnmountAutoFocusProp);
+     const lastFocusedElementRef = React.useRef(null);
+@@ -87,8 +88,8 @@ var FocusScope = /* @__PURE__ */ React.forwardRef(
+             focus(lastFocusedElementRef.current, { select: true });
+           }
+         }, handleMutations2 = function(mutations) {
+-          const focusedElement = document.activeElement;
+-          if (focusedElement !== document.body) return;
++          const focusedElement = ownerDocument.activeElement;
++          if (focusedElement !== ownerDocument.body) return;
+           for (const mutation of mutations) {
+             if (mutation.removedNodes.length > 0) focus(container);
+           }
+@@ -97,13 +98,13 @@ var FocusScope = /* @__PURE__ */ React.forwardRef(
+         __name(handleFocusIn2, "handleFocusIn");
+         __name(handleFocusOut2, "handleFocusOut");
+         __name(handleMutations2, "handleMutations");
+-        document.addEventListener("focusin", handleFocusIn2);
+-        document.addEventListener("focusout", handleFocusOut2);
++        ownerDocument.addEventListener("focusin", handleFocusIn2);
++        ownerDocument.addEventListener("focusout", handleFocusOut2);
+         const mutationObserver = new MutationObserver(handleMutations2);
+         if (container) mutationObserver.observe(container, { childList: true, subtree: true });
+         return () => {
+-          document.removeEventListener("focusin", handleFocusIn2);
+-          document.removeEventListener("focusout", handleFocusOut2);
++          ownerDocument.removeEventListener("focusin", handleFocusIn2);
++          ownerDocument.removeEventListener("focusout", handleFocusOut2);
+           mutationObserver.disconnect();
+         };
+       }
+@@ -111,7 +112,7 @@ var FocusScope = /* @__PURE__ */ React.forwardRef(
+     React.useEffect(() => {
+       if (container) {
+         focusScopesStack.add(focusScope);
+-        const previouslyFocusedElement = document.activeElement;
++        const previouslyFocusedElement = ownerDocument.activeElement;
+         const hasFocusedCandidate = container.contains(previouslyFocusedElement);
+         if (!hasFocusedCandidate) {
+           const mountEvent = new CustomEvent(AUTOFOCUS_ON_MOUNT, EVENT_OPTIONS);
+@@ -119,7 +120,7 @@ var FocusScope = /* @__PURE__ */ React.forwardRef(
+           container.dispatchEvent(mountEvent);
+           if (!mountEvent.defaultPrevented) {
+             focusFirst(removeLinks(getTabbableCandidates(container)), { select: true });
+-            if (document.activeElement === previouslyFocusedElement) {
++            if (ownerDocument.activeElement === previouslyFocusedElement) {
+               focus(container);
+             }
+           }
+@@ -131,7 +132,7 @@ var FocusScope = /* @__PURE__ */ React.forwardRef(
+             container.addEventListener(AUTOFOCUS_ON_UNMOUNT, onUnmountAutoFocus);
+             container.dispatchEvent(unmountEvent);
+             if (!unmountEvent.defaultPrevented) {
+-              focus(previouslyFocusedElement ?? document.body, { select: true });
++              focus(previouslyFocusedElement ?? ownerDocument.body, { select: true });
+             }
+             container.removeEventListener(AUTOFOCUS_ON_UNMOUNT, onUnmountAutoFocus);
+             focusScopesStack.remove(focusScope);
+@@ -144,7 +145,7 @@ var FocusScope = /* @__PURE__ */ React.forwardRef(
+         if (!loop && !trapped) return;
+         if (focusScope.paused) return;
+         const isTabKey = event.key === "Tab" && !event.altKey && !event.ctrlKey && !event.metaKey;
+-        const focusedElement = document.activeElement;
++        const focusedElement = ownerDocument.activeElement;
+         if (isTabKey && focusedElement) {
+           const container2 = event.currentTarget;
+           const [first, last] = getTabbableEdges(container2);
+@@ -168,10 +169,11 @@ var FocusScope = /* @__PURE__ */ React.forwardRef(
+   }, "FocusScope")
+ );
+ function focusFirst(candidates, { select = false } = {}) {
+-  const previouslyFocusedElement = document.activeElement;
++  const ownerDocument = candidates.find(Boolean)?.ownerDocument ?? globalThis.document;
++  const previouslyFocusedElement = ownerDocument.activeElement;
+   for (const candidate of candidates) {
+     focus(candidate, { select });
+-    if (document.activeElement !== previouslyFocusedElement) return;
++    if (ownerDocument.activeElement !== previouslyFocusedElement) return;
+   }
+ }
+ __name(focusFirst, "focusFirst");
+@@ -184,7 +186,7 @@ function getTabbableEdges(container) {
+ __name(getTabbableEdges, "getTabbableEdges");
+ function getTabbableCandidates(container) {
+   const nodes = [];
+-  const walker = document.createTreeWalker(container, NodeFilter.SHOW_ELEMENT, {
++  const walker = container.ownerDocument.createTreeWalker(container, NodeFilter.SHOW_ELEMENT, {
+     acceptNode: /* @__PURE__ */ __name((node) => {
+       const isHiddenInput = node.tagName === "INPUT" && node.type === "hidden";
+       if (node.disabled || node.hidden || isHiddenInput) return NodeFilter.FILTER_SKIP;
+@@ -206,22 +208,22 @@ function findVisible(elements, container) {
+ }
+ __name(findVisible, "findVisible");
+ function isHidden(node, { upTo }) {
+-  if (getComputedStyle(node).visibility === "hidden") return true;
++  if (node.ownerDocument.defaultView.getComputedStyle(node).visibility === "hidden") return true;
+   while (node) {
+     if (upTo !== void 0 && node === upTo) return false;
+-    if (getComputedStyle(node).display === "none") return true;
++    if (node.ownerDocument.defaultView.getComputedStyle(node).display === "none") return true;
+     node = node.parentElement;
+   }
+   return false;
+ }
+ __name(isHidden, "isHidden");
+ function isSelectableInput(element) {
+-  return element instanceof HTMLInputElement && "select" in element;
++  return element instanceof (element.ownerDocument.defaultView?.HTMLInputElement ?? HTMLInputElement) && "select" in element;
+ }
+ __name(isSelectableInput, "isSelectableInput");
+ function focus(element, { select = false } = {}) {
+   if (element && element.focus) {
+-    const previouslyFocusedElement = document.activeElement;
++    const previouslyFocusedElement = element.ownerDocument.activeElement;
+     element.focus({ preventScroll: true });
+     if (element !== previouslyFocusedElement && isSelectableInput(element) && select)
+       element.select();
+diff --git a/dist/index.mjs b/dist/index.mjs
+index 030ff1a4d2383c9a0a1ba850aa4591890f028784..378f32dc69eaa565b65c71dddb2b86b83b40e226 100644
+--- a/dist/index.mjs
++++ b/dist/index.mjs
+@@ -21,6 +21,7 @@ var FocusScope = /* @__PURE__ */ React.forwardRef(
+       ...scopeProps
+     } = props;
+     const [container, setContainer] = React.useState(null);
++    const ownerDocument = container?.ownerDocument ?? globalThis.document;
+     const onMountAutoFocus = useCallbackRef(onMountAutoFocusProp);
+     const onUnmountAutoFocus = useCallbackRef(onUnmountAutoFocusProp);
+     const lastFocusedElementRef = React.useRef(null);
+@@ -52,8 +53,8 @@ var FocusScope = /* @__PURE__ */ React.forwardRef(
+             focus(lastFocusedElementRef.current, { select: true });
+           }
+         }, handleMutations2 = function(mutations) {
+-          const focusedElement = document.activeElement;
+-          if (focusedElement !== document.body) return;
++          const focusedElement = ownerDocument.activeElement;
++          if (focusedElement !== ownerDocument.body) return;
+           for (const mutation of mutations) {
+             if (mutation.removedNodes.length > 0) focus(container);
+           }
+@@ -62,13 +63,13 @@ var FocusScope = /* @__PURE__ */ React.forwardRef(
+         __name(handleFocusIn2, "handleFocusIn");
+         __name(handleFocusOut2, "handleFocusOut");
+         __name(handleMutations2, "handleMutations");
+-        document.addEventListener("focusin", handleFocusIn2);
+-        document.addEventListener("focusout", handleFocusOut2);
++        ownerDocument.addEventListener("focusin", handleFocusIn2);
++        ownerDocument.addEventListener("focusout", handleFocusOut2);
+         const mutationObserver = new MutationObserver(handleMutations2);
+         if (container) mutationObserver.observe(container, { childList: true, subtree: true });
+         return () => {
+-          document.removeEventListener("focusin", handleFocusIn2);
+-          document.removeEventListener("focusout", handleFocusOut2);
++          ownerDocument.removeEventListener("focusin", handleFocusIn2);
++          ownerDocument.removeEventListener("focusout", handleFocusOut2);
+           mutationObserver.disconnect();
+         };
+       }
+@@ -76,7 +77,7 @@ var FocusScope = /* @__PURE__ */ React.forwardRef(
+     React.useEffect(() => {
+       if (container) {
+         focusScopesStack.add(focusScope);
+-        const previouslyFocusedElement = document.activeElement;
++        const previouslyFocusedElement = ownerDocument.activeElement;
+         const hasFocusedCandidate = container.contains(previouslyFocusedElement);
+         if (!hasFocusedCandidate) {
+           const mountEvent = new CustomEvent(AUTOFOCUS_ON_MOUNT, EVENT_OPTIONS);
+@@ -84,7 +85,7 @@ var FocusScope = /* @__PURE__ */ React.forwardRef(
+           container.dispatchEvent(mountEvent);
+           if (!mountEvent.defaultPrevented) {
+             focusFirst(removeLinks(getTabbableCandidates(container)), { select: true });
+-            if (document.activeElement === previouslyFocusedElement) {
++            if (ownerDocument.activeElement === previouslyFocusedElement) {
+               focus(container);
+             }
+           }
+@@ -96,7 +97,7 @@ var FocusScope = /* @__PURE__ */ React.forwardRef(
+             container.addEventListener(AUTOFOCUS_ON_UNMOUNT, onUnmountAutoFocus);
+             container.dispatchEvent(unmountEvent);
+             if (!unmountEvent.defaultPrevented) {
+-              focus(previouslyFocusedElement ?? document.body, { select: true });
++              focus(previouslyFocusedElement ?? ownerDocument.body, { select: true });
+             }
+             container.removeEventListener(AUTOFOCUS_ON_UNMOUNT, onUnmountAutoFocus);
+             focusScopesStack.remove(focusScope);
+@@ -109,7 +110,7 @@ var FocusScope = /* @__PURE__ */ React.forwardRef(
+         if (!loop && !trapped) return;
+         if (focusScope.paused) return;
+         const isTabKey = event.key === "Tab" && !event.altKey && !event.ctrlKey && !event.metaKey;
+-        const focusedElement = document.activeElement;
++        const focusedElement = ownerDocument.activeElement;
+         if (isTabKey && focusedElement) {
+           const container2 = event.currentTarget;
+           const [first, last] = getTabbableEdges(container2);
+@@ -133,10 +134,11 @@ var FocusScope = /* @__PURE__ */ React.forwardRef(
+   }, "FocusScope")
+ );
+ function focusFirst(candidates, { select = false } = {}) {
+-  const previouslyFocusedElement = document.activeElement;
++  const ownerDocument = candidates.find(Boolean)?.ownerDocument ?? globalThis.document;
++  const previouslyFocusedElement = ownerDocument.activeElement;
+   for (const candidate of candidates) {
+     focus(candidate, { select });
+-    if (document.activeElement !== previouslyFocusedElement) return;
++    if (ownerDocument.activeElement !== previouslyFocusedElement) return;
+   }
+ }
+ __name(focusFirst, "focusFirst");
+@@ -149,7 +151,7 @@ function getTabbableEdges(container) {
+ __name(getTabbableEdges, "getTabbableEdges");
+ function getTabbableCandidates(container) {
+   const nodes = [];
+-  const walker = document.createTreeWalker(container, NodeFilter.SHOW_ELEMENT, {
++  const walker = container.ownerDocument.createTreeWalker(container, NodeFilter.SHOW_ELEMENT, {
+     acceptNode: /* @__PURE__ */ __name((node) => {
+       const isHiddenInput = node.tagName === "INPUT" && node.type === "hidden";
+       if (node.disabled || node.hidden || isHiddenInput) return NodeFilter.FILTER_SKIP;
+@@ -171,22 +173,22 @@ function findVisible(elements, container) {
+ }
+ __name(findVisible, "findVisible");
+ function isHidden(node, { upTo }) {
+-  if (getComputedStyle(node).visibility === "hidden") return true;
++  if (node.ownerDocument.defaultView.getComputedStyle(node).visibility === "hidden") return true;
+   while (node) {
+     if (upTo !== void 0 && node === upTo) return false;
+-    if (getComputedStyle(node).display === "none") return true;
++    if (node.ownerDocument.defaultView.getComputedStyle(node).display === "none") return true;
+     node = node.parentElement;
+   }
+   return false;
+ }
+ __name(isHidden, "isHidden");
+ function isSelectableInput(element) {
+-  return element instanceof HTMLInputElement && "select" in element;
++  return element instanceof (element.ownerDocument.defaultView?.HTMLInputElement ?? HTMLInputElement) && "select" in element;
+ }
+ __name(isSelectableInput, "isSelectableInput");
+ function focus(element, { select = false } = {}) {
+   if (element && element.focus) {
+-    const previouslyFocusedElement = document.activeElement;
++    const previouslyFocusedElement = element.ownerDocument.activeElement;
+     element.focus({ preventScroll: true });
+     if (element !== previouslyFocusedElement && isSelectableInput(element) && select)
+       element.select();

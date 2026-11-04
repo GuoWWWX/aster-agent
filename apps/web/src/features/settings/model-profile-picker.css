@@ -1,3 +1,4 @@
+/* CSS trigger 2: structural selectors coordinate the picker hierarchy and interaction states. */
 .model-profile-picker {
   display: grid;
   width: min(560px, calc(100vw - 24px));
@@ -15,7 +16,15 @@
 }
 
 .model-profile-picker--conversation {
-  width: min(360px, calc(100vw - 24px));
+  width: min(320px, calc(100vw - 24px));
+}
+
+.model-profile-picker[data-provider-filter="true"] {
+  grid-template-rows: auto auto minmax(0, 1fr);
+}
+
+.model-profile-picker[data-provider-filter="true"] .model-profile-picker__option {
+  padding-left: 8px;
 }
 
 .model-profile-picker__toolbar {
@@ -28,6 +37,10 @@
 .model-profile-picker__toolbar .model-profile-picker__search {
   min-width: 0;
   flex: 1 1 auto;
+}
+
+.model-profile-picker__toolbar .model-profile-picker__search input {
+  font-size: var(--app-font-size-control);
 }
 
 .model-profile-picker__toolbar-divider {
@@ -49,6 +62,7 @@
   align-content: start;
   gap: 7px;
   overflow: auto;
+  scrollbar-gutter: stable;
   padding: 1px;
 }
 
@@ -106,7 +120,7 @@
   align-items: center;
   gap: 5px;
   color: var(--app-foreground);
-  font-size: var(--app-font-size-subtitle);
+  font-size: var(--app-font-size-control);
   font-weight: 700;
 }
 
@@ -242,6 +256,16 @@
 .model-profile-picker__option-check > svg {
   flex: 0 0 auto;
   color: var(--app-accent);
+}
+
+[data-theme="dark"] .model-profile-picker__option[data-selected="true"] {
+  border-color: var(--app-selection-border);
+  background: var(--app-selection);
+  color: var(--app-selection-foreground);
+}
+
+[data-theme="dark"] .model-profile-picker__option-check > svg {
+  color: var(--app-selection-foreground);
 }
 
 .model-profile-picker__empty {

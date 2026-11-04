@@ -13,8 +13,10 @@ import path from "node:path";
 import { existsSync, readFileSync } from "node:fs";
 
 import {
+  conversationAttachmentPreviewSchema,
   estimateContextTokens,
-  type ConversationAttachment
+  type ConversationAttachment,
+  type ConversationAttachmentPreview,
 } from "@agent/protocol";
 import { fileTypeFromBuffer, fileTypeFromFile } from "file-type";
 import mammoth from "mammoth";
@@ -134,6 +136,27 @@ export class ConversationAttachmentStore {
     private readonly rootPath: string
   ) {}
 
+  public async migrateLegacyManagedRoots(legacyRoots: readonly string[]): Promise<void> {
+    const roots = [...new Set(legacyRoots.map((root) => path.resolve(root)))]
+      .filter((root) => root !== path.resolve(this.rootPath));
+
+    for (const attachment of this.database.listConversationAttachmentStoragePaths()) {
+      const storedPath = await this.migrateLegacyManagedFile(attachment.storedPath, roots);
+      const extractedTextPath = attachment.extractedTextPath === null
+        ? null
+        : await this.migrateLegacyManagedFile(attachment.extractedTextPath, roots);
+      if (
+        storedPath === attachment.storedPath
+        && extractedTextPath === attachment.extractedTextPath
+      ) continue;
+      this.database.updateConversationAttachmentStoragePaths({
+        extractedTextPath,
+        id: attachment.id,
+        storedPath,
+      });
+    }
+  }
+
   public async importFiles(
     conversationId: string,
     sourcePaths: readonly string[]
@@ -180,7 +203,7 @@ export class ConversationAttachmentStore {
       ?? EXTENSION_MIME_TYPES[extension]
       ?? (TEXT_EXTENSIONS.has(extension) ? "text/plain" : "application/octet-stream");
     const id = randomUUID();
-    const directory = path.join(this.rootPath, conversationId);
+    const directory = this.getAttachmentDirectory(conversationId);
     await mkdir(directory, { recursive: true });
     const storedPath = path.join(directory, `${id}${extension}`);
     await writeFile(storedPath, input.bytes);
@@ -200,6 +223,66 @@ export class ConversationAttachmentStore {
     return this.database.listDraftConversationAttachments(conversationId);
   }
 
+  public async saveToolScreenshot(conversationId: string, toolId: string, image: {
+    data: string; mimeType: string; contextTokens: number;
+    source?: "browser" | "computer" | "project" | "upload";
+  }): Promise<ConversationAttachment> {
+    this.database.getConversation(conversationId);
+    const bytes = Buffer.from(image.data, "base64");
+    const source = image.source === "computer" ? "computer" : "browser";
+    const extension = source === "computer" ? ".png" : ".jpg";
+    if (bytes.length === 0 || bytes.length > MAX_ATTACHMENT_BYTES || image.mimeType !== (source === "computer" ? "image/png" : "image/jpeg")) {
+      throw new Error(`Invalid ${source} screenshot.`);
+    }
+    const id = randomUUID();
+    const directory = this.getAttachmentDirectory(conversationId);
+    await mkdir(directory, { recursive: true });
+    const storedPath = path.join(directory, `${id}${extension}`);
+    await writeFile(storedPath, bytes);
+    try {
+      return this.database.createToolImageAttachment({
+        contextTokens: image.contextTokens, conversationId, createdAt: new Date().toISOString(),
+        extractedTextPath: null, id, kind: "image", messageId: toolId, pendingMessageId: null,
+        mimeType: image.mimeType, name: `${source}-${conversationId}-${id}${extension}`, projectPath: null, sizeBytes: bytes.length,
+        source, storedPath, truncated: false,
+      });
+    } catch (error) {
+      await this.removeFile(storedPath);
+      throw error;
+    }
+  }
+
+  public async saveGeneratedImage(conversationId: string, toolId: string, image: { data: string; mimeType: string }): Promise<ConversationAttachment> {
+    this.database.getConversation(conversationId);
+    const bytes = Buffer.from(image.data, "base64");
+    const type = await fileTypeFromBuffer(bytes);
+    if (bytes.length === 0 || bytes.length > MAX_ATTACHMENT_BYTES || type?.mime !== image.mimeType || !["image/png", "image/jpeg", "image/webp"].includes(type.mime)) throw new Error("生成图片数据无效。");
+    const id = randomUUID(), directory = this.getAttachmentDirectory(conversationId);
+    await mkdir(directory, { recursive: true });
+    const storedPath = path.join(directory, `${id}.${type.ext}`);
+    try {
+      await writeFile(storedPath, bytes);
+      return this.database.createToolImageAttachment({ id, conversationId, messageId: toolId, pendingMessageId: null,
+        name: `generated-${id}.${type.ext}`, mimeType: type.mime, kind: "image", sizeBytes: bytes.length,
+        source: "generated", projectPath: null, storedPath, extractedTextPath: null, contextTokens: 1024,
+        truncated: false, createdAt: new Date().toISOString() });
+    } catch (error) { await this.removeFile(storedPath); throw error; }
+  }
+
+  public readImagePreview(
+    conversationId: string,
+    attachmentId: string,
+  ): ConversationAttachmentPreview {
+    const attachment = this.database.getConversationAttachment(conversationId, attachmentId);
+    if (attachment.kind !== "image") {
+      throw new Error("Only image attachments can be previewed.");
+    }
+    return conversationAttachmentPreviewSchema.parse({
+      data: readFileSync(attachment.storedPath).toString("base64"),
+      mimeType: attachment.mimeType,
+    });
+  }
+
   /**
    * Derives managed paths from an immutable Attachment reference during
    * ThreadLog recovery. Paths stay out of JSONL; the store layout is the
@@ -209,7 +292,14 @@ export class ConversationAttachmentStore {
     extractedTextPath: string | null;
     storedPath: string;
   } {
-    const directory = path.join(this.rootPath, attachment.conversationId);
+    if (attachment.source === "browser" || attachment.source === "computer") {
+      const pattern = attachment.source === "browser" ? /^browser-([0-9a-f-]{36})-([0-9a-f-]{36})\.jpg$/iu : /^computer-([0-9a-f-]{36})-([0-9a-f-]{36})\.png$/iu;
+      const reference = pattern.exec(attachment.name);
+      const extension = attachment.source === "browser" ? ".jpg" : ".png";
+      if (reference === null) throw new Error(`Invalid ${attachment.source} image storage reference.`);
+      return { extractedTextPath: null, storedPath: path.join(this.getAttachmentDirectory(reference[1]!), `${reference[2]}${extension}`) };
+    }
+    const directory = this.getAttachmentDirectory(attachment.conversationId);
     const extension = path.extname(attachment.name).toLowerCase();
     const storedPath = path.join(directory, `${attachment.id}${extension}`);
     const extractedTextPath = path.join(directory, `${attachment.id}.extracted.txt`);
@@ -235,6 +325,51 @@ export class ConversationAttachmentStore {
     await Promise.all([...filePaths].map((filePath) => this.removeFile(filePath)));
   }
 
+  public async cleanupCancelledPendingMessageAttachments(
+    pendingMessageId?: string,
+  ): Promise<void> {
+    const cleanups = this.database.listCancelledPendingMessageAttachmentCleanups(
+      pendingMessageId,
+    );
+    for (const cleanup of cleanups) {
+      const attachmentIds = cleanup.attachments.map((attachment) => attachment.id);
+      const filePaths = new Set(cleanup.attachments.flatMap((attachment) => [
+        attachment.storedPath,
+        ...(attachment.extractedTextPath === null ? [] : [attachment.extractedTextPath]),
+      ]));
+      for (const filePath of filePaths) {
+        if (!this.isManagedPath(filePath)) {
+          throw new Error("Pending attachment cleanup cannot delete a file outside managed storage.");
+        }
+        if (this.database.isConversationAttachmentFileReferencedOutside(filePath, attachmentIds)) {
+          continue;
+        }
+        await this.removeFile(filePath);
+      }
+      this.database.completeCancelledPendingMessageAttachmentCleanup(
+        cleanup.pendingMessageId,
+        attachmentIds,
+      );
+      await rmdir(this.getAttachmentDirectory(cleanup.conversationId)).catch(
+        (error: NodeJS.ErrnoException) => {
+          if (error.code !== "ENOENT" && error.code !== "ENOTEMPTY" && error.code !== "EEXIST") {
+            throw error;
+          }
+        },
+      );
+    }
+  }
+
+  public async resumeCancelledPendingMessageAttachmentCleanup(): Promise<void> {
+    for (const cleanup of this.database.listCancelledPendingMessageAttachmentCleanups()) {
+      try {
+        await this.cleanupCancelledPendingMessageAttachments(cleanup.pendingMessageId);
+      } catch (error) {
+        console.error("Cancelled pending-message attachment cleanup remains retryable.", error);
+      }
+    }
+  }
+
   public async deleteUnreferencedConversationFiles(
     conversationIds: readonly string[],
     candidateFiles: readonly string[]
@@ -252,7 +387,7 @@ export class ConversationAttachmentStore {
     }
 
     const directories = new Set([
-      ...conversationIds.map((conversationId) => path.join(this.rootPath, conversationId)),
+      ...conversationIds.map((conversationId) => this.getAttachmentDirectory(conversationId)),
       ...managedFiles.map((filePath) => path.dirname(filePath)),
     ]);
     for (const directory of directories) {
@@ -266,20 +401,62 @@ export class ConversationAttachmentStore {
 
   private isManagedPath(filePath: string): boolean {
     const relativePath = path.relative(this.rootPath, path.resolve(filePath));
+    const segments = relativePath.split(path.sep);
     return relativePath.length > 0
       && relativePath !== ".."
       && !relativePath.startsWith(`..${path.sep}`)
-      && !path.isAbsolute(relativePath);
+      && !path.isAbsolute(relativePath)
+      && segments.length >= 3
+      && segments[1] === "attachments";
   }
 
   public toModelAttachments(
     conversationId: string,
     attachmentIds: readonly string[],
-    includeImageData: boolean
+    includeImageData: boolean,
+    describeImages = false,
   ): ModelMessageAttachment[] {
     return this.database
       .listConversationAttachmentsByIds(conversationId, attachmentIds)
-      .map((attachment) => this.toModelAttachment(attachment, includeImageData));
+      .map((attachment) => this.toModelAttachment(
+        attachment,
+        includeImageData,
+        describeImages,
+      ));
+  }
+
+  public viewAttachments(
+    conversationId: string,
+    attachmentIds: readonly string[],
+  ): {
+    attachments: ConversationAttachment[];
+    modelAttachments: ModelMessageAttachment[];
+  } {
+    const attachments = this.database.listConversationAttachmentsByIds(
+      conversationId,
+      attachmentIds,
+    );
+    return {
+      attachments: this.database.listThreadLogAttachmentReferences(
+        conversationId,
+        attachmentIds,
+      ),
+      modelAttachments: attachments.flatMap((attachment) => {
+        const modelAttachment = this.toModelAttachment(attachment, true, false);
+        return modelAttachment.kind === "image" ? [modelAttachment] : [];
+      }),
+    };
+  }
+
+  public viewImagePath(conversationId: string, imagePath: string) {
+    const match = /^attachments\/([0-9a-f-]{36})\.[a-z0-9]+$/iu.exec(imagePath);
+    if (match?.[1] === undefined) throw new Error("Invalid conversation attachment path.");
+    const attachment = this.database.getConversationAttachment(conversationId, match[1]);
+    const expectedPath = attachment.source === "browser" ? `attachments/${attachment.id}.jpg` : `attachments/${path.basename(attachment.storedPath)}`;
+    if (imagePath !== expectedPath || attachment.kind !== "image") {
+      throw new Error("Path is not an image belonging to this conversation.");
+    }
+    return this.viewAttachments(conversationId, [attachment.id]);
   }
 
   public readText(
@@ -336,7 +513,7 @@ export class ConversationAttachmentStore {
     const mimeType = detectedType?.mime
       ?? EXTENSION_MIME_TYPES[extension]
       ?? (TEXT_EXTENSIONS.has(extension) ? "text/plain" : "application/octet-stream");
-    const directory = path.join(this.rootPath, conversationId);
+    const directory = this.getAttachmentDirectory(conversationId);
     await mkdir(directory, { recursive: true });
     const storedPath = path.join(directory, `${id}${extension}`);
     await copyFile(absoluteSourcePath, storedPath);
@@ -467,11 +644,32 @@ export class ConversationAttachmentStore {
 
   private toModelAttachment(
     attachment: StoredConversationAttachment,
-    includeImageData: boolean
+    includeImageData: boolean,
+    describeImage: boolean,
   ): ModelMessageAttachment {
     if (attachment.kind === "image") {
+      if (describeImage) {
+        const content = [
+          "[历史图片未自动重复发送]",
+          modelImageAttachmentCaption({ ...attachment, readPath: `attachments/${attachment.source === "browser" ? `${attachment.id}.jpg` : path.basename(attachment.storedPath)}` }),
+          "需要重新查看图片内容时调用 view_attachments，paths 使用上面的 path。",
+        ].join("\n");
+        return {
+          content,
+          contextTokens: estimateContextTokens(content),
+          id: attachment.id,
+          kind: "text",
+          mimeType: attachment.mimeType,
+          name: attachment.name,
+          projectPath: attachment.projectPath,
+          readState: "metadata_only",
+          source: attachment.source,
+          truncated: false,
+        };
+      }
       return {
         contextTokens: attachment.contextTokens,
+        readPath: `attachments/${attachment.source === "browser" ? `${attachment.id}.jpg` : path.basename(attachment.storedPath)}`,
         data: includeImageData
           ? readFileSync(attachment.storedPath).toString("base64")
           : null,
@@ -550,5 +748,63 @@ export class ConversationAttachmentStore {
     await unlink(filePath).catch((error: NodeJS.ErrnoException) => {
       if (error.code !== "ENOENT") throw error;
     });
+  }
+
+  private async migrateLegacyManagedFile(
+    filePath: string,
+    legacyRoots: readonly string[],
+  ): Promise<string> {
+    const resolvedFilePath = path.resolve(filePath);
+    const currentManagedPath = this.resolveCurrentManagedPath(resolvedFilePath);
+    if (currentManagedPath !== null && currentManagedPath !== resolvedFilePath) {
+      if (!existsSync(currentManagedPath)) {
+        if (!existsSync(resolvedFilePath)) return filePath;
+        await mkdir(path.dirname(currentManagedPath), { recursive: true });
+        await copyFile(resolvedFilePath, currentManagedPath);
+      }
+      return currentManagedPath;
+    }
+    for (const legacyRoot of legacyRoots) {
+      const relativePath = path.relative(legacyRoot, resolvedFilePath);
+      if (
+        relativePath.length === 0
+        || relativePath === ".."
+        || relativePath.startsWith(`..${path.sep}`)
+        || path.isAbsolute(relativePath)
+      ) continue;
+      const [conversationId, ...fileSegments] = relativePath.split(path.sep);
+      if (conversationId === undefined || fileSegments.length === 0) return filePath;
+      const attachmentFileSegments = fileSegments[0] === "attachments"
+        ? fileSegments.slice(1)
+        : fileSegments;
+      if (attachmentFileSegments.length === 0) return filePath;
+      const migratedPath = path.join(
+        this.getAttachmentDirectory(conversationId),
+        ...attachmentFileSegments,
+      );
+      if (!existsSync(migratedPath)) {
+        if (!existsSync(resolvedFilePath)) return filePath;
+        await mkdir(path.dirname(migratedPath), { recursive: true });
+        await copyFile(resolvedFilePath, migratedPath);
+      }
+      return migratedPath;
+    }
+    return filePath;
+  }
+
+  private resolveCurrentManagedPath(filePath: string): string | null {
+    const attachmentDirectory = path.dirname(filePath);
+    if (path.basename(attachmentDirectory) !== "attachments") return null;
+    const ownerConversationId = path.basename(path.dirname(attachmentDirectory));
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu
+      .test(ownerConversationId)) return null;
+    return path.join(
+      this.getAttachmentDirectory(ownerConversationId),
+      path.basename(filePath),
+    );
+  }
+
+  private getAttachmentDirectory(conversationId: string): string {
+    return path.join(this.rootPath, conversationId, "attachments");
   }
 }

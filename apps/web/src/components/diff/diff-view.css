@@ -1,0 +1,173 @@
+/* CSS trigger #2: feature scroll containers and interaction selectors. */
+/* Styling trigger: descendant and data-attribute selectors express Diff line semantics. */
+.tool-diff-view {
+  --tool-diff-surface: var(--app-muted);
+  --tool-diff-code-comment: #64748b;
+  --tool-diff-code-function: #0369a1;
+  --tool-diff-code-keyword: #7c3aed;
+  --tool-diff-code-number: #b45309;
+  --tool-diff-code-operator: #be185d;
+  --tool-diff-code-string: #15803d;
+  --tool-diff-code-text: #111827;
+  max-height: min(520px, 55dvh);
+  margin: 0;
+  overflow: auto;
+  scrollbar-gutter: stable;
+  background: var(--tool-diff-surface);
+  color: var(--tool-diff-code-text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: var(--app-font-size-control);
+  line-height: 1.5;
+  white-space: pre;
+}
+
+.tool-diff-view code {
+  display: block;
+  min-width: max-content;
+}
+
+.tool-diff-view__line {
+  --tool-diff-line-background: var(--tool-diff-surface);
+  --tool-diff-line-marker: transparent;
+  display: grid;
+  min-height: 1.5em;
+  grid-template-columns: 40px minmax(0, 1fr);
+  background: var(--tool-diff-line-background);
+}
+
+.tool-diff-view__line-number {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  border-left: 4px solid var(--tool-diff-line-marker);
+  border-right: 1px solid rgba(148, 163, 184, 0.22);
+  background: var(--tool-diff-line-background);
+  color: var(--app-muted-foreground);
+  padding: 0 5px 0 2px;
+  text-align: left;
+  user-select: none;
+}
+
+.tool-diff-view__line-content {
+  padding: 0 10px;
+}
+
+.tool-diff-view__line[data-kind="collapsed"] {
+  --tool-diff-line-marker: rgba(148, 163, 184, 0.55);
+  --tool-diff-line-background: color-mix(in srgb, var(--tool-diff-surface) 84%, var(--app-accent) 16%);
+}
+
+.tool-diff-view__collapsed-context {
+  width: 100%;
+  border: 0;
+  border-top: 1px dashed rgba(148, 163, 184, 0.52);
+  border-bottom: 1px dashed rgba(148, 163, 184, 0.52);
+  background: transparent;
+  color: var(--app-muted-foreground);
+  cursor: pointer;
+  font: inherit;
+  line-height: inherit;
+  padding: 3px 10px;
+  text-align: left;
+}
+
+.tool-diff-view__collapsed-context:not(:disabled):hover {
+  background: color-mix(in srgb, var(--app-accent) 12%, transparent);
+  color: var(--app-foreground);
+}
+
+.tool-diff-view__collapsed-context:disabled {
+  cursor: default;
+}
+
+.tool-diff-view__line[data-kind="deletion"] {
+  --tool-diff-line-marker: #f87171;
+  --tool-diff-line-background: color-mix(in srgb, #fecaca 62%, var(--tool-diff-surface));
+}
+
+.tool-diff-view__line[data-kind="addition"] {
+  --tool-diff-line-marker: #4ade80;
+  --tool-diff-line-background: color-mix(in srgb, #bbf7d0 62%, var(--tool-diff-surface));
+}
+
+.tool-diff-view__line[data-kind="addition"] .tool-diff-view__line-number {
+  color: #15803d;
+}
+
+.tool-diff-view__line[data-kind="deletion"] .tool-diff-view__line-number {
+  color: #dc2626;
+}
+
+.tool-diff-view .hljs-comment,
+.tool-diff-view .hljs-quote {
+  color: var(--tool-diff-code-comment);
+}
+
+.tool-diff-view .hljs-keyword,
+.tool-diff-view .hljs-literal,
+.tool-diff-view .hljs-meta,
+.tool-diff-view .hljs-selector-tag {
+  color: var(--tool-diff-code-keyword);
+}
+
+.tool-diff-view .hljs-string,
+.tool-diff-view .hljs-doctag,
+.tool-diff-view .hljs-meta .hljs-string {
+  color: var(--tool-diff-code-string);
+}
+
+.tool-diff-view .hljs-number,
+.tool-diff-view .hljs-symbol,
+.tool-diff-view .hljs-variable,
+.tool-diff-view .hljs-template-variable {
+  color: var(--tool-diff-code-number);
+}
+
+.tool-diff-view .hljs-title,
+.tool-diff-view .hljs-title.function_,
+.tool-diff-view .hljs-title.class_,
+.tool-diff-view .hljs-type,
+.tool-diff-view .hljs-attr,
+.tool-diff-view .hljs-property {
+  color: var(--tool-diff-code-function);
+}
+
+.tool-diff-view .hljs-params,
+.tool-diff-view .hljs-subst {
+  color: var(--tool-diff-code-text);
+}
+
+.tool-diff-view .hljs-punctuation,
+.tool-diff-view .hljs-operator {
+  color: var(--tool-diff-code-operator);
+}
+
+.tool-diff-view__empty {
+  display: block;
+  padding: 9px 10px;
+  color: var(--app-muted-foreground);
+}
+
+.tool-timeline-item__payload pre.tool-diff-view {
+  padding: 0;
+  white-space: pre;
+}
+
+[data-theme="dark"] .tool-diff-view {
+  --tool-diff-surface: #1d1d1d;
+  --tool-diff-code-comment: #94a3b8;
+  --tool-diff-code-function: #67e8f9;
+  --tool-diff-code-keyword: #c084fc;
+  --tool-diff-code-number: #fbbf24;
+  --tool-diff-code-operator: #f9a8d4;
+  --tool-diff-code-string: #86efac;
+  --tool-diff-code-text: #e2e8f0;
+}
+
+[data-theme="dark"] .tool-diff-view__line[data-kind="deletion"] {
+  --tool-diff-line-background: color-mix(in srgb, #7f1d1d 34%, var(--tool-diff-surface));
+}
+
+[data-theme="dark"] .tool-diff-view__line[data-kind="addition"] {
+  --tool-diff-line-background: color-mix(in srgb, #14532d 38%, var(--tool-diff-surface));
+}

@@ -6,8 +6,17 @@ type IpcMainHandlerAdapter<THandler> = {
 };
 
 const IPC_EVENT_CHANNELS: ReadonlySet<IpcChannel> = new Set([
+  IPC_CHANNELS.appUpdateChanged,
   IPC_CHANNELS.applicationSettingsChanged,
   IPC_CHANNELS.conversationRunEvent,
+  IPC_CHANNELS.managedBrowserEvent,
+  // High-frequency Renderer -> Main view bounds use one-way IPC instead of invoke/response.
+  IPC_CHANNELS.managedBrowserSetBounds,
+  IPC_CHANNELS.terminalSessionEvent,
+  IPC_CHANNELS.workspaceTerminalOpenRequested,
+  IPC_CHANNELS.workspaceTerminalCloseRequested,
+  IPC_CHANNELS.workspaceBrowserOpenRequested,
+  IPC_CHANNELS.workspaceBrowserCloseRequested,
   IPC_CHANNELS.windowStateChanged,
 ]);
 

@@ -5,6 +5,7 @@ import {
   type AgentError,
   type AgentErrorCode,
 } from "@agent/protocol";
+import { ModelRequestError } from "../model/model-request-error.js";
 
 type MainErrorContext = {
   operation: string;
@@ -18,6 +19,7 @@ type ErrorClassification = {
 };
 
 const DEFAULT_ERRORS: Record<AgentErrorCode, Omit<ErrorClassification, "code">> = {
+  APPROVAL_EXPIRED: { message: "该审批已失效，请查看工具的最新状态。", retryable: false },
   APPROVAL_REJECTED: { message: "操作未获批准。", retryable: false },
   ARTIFACT_NOT_FOUND: { message: "请求的文件或记录不存在。", retryable: false },
   CAPABILITY_UNAVAILABLE: { message: "当前环境不支持这项能力。", retryable: false },
@@ -30,6 +32,7 @@ const DEFAULT_ERRORS: Record<AgentErrorCode, Omit<ErrorClassification, "code">> 
   MODEL_PROVIDER_UNAVAILABLE: { message: "模型服务暂时不可用，自动重试仍未成功，请稍后再试。", retryable: true },
   MODEL_RATE_LIMITED: { message: "模型额度不足或请求过于频繁，请检查余额后重试。", retryable: true },
   MODEL_RESPONSE_INVALID: { message: "模型返回了无法处理的响应，请重试或切换模型。", retryable: true },
+  MODEL_RUN_LIMIT_REACHED: { message: "已达到本轮运行保护上限，自动继续已暂停。当前结果和未处理的消息已保留，可发送“继续”接着处理。", retryable: false },
   MODEL_TIMEOUT: { message: "模型请求超时，请检查网络后重试。", retryable: true },
   NETWORK_UNAVAILABLE: { message: "网络连接失败，请检查网络和模型服务地址。", retryable: true },
   PATH_OUTSIDE_WORKSPACE: { message: "目标路径超出了当前项目目录。", retryable: false },
@@ -48,9 +51,18 @@ function errorMessage(reason: unknown): string {
 }
 
 function errorStatus(reason: unknown): number | null {
-  if (reason === null || typeof reason !== "object") return null;
-  const status = (reason as { status?: unknown }).status;
-  return typeof status === "number" && Number.isInteger(status) ? status : null;
+  const seen = new Set<object>();
+  let current: unknown = reason;
+  for (let depth = 0; depth < 8; depth += 1) {
+    if (current === null || typeof current !== "object" || seen.has(current)) return null;
+    seen.add(current);
+    const record = current as { cause?: unknown; status?: unknown };
+    if (typeof record.status === "number" && Number.isInteger(record.status)) {
+      return record.status;
+    }
+    current = record.cause;
+  }
+  return null;
 }
 
 function errorCode(reason: unknown): string | null {
@@ -127,6 +139,14 @@ function classificationForCode(code: AgentErrorCode): ErrorClassification {
   return { code, ...DEFAULT_ERRORS[code] };
 }
 
+function quotaBalanceClassification(): ErrorClassification {
+  return {
+    code: "MODEL_RATE_LIMITED",
+    message: "模型额度或余额不足，请充值、切换模型或更换供应商后再试。",
+    retryable: false,
+  };
+}
+
 function providerErrorDetail(
   message: string,
   status: number | null,
@@ -170,25 +190,51 @@ function classifyError(
   if (nodeCode === "TOOL_ARGUMENTS_INVALID") {
     return classificationForCode("VALIDATION_FAILED");
   }
+  if (nodeCode === "TERMINAL_LAUNCH_FAILED") {
+    return classificationForCode("PROCESS_FAILED");
+  }
+  if (nodeCode === "TERMINAL_UNAVAILABLE") {
+    return {
+      code: "CONFLICT",
+      message: "终端会话已结束或桌面服务已重启，请重新打开终端后重试。",
+      retryable: true,
+    };
+  }
+  if (nodeCode === "TERMINAL_CONTEXT_MISMATCH") {
+    return {
+      code: "CONFLICT",
+      message: "终端仍在运行，但目标 SSH 会话未连接。请重新连接并确认远程提示符后再发送命令。",
+      retryable: true,
+    };
+  }
   if (isGraphRecursionLimit(reason)) {
-    return classificationForCode("MODEL_RESPONSE_INVALID");
+    return classificationForCode("MODEL_RUN_LIMIT_REACHED");
+  }
+  if (nodeCode === "MODEL_CALL_LIMIT_EXCEEDED") {
+    return classificationForCode("MODEL_RUN_LIMIT_REACHED");
   }
   if (
     nodeCode === "MODEL_RESPONSE_INVALID"
-    || nodeCode === "MODEL_CALL_LIMIT_EXCEEDED"
     || nodeCode === "MODEL_TOOL_CALLS_INVALID"
     || nodeCode === "TOOL_CALL_LIMIT_EXCEEDED"
   ) {
     return classificationForCode("MODEL_RESPONSE_INVALID");
   }
   if (nodeCode === "FILE_CHANGED") return classificationForCode("FILE_CHANGED");
+  if (nodeCode === "APPROVAL_EXPIRED") return classificationForCode("APPROVAL_EXPIRED");
   if (nodeCode === "PROJECT_OPERATION_CONFLICT") return classificationForCode("CONFLICT");
   if (name === "ZodError" || (reason !== null && typeof reason === "object" && "issues" in reason)) {
     return classificationForCode("VALIDATION_FAILED");
   }
   if (name === "ModelRequestError" || status !== null) {
     if (status === 401 || status === 403) return classificationForCode("MODEL_AUTH_FAILED");
-    if (status === 402 || status === 429) return classificationForCode("MODEL_RATE_LIMITED");
+    if (
+      status === 402
+      || (status === 400 && /insufficient[_\s-]?(?:quota|balance|credit)|(?:额度|余额)(?:不足|耗尽)/iu.test(message))
+    ) {
+      return quotaBalanceClassification();
+    }
+    if (status === 429) return classificationForCode("MODEL_RATE_LIMITED");
     if (status === 408 || status === 504) return classificationForCode("MODEL_TIMEOUT");
     if (status !== null && status >= 500) return classificationForCode("MODEL_PROVIDER_UNAVAILABLE");
     return classificationForCode("MODEL_RESPONSE_INVALID");
@@ -200,14 +246,18 @@ function classifyError(
   ) {
     return classificationForCode("MODEL_RESPONSE_INVALID");
   }
-  if (reason instanceof TypeError && /fetch|network|socket|connect|econn/iu.test(message)) {
+  if (reason instanceof Error && /fetch|network|socket|connect|econn/iu.test(message)) {
     return classificationForCode("NETWORK_UNAVAILABLE");
   }
   if (/model provider.+unavailable/iu.test(message)) {
     return classificationForCode("MODEL_PROVIDER_UNAVAILABLE");
   }
   if (/decrypting the ciphertext|safeStorage.+decrypt/iu.test(message)) {
-    return classificationForCode("MODEL_CONFIGURATION_INVALID");
+    return {
+      code: "MODEL_CONFIGURATION_INVALID",
+      message: "API Key 无法解密。请在模型设置中重新输入一次，并保持软件使用同一个数据目录。",
+      retryable: false,
+    };
   }
   if (/模型.+(?:未返回|无法处理)|model.+(?:incomplete|invalid response)/iu.test(message)) {
     return classificationForCode("MODEL_RESPONSE_INVALID");
@@ -222,14 +272,20 @@ function classifyError(
   if (/outside (?:the )?(?:registered )?(?:project root|workspace)/iu.test(message)) {
     return classificationForCode("PATH_OUTSIDE_WORKSPACE");
   }
-  if (/workspace|required for (?:file changes|command execution)|temporary conversations cannot access project tools/iu.test(message)) {
+  if (/^A (?:project )?workspace is required\b|^Project files can only be referenced from a conversation with a workspace\.|^Temporary conversations cannot access project tools\./iu.test(message)) {
     return classificationForCode("WORKSPACE_REQUIRED");
   }
-  if (/file (?:was |has )?(?:changed|created after)|no longer awaiting approval/iu.test(message)) {
+  if (/file (?:was |has )?(?:changed|created after)/iu.test(message)) {
     return classificationForCode("FILE_CHANGED");
   }
   if (/approval.+reject/iu.test(message)) return classificationForCode("APPROVAL_REJECTED");
-  if (/timed? out|timeout/iu.test(message)) return classificationForCode("PROCESS_TIMEOUT");
+  if (/timed? out|timeout/iu.test(message)) {
+    return classificationForCode(
+      operation === "agent.run" || operation.startsWith("ipc:model.") || operation.startsWith("model.")
+        ? "MODEL_TIMEOUT"
+        : "PROCESS_TIMEOUT",
+    );
+  }
   if (/model.+(?:not configured|disabled)|no model provider|provider.+no configured models/iu.test(message)) {
     return classificationForCode("MODEL_CONFIGURATION_INVALID");
   }
@@ -282,7 +338,9 @@ export function toMainAgentError(
         ? sanitizedMessage.slice(0, 1_000)
         : classification.message
     )
-    : /[\u3400-\u9fff]/u.test(sanitizedMessage)
+    : classification.code !== "INTERNAL_ERROR"
+      && classification.code !== "MODEL_RUN_LIMIT_REACHED"
+      && /[\u3400-\u9fff]/u.test(sanitizedMessage)
       ? sanitizedMessage.slice(0, 1_000)
       : classification.message;
 
@@ -296,7 +354,7 @@ export function toMainAgentError(
     },
     id: randomUUID(),
     message: userMessage,
-    retryable: classification.retryable,
+    retryable: reason instanceof ModelRequestError ? reason.retryable ?? classification.retryable : classification.retryable,
   });
 }
 

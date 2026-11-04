@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
@@ -51,6 +51,12 @@ describe("ProjectRegistry", () => {
 
     expect(duplicateProject.id).toBe(project.id);
     expect(registry.listProjects()).toEqual([project]);
+    expect(project.showTeamsInNavigator).toBeUndefined();
+    expect(registry.setProjectTeamsInNavigator(project.id, true)).toMatchObject({
+      showTeamsInNavigator: true,
+    });
+    expect(registry.setProjectTeamsInNavigator(project.id, false).showTeamsInNavigator)
+      .toBeUndefined();
     expect(registry.setProjectPinned(project.id, true)).toMatchObject({
       isPinned: true,
     });
@@ -108,6 +114,27 @@ describe("ProjectRegistry", () => {
     }));
     registry.unmountConversationWorkspace(conversationId);
     expect(() => registry.getProject(conversationId)).toThrow("not registered");
+  });
+
+  it("creates a persistent default workspace lazily for a conversation without a project", async () => {
+    const rootPath = await mkdtemp(path.join(tmpdir(), "aster-conversation-workspaces-"));
+    temporaryRoots.push(rootPath);
+    const workspacesPath = path.join(rootPath, "workspaces");
+    const conversationId = "00000000-0000-4000-8000-000000000019";
+    const registry = new ProjectRegistry(undefined, workspacesPath);
+
+    const workspace = registry.registerDefaultConversationWorkspace(conversationId);
+    await expect(stat(workspace.rootPath)).rejects.toMatchObject({ code: "ENOENT" });
+
+    const listing = await registry.listEntries({
+      directoryPath: "",
+      projectId: conversationId,
+    });
+
+    expect(workspace.rootPath).toBe(path.join(workspacesPath, conversationId));
+    expect(listing.entries).toEqual([]);
+    expect((await stat(workspace.rootPath)).isDirectory()).toBe(true);
+    expect(registry.listProjects()).toEqual([]);
   });
 
   it("inherits an authorized workspace for a side conversation", async () => {
@@ -221,6 +248,27 @@ describe("ProjectRegistry", () => {
       projectId: project.id,
       sourcePath: "README.md",
     })).rejects.toThrow();
+  });
+
+  it.each([
+    ["preview.apng", "image/apng"],
+    ["preview.avif", "image/avif"],
+    ["preview.ico", "image/x-icon"],
+    ["preview.jfif", "image/jpeg"],
+  ])("reads the common image format %s", async (fileName, mimeType) => {
+    const rootPath = await createProjectFixture();
+    await writeFile(path.join(rootPath, fileName), Buffer.from([1, 2, 3, 4]));
+    const registry = new ProjectRegistry();
+    const project = await registry.registerDirectory(rootPath);
+
+    await expect(registry.readPreviewImage({
+      path: fileName,
+      projectId: project.id,
+      sourcePath: "README.md",
+    })).resolves.toEqual({
+      data: Buffer.from([1, 2, 3, 4]).toString("base64"),
+      mimeType,
+    });
   });
 
   it("rejects preview images larger than the IPC limit", async () => {

@@ -1,3 +1,4 @@
+/* CSS trigger 2: selected, hover and focus states on workspace tabs. */
 .right-sidebar-workspace {
   display: flex;
   min-height: 0;
@@ -18,15 +19,16 @@
   flex: 0 0 auto;
   align-items: stretch;
   border-bottom: 1px solid var(--app-border);
-  background: var(--app-titlebar);
+  background: var(--app-panel);
 }
 
 .right-sidebar-workspace__tabs {
   display: flex;
   min-width: 0;
   flex: 1;
-  align-items: stretch;
-  gap: 1px;
+  align-items: center;
+  gap: 5px;
+  padding: 0 3px;
   overflow-x: auto;
   scrollbar-width: none;
 }
@@ -37,22 +39,25 @@
 
 .right-sidebar-workspace__tab-shell {
   display: inline-flex;
+  height: calc(var(--app-workspace-header-height) - 6px);
   min-width: 74px;
   max-width: 180px;
   align-items: center;
-  border-right: 1px solid var(--app-border);
+  border: 1px solid transparent;
+  border-radius: var(--app-radius);
   background: transparent;
   color: var(--app-muted-foreground);
 }
 
 .right-sidebar-workspace__tab-shell[data-active="true"] {
-  background: var(--app-panel);
-  color: var(--app-foreground);
-  box-shadow: inset 0 2px 0 var(--app-accent);
+  border-color: var(--app-selection-border);
+  background: var(--app-selection);
+  color: var(--app-selection-foreground);
+  box-shadow: var(--app-selection-shadow);
 }
 
-.right-sidebar-workspace__tab-shell:hover {
-  background: var(--app-hover);
+.right-sidebar-workspace__tab-shell:hover:not([data-active="true"]) {
+  background: var(--app-navigation-hover);
   color: var(--app-foreground);
 }
 
@@ -83,7 +88,8 @@
   flex: 0 0 auto;
 }
 
-.right-sidebar-workspace__tab > span:not(.file-type-icon--java) {
+.right-sidebar-workspace__tab
+  > span:not(.file-type-icon--java):not(.agent-profile-avatar) {
   min-width: 0;
   overflow: hidden;
   flex: 1;
@@ -201,19 +207,6 @@
   overflow: hidden;
 }
 
-.right-sidebar-workspace__tree {
-  display: flex;
-  min-width: 220px;
-  min-height: 0;
-  flex: 0 0 clamp(220px, 42%, 360px);
-  border-left: 1px solid var(--app-border);
-}
-
-.right-sidebar-workspace__tree[data-collapsed="true"] {
-  min-width: 42px;
-  flex-basis: 42px;
-}
-
 .right-sidebar-workspace__tree > .configuration-workspace-tree-panel,
 .right-sidebar-workspace__tree > .project-tree-panel,
 .right-sidebar-workspace__content > * {
@@ -234,6 +227,7 @@
   justify-content: center;
   flex: 1;
   overflow: auto;
+  scrollbar-gutter: stable;
   background: var(--app-panel);
   padding: 24px;
 }
@@ -349,7 +343,7 @@
   border-radius: var(--app-radius);
   outline: none;
   background: transparent;
-  color: #64748b;
+  color: var(--app-muted-foreground);
   padding: 3px 4px;
   text-align: left;
   cursor: pointer;
@@ -379,7 +373,7 @@
 
 .right-sidebar-file__directory-icon {
   flex: 0 0 auto;
-  color: #64748b;
+  color: var(--app-muted-foreground);
 }
 
 .right-sidebar-file__directory,
@@ -401,11 +395,11 @@
 }
 
 .right-sidebar-file__path-separator {
-  color: #94a3b8;
+  color: var(--app-subtle-foreground);
 }
 
 .right-sidebar-file__name {
-  color: #64748b;
+  color: var(--app-muted-foreground);
   font-size: var(--app-font-size-control);
   font-weight: 400;
 }
@@ -506,16 +500,6 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.right-sidebar-workspace__spin {
-  animation: right-sidebar-workspace-spin 1s linear infinite;
-}
-
-@keyframes right-sidebar-workspace-spin {
-  to {
-    transform: rotate(360deg);
-  }
 }
 
 [data-theme="dark"] .right-sidebar-workspace__menu {

@@ -1,22 +1,32 @@
 import * as DialogPrimitive from "@radix-ui/react-dialog";
 import { X } from "lucide-react";
-import type { ComponentProps, ReactElement, ReactNode } from "react";
+import type { ComponentProps, CSSProperties, ReactElement, ReactNode } from "react";
 
 import { cn } from "../../lib/cn.js";
+import { useNativeOverlayContainer } from "./native-overlay-provider.js";
+import { useWorkbenchModalBackdrop, WORKBENCH_MODAL_BACKDROP_CLASS } from "./use-workbench-modal-backdrop.js";
 
 export const Dialog = DialogPrimitive.Root;
 export const DialogClose = DialogPrimitive.Close;
-export const DialogPortal = DialogPrimitive.Portal;
 export const DialogTrigger = DialogPrimitive.Trigger;
+
+export function DialogPortal(props: ComponentProps<typeof DialogPrimitive.Portal>): ReactElement {
+  const container = useNativeOverlayContainer();
+  return <DialogPrimitive.Portal container={container} {...props} />;
+}
 
 export function DialogOverlay({
   className,
+  style,
   ...props
 }: ComponentProps<typeof DialogPrimitive.Overlay>): ReactElement {
+  const bounds = useWorkbenchModalBackdrop();
   return (
     <DialogPrimitive.Overlay
-      className={cn("fixed inset-0 z-[100] bg-black/45", className)}
+      className={cn("fixed inset-0 z-[100]", WORKBENCH_MODAL_BACKDROP_CLASS, className)}
+      style={{ ...bounds, ...style }}
       data-slot="dialog-overlay"
+      data-native-view-overlay=""
       {...props}
     />
   );
@@ -25,14 +35,18 @@ export function DialogOverlay({
 export function DialogContent({
   children,
   className,
+  overlayClassName,
+  overlayStyle,
   showCloseButton = true,
   ...props
 }: ComponentProps<typeof DialogPrimitive.Content> & {
+  overlayClassName?: string;
+  overlayStyle?: CSSProperties;
   showCloseButton?: boolean;
 }): ReactElement {
   return (
     <DialogPortal>
-      <DialogOverlay />
+      <DialogOverlay className={overlayClassName} style={overlayStyle} />
       <DialogPrimitive.Content
         className={cn(
           "fixed left-1/2 top-1/2 z-[101] grid w-[calc(100vw-2rem)] max-w-lg -translate-x-1/2 -translate-y-1/2 rounded-[var(--app-radius)] bg-[var(--app-panel)] text-[var(--app-foreground)] shadow-2xl outline-none",

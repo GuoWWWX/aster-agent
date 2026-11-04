@@ -1,25 +1,20 @@
 import { ChatAnthropic } from "@langchain/anthropic";
-import {
-  AIMessage,
-  HumanMessage,
-  SystemMessage,
-  ToolMessage,
-  BaseMessage,
-  type ContentBlock,
-} from "@langchain/core/messages";
+import { BaseMessage } from "@langchain/core/messages";
 import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
 import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
 import { ChatOpenAI } from "@langchain/openai";
 import {
-  isGemini3ReasoningModel,
+  isGptReasoningSummaryModel,
   type ModelApiFormat,
 } from "@agent/protocol";
 
 import type {
   CompleteTurnInput,
+  ModelConfiguration,
   ModelMessage,
   ModelProviderAdapter,
   ModelProviderState,
+  ModelProviderTokenUsage,
   ModelToolCall,
   ModelToolDefinition,
   ModelTurnResult,
@@ -31,10 +26,13 @@ import {
   summarizeModelErrorText,
 } from "./model-request-error.js";
 import { parseToolArguments } from "./tool-arguments.js";
+import { requestFingerprint, type RequestFingerprint } from "./request-fingerprint.js";
+import { compactProviderReplayState } from "./provider-replay-state.js";
+import { openAiChatReasoningByAssistant } from "./langchain-provider-replay.js";
+import { toLangChainMessages } from "./langchain-model-messages.js";
+import { createChatGptPlanFetch } from "./chatgpt-plan-fetch.js";
 
 const LANGCHAIN_PROVIDER_STATE_VERSION = 2;
-const AI_SDK_PROVIDER_STATE_VERSION = 1;
-const GEMINI_FUNCTION_CALL_SIGNATURES_KEY = "__gemini_function_call_thought_signatures__";
 
 type LangChainModel = BaseChatModel;
 type LangChainAssistantMessage = BaseMessage;
@@ -45,7 +43,6 @@ export type LangChainModelFactory = (
 ) => LangChainModel;
 
 type JsonRecord = Record<string, unknown>;
-type LangChainContent = string | ContentBlock[];
 
 const GEMINI_API_VERSION_SEGMENT = /^v\d+(?:alpha|beta)?$/iu;
 
@@ -69,215 +66,6 @@ function jsonSnapshot(value: unknown): unknown {
     if (snapshot !== undefined) result[key] = snapshot;
   }
   return result;
-}
-
-function restoreContent(value: unknown): LangChainContent | undefined {
-  if (typeof value === "string") return value;
-  if (!Array.isArray(value)) return undefined;
-  const blocks: ContentBlock[] = [];
-  for (const part of value) {
-    if (typeof part === "string") {
-      blocks.push({ text: part, type: "text" });
-      continue;
-    }
-    if (!isRecord(part) || typeof part.type !== "string") return undefined;
-    blocks.push({ ...part, type: part.type });
-  }
-  return blocks;
-}
-
-function restoreRecord(value: unknown): JsonRecord | undefined {
-  return isRecord(value) ? value : undefined;
-}
-
-function geminiLegacyParts(value: unknown): {
-  content: ContentBlock[] | undefined;
-  signatures: JsonRecord;
-} {
-  if (!Array.isArray(value)) return { content: undefined, signatures: {} };
-  const signatures: JsonRecord = {};
-  const content: ContentBlock[] = [];
-  for (const part of value) {
-    if (!isRecord(part)) continue;
-    if (part.thought === true && typeof part.text === "string") {
-      content.push({
-        ...part,
-        ...(typeof part.thoughtSignature === "string"
-          ? { signature: part.thoughtSignature }
-          : {}),
-        thinking: part.text,
-        type: "thinking",
-      });
-      continue;
-    }
-    const functionCall = part.functionCall;
-    if (isRecord(functionCall)) {
-      const id = stringValue(functionCall.id);
-      const signature = stringValue(part.thoughtSignature);
-      if (id !== null && signature !== null) signatures[id] = signature;
-      content.push({ ...part, type: "functionCall" });
-      continue;
-    }
-    if (typeof part.type === "string") content.push({ ...part, type: part.type });
-  }
-  return { content, signatures };
-}
-
-type ProviderReplayFields = {
-  additionalKwargs?: JsonRecord;
-  content?: LangChainContent;
-  responseMetadata?: JsonRecord;
-};
-
-function aiSdkProviderOptions(
-  part: JsonRecord,
-  provider: "anthropic" | "google" | "openai",
-): JsonRecord | undefined {
-  const providerOptions = restoreRecord(part.providerOptions);
-  return providerOptions === undefined ? undefined : restoreRecord(providerOptions[provider]);
-}
-
-function aiSdkProviderReplayFields(
-  payload: JsonRecord,
-  apiFormat: ModelApiFormat,
-): ProviderReplayFields {
-  if (payload.version !== AI_SDK_PROVIDER_STATE_VERSION) return {};
-  const assistantMessage = restoreRecord(payload.assistantMessage);
-  if (assistantMessage === undefined || assistantMessage.role !== "assistant") {
-    const reasoningContent = stringValue(payload.openAiChatReasoningContent);
-    return apiFormat === "openai-chat-completions" && reasoningContent !== null
-      ? { additionalKwargs: { reasoning_content: reasoningContent } }
-      : {};
-  }
-
-  const assistantContent = assistantMessage.content;
-  const openAiChatReasoning = stringValue(payload.openAiChatReasoningContent);
-  if (typeof assistantContent === "string") {
-    return {
-      content: assistantContent,
-      ...(apiFormat === "openai-chat-completions" && openAiChatReasoning !== null
-        ? { additionalKwargs: { reasoning_content: openAiChatReasoning } }
-        : {}),
-    };
-  }
-  if (!Array.isArray(assistantContent)) return {};
-
-  const content: ContentBlock[] = [];
-  const geminiSignatures: JsonRecord = {};
-  const responsesReasoning: Array<{ options: JsonRecord | undefined; text: string }> = [];
-  for (const value of assistantContent) {
-    if (!isRecord(value)) continue;
-    const type = stringValue(value.type);
-    if (type === "text" && typeof value.text === "string") {
-      content.push({ text: value.text, type: "text" });
-      continue;
-    }
-    if (type === "reasoning" && typeof value.text === "string") {
-      if (apiFormat === "anthropic-messages") {
-        const options = aiSdkProviderOptions(value, "anthropic");
-        content.push({
-          ...(typeof options?.signature === "string" ? { signature: options.signature } : {}),
-          thinking: value.text,
-          type: "thinking",
-        });
-      } else if (apiFormat === "google-gemini") {
-        const options = aiSdkProviderOptions(value, "google");
-        content.push({
-          ...(typeof options?.thoughtSignature === "string"
-            ? { signature: options.thoughtSignature }
-            : {}),
-          thinking: value.text,
-          type: "thinking",
-        });
-      } else if (apiFormat === "openai-responses") {
-        const options = aiSdkProviderOptions(value, "openai");
-        responsesReasoning.push({ options, text: value.text });
-        content.push({
-          ...(typeof options?.itemId === "string" ? { id: options.itemId } : {}),
-          reasoning: value.text,
-          type: "reasoning",
-        });
-      }
-      continue;
-    }
-    if (type === "tool-call" && apiFormat === "google-gemini") {
-      const toolCallId = stringValue(value.toolCallId);
-      const signature = stringValue(aiSdkProviderOptions(value, "google")?.thoughtSignature);
-      if (toolCallId !== null && signature !== null) geminiSignatures[toolCallId] = signature;
-    }
-  }
-
-  const additionalKwargs: JsonRecord = {};
-  if (apiFormat === "openai-chat-completions" && openAiChatReasoning !== null) {
-    additionalKwargs.reasoning_content = openAiChatReasoning;
-  }
-  if (apiFormat === "google-gemini" && Object.keys(geminiSignatures).length > 0) {
-    additionalKwargs[GEMINI_FUNCTION_CALL_SIGNATURES_KEY] = geminiSignatures;
-  }
-  const firstReasoning = responsesReasoning[0];
-  if (apiFormat === "openai-responses" && firstReasoning !== undefined) {
-    additionalKwargs.reasoning = {
-      ...(typeof firstReasoning.options?.itemId === "string"
-        ? { id: firstReasoning.options.itemId }
-        : {}),
-      ...(typeof firstReasoning.options?.reasoningEncryptedContent === "string"
-        ? { encrypted_content: firstReasoning.options.reasoningEncryptedContent }
-        : {}),
-      summary: responsesReasoning.map(({ text }) => ({ text, type: "summary_text" })),
-      type: "reasoning",
-    };
-  }
-
-  return {
-    ...(Object.keys(additionalKwargs).length === 0 ? {} : { additionalKwargs }),
-    ...(content.length === 0 ? {} : { content }),
-  };
-}
-
-function providerReplayFields(
-  state: ModelProviderState | null,
-  apiFormat: ModelApiFormat,
-): ProviderReplayFields {
-  if (state === null || !isRecord(state.payload)) return {};
-  const payload = state.payload;
-  let content = restoreContent(payload.content);
-  let additionalKwargs = restoreRecord(payload.additionalKwargs);
-  let responseMetadata = restoreRecord(payload.responseMetadata);
-
-  const aiSdkReplay = aiSdkProviderReplayFields(payload, apiFormat);
-  content ??= aiSdkReplay.content;
-  additionalKwargs ??= aiSdkReplay.additionalKwargs;
-  responseMetadata ??= aiSdkReplay.responseMetadata;
-
-  if (apiFormat === "openai-responses" && content === undefined && Array.isArray(payload.outputItems)) {
-    responseMetadata = {
-      ...responseMetadata,
-      model_provider: "openai",
-      output: payload.outputItems,
-    };
-  }
-  if (apiFormat === "anthropic-messages" && content === undefined) {
-    content = restoreContent(payload.contentBlocks);
-    if (content !== undefined) {
-      responseMetadata = { ...responseMetadata, model_provider: "anthropic" };
-    }
-  }
-  if (apiFormat === "google-gemini" && content === undefined) {
-    const legacy = geminiLegacyParts(payload.parts);
-    content = legacy.content;
-    if (Object.keys(legacy.signatures).length > 0) {
-      additionalKwargs = {
-        ...additionalKwargs,
-        [GEMINI_FUNCTION_CALL_SIGNATURES_KEY]: legacy.signatures,
-      };
-    }
-  }
-
-  return {
-    ...(additionalKwargs === undefined ? {} : { additionalKwargs }),
-    ...(content === undefined ? {} : { content }),
-    ...(responseMetadata === undefined ? {} : { responseMetadata }),
-  };
 }
 
 function textFromContent(value: unknown): string {
@@ -319,103 +107,6 @@ function reasoningFromMessage(message: BaseMessage): string[] {
   const reasoning = stringValue(message.additional_kwargs.reasoning_content)
     ?? stringValue(message.additional_kwargs.reasoning);
   return reasoning === null || reasoning.length === 0 ? [] : [reasoning];
-}
-
-type HumanContent = string | Array<ContentBlock.Standard>;
-
-function attachmentContent(message: ModelMessage): HumanContent {
-  if (message.attachments.length === 0) return message.content;
-  const parts: Array<ContentBlock.Text | ContentBlock.Multimodal.Image> = [];
-  if (message.content.length > 0) parts.push({ text: message.content, type: "text" });
-  for (const attachment of message.attachments) {
-    if (attachment.kind === "text") {
-      parts.push({ text: attachment.content, type: "text" });
-      continue;
-    }
-    if (attachment.data === null) {
-      throw new Error(`Image attachment ${attachment.name} was not loaded.`);
-    }
-    parts.push({ text: modelImageAttachmentCaption(attachment), type: "text" });
-    parts.push({ data: attachment.data, mimeType: attachment.mimeType, type: "image" });
-  }
-  return parts;
-}
-
-function matchingProviderState(
-  message: ModelMessage,
-  input: CompleteTurnInput,
-): ModelProviderState | null {
-  const state = message.providerState;
-  return state?.apiFormat === input.configuration.apiFormat
-    && state.baseUrl === input.configuration.baseUrl
-    && state.modelId === input.configuration.modelId
-    ? state
-    : null;
-}
-
-function toLangChainMessage(
-  message: ModelMessage,
-  input: CompleteTurnInput,
-): BaseMessage {
-  if (message.role === "system") return new SystemMessage(message.content);
-  if (message.role === "user") {
-    const content = attachmentContent(message);
-    return typeof content === "string"
-      ? new HumanMessage(content)
-      : new HumanMessage({ contentBlocks: content });
-  }
-  if (message.role === "tool") {
-    const toolCallId = message.toolCallId?.trim();
-    if (toolCallId === undefined || toolCallId.length === 0) {
-      throw new Error("Tool result does not match a preceding model tool call.");
-    }
-    return new ToolMessage({
-      content: message.content,
-      tool_call_id: toolCallId,
-    });
-  }
-
-  const providerState = matchingProviderState(message, input);
-  const replay = providerReplayFields(providerState, input.configuration.apiFormat);
-  return new AIMessage({
-    content: replay.content ?? message.content,
-    ...(replay.additionalKwargs === undefined
-      ? {}
-      : { additional_kwargs: replay.additionalKwargs }),
-    ...(replay.responseMetadata === undefined
-      ? {}
-      : { response_metadata: replay.responseMetadata }),
-    ...(message.toolCalls.length === 0
-      ? {}
-      : {
-          tool_calls: message.toolCalls.map((call) => ({
-            args: parseToolArguments(call.arguments),
-            id: call.id,
-            name: call.name,
-          })),
-        }),
-  });
-}
-
-function toLangChainMessages(
-  messages: readonly ModelMessage[],
-  input: CompleteTurnInput,
-): BaseMessage[] {
-  return messages.map((message) => toLangChainMessage(message, input));
-}
-
-function openAiChatReasoningByAssistant(input: CompleteTurnInput): Array<string | null> {
-  return input.messages.flatMap((message) => {
-    if (message.role !== "assistant") return [];
-    const replay = providerReplayFields(
-      matchingProviderState(message, input),
-      "openai-chat-completions",
-    );
-    const reasoning = replay.additionalKwargs === undefined
-      ? null
-      : stringValue(replay.additionalKwargs.reasoning_content);
-    return [reasoning === null || reasoning.length === 0 ? null : reasoning];
-  });
 }
 
 function openAiChatCompatibilityFetch(
@@ -570,19 +261,16 @@ function reasoningOptions(input: CompleteTurnInput): Record<string, unknown> {
       : {};
   }
   if (input.configuration.apiFormat === "anthropic-messages") {
+    if (reasoning.kind === "effort" || reasoning.kind === "custom_effort") {
+      return { outputConfig: { effort: reasoning.value },
+        ...(/(?:^|\/)claude-/iu.test(input.configuration.modelId) ? { thinking: { type: "adaptive" } } : {}) };
+    }
     return reasoning.kind === "token_budget"
       ? { thinking: { budget_tokens: reasoning.value, type: "enabled" } }
       : {};
   }
-  if (isGemini3ReasoningModel(input.configuration.modelId)) {
-    return reasoning.kind === "effort"
-      ? {
-          thinkingConfig: {
-            includeThoughts: true,
-            thinkingLevel: reasoning.value.toUpperCase(),
-          },
-        }
-      : {};
+  if (reasoning.kind === "effort") {
+    return { thinkingConfig: { includeThoughts: true, thinkingLevel: reasoning.value.toUpperCase() } };
   }
   return reasoning.kind === "token_budget"
     ? { thinkingConfig: { includeThoughts: true, thinkingBudget: reasoning.value } }
@@ -621,8 +309,27 @@ function anthropicSdkBaseUrl(baseUrl: string): string {
   return parsed.toString().replace(/\/$/u, "");
 }
 
+function authenticatedModelRequest(configuration: ModelConfiguration, request: typeof fetch): typeof fetch {
+  const authentication = configuration.authentication;
+  if (authentication === undefined) return request;
+  switch (authentication.type) {
+    case "api-key":
+      return request;
+    case "chatgpt-plan":
+      if (configuration.apiFormat !== "openai-responses" || configuration.baseUrl !== "https://api.openai.com/v1") {
+        throw new Error("ChatGPT 套餐只能用于官方 Responses API。");
+      }
+      return createChatGptPlanFetch(authentication.getAccessToken, request);
+    default: {
+      const unsupported: never = authentication;
+      throw new Error("不支持的模型认证方式。", { cause: typeof unsupported });
+    }
+  }
+}
+
 function defaultFactory(input: CompleteTurnInput, request: typeof fetch): LangChainModel {
   const { apiFormat, apiKey, baseUrl, modelId } = input.configuration;
+  const authenticatedRequest = authenticatedModelRequest(input.configuration, request);
   const common = {
     maxRetries: 0,
     streaming: true,
@@ -632,7 +339,8 @@ function defaultFactory(input: CompleteTurnInput, request: typeof fetch): LangCh
     return new ChatOpenAI({
       ...common,
       apiKey,
-      configuration: { baseURL: baseUrl, fetch: openAiChatCompatibilityFetch(input, request) },
+      configuration: { baseURL: baseUrl, fetch: openAiChatCompatibilityFetch(input, authenticatedRequest) },
+      ...(input.cacheKey === undefined ? {} : { promptCacheKey: input.cacheKey }),
       model: modelId,
       maxTokens: input.maxOutputTokens,
       useResponsesApi: false,
@@ -642,7 +350,8 @@ function defaultFactory(input: CompleteTurnInput, request: typeof fetch): LangCh
     return new ChatOpenAI({
       ...common,
       apiKey,
-      configuration: { baseURL: baseUrl, fetch: openAiResponsesCompatibilityFetch(request) },
+      configuration: { baseURL: baseUrl, fetch: openAiResponsesCompatibilityFetch(authenticatedRequest) },
+      ...(input.cacheKey === undefined ? {} : { promptCacheKey: input.cacheKey }),
       model: modelId,
       maxTokens: input.maxOutputTokens,
       useResponsesApi: true,
@@ -653,7 +362,7 @@ function defaultFactory(input: CompleteTurnInput, request: typeof fetch): LangCh
       ...common,
       anthropicApiKey: apiKey,
       anthropicApiUrl: anthropicSdkBaseUrl(baseUrl),
-      clientOptions: { fetch: request },
+      clientOptions: { fetch: authenticatedRequest },
       maxTokens: input.maxOutputTokens,
       model: modelId,
     });
@@ -691,17 +400,65 @@ function readFinishReason(message: LangChainAssistantMessage): string | null {
     ?? stringValue(metadata.status);
 }
 
+function nonNegativeTokenCount(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0
+    ? Math.trunc(value)
+    : undefined;
+}
+
+function providerTokenUsage(
+  message: LangChainAssistantMessage,
+  apiFormat: ModelApiFormat,
+): ModelProviderTokenUsage | undefined {
+  const normalized = isRecord(message) ? message.usage_metadata : undefined;
+  const metadata = isRecord(normalized) ? normalized : null;
+  // Compatible Chat streams may omit delta.role. LangChain then aggregates a
+  // generic ChatMessageChunk and drops normalized usage, but retains raw usage.
+  const response = message.response_metadata;
+  const raw = apiFormat === "openai-chat-completions" && isRecord(response.usage)
+    ? response.usage : null;
+  const inputTokens = nonNegativeTokenCount(metadata?.input_tokens)
+    ?? nonNegativeTokenCount(raw?.prompt_tokens);
+  const outputTokens = nonNegativeTokenCount(metadata?.output_tokens)
+    ?? nonNegativeTokenCount(raw?.completion_tokens);
+  if (inputTokens === undefined || outputTokens === undefined) return undefined;
+  const totalTokens = nonNegativeTokenCount(metadata?.total_tokens)
+    ?? nonNegativeTokenCount(raw?.total_tokens)
+    ?? inputTokens + outputTokens;
+  const inputDetails = isRecord(metadata?.input_token_details)
+    ? metadata.input_token_details
+    : null;
+  const rawInputDetails = isRecord(raw?.prompt_tokens_details) ? raw.prompt_tokens_details : null;
+  const cachedInputTokens = nonNegativeTokenCount(inputDetails?.cache_read)
+    ?? nonNegativeTokenCount(rawInputDetails?.cached_tokens);
+  const cacheCreationInputTokens = nonNegativeTokenCount(inputDetails?.cache_creation);
+  return {
+    ...(cacheCreationInputTokens === undefined ? {} : { cacheCreationInputTokens }),
+    ...(cachedInputTokens === undefined ? {} : { cachedInputTokens }),
+    inputTokens,
+    outputTokens,
+    totalTokens,
+  };
+}
+
 function providerState(
   input: CompleteTurnInput,
   message: LangChainAssistantMessage,
+  fingerprint?: RequestFingerprint,
 ): ModelProviderState | undefined {
   const additionalKwargs = jsonSnapshot(message.additional_kwargs);
   const content = jsonSnapshot(message.content);
   const responseMetadata = jsonSnapshot(message.response_metadata);
-  if (content === undefined && additionalKwargs === undefined && responseMetadata === undefined) {
+  const usage = providerTokenUsage(message, input.configuration.apiFormat);
+  if (
+    content === undefined
+    && additionalKwargs === undefined
+    && responseMetadata === undefined
+    && usage === undefined
+  ) {
     return undefined;
   }
-  return {
+  return compactProviderReplayState({
     apiFormat: input.configuration.apiFormat,
     baseUrl: input.configuration.baseUrl,
     modelId: input.configuration.modelId,
@@ -710,8 +467,10 @@ function providerState(
       content,
       responseMetadata,
       version: LANGCHAIN_PROVIDER_STATE_VERSION,
+      ...(fingerprint === undefined ? {} : { requestFingerprint: fingerprint }),
     },
-  };
+    ...(usage === undefined ? {} : { usage }),
+  });
 }
 
 function mergeMessageChunks(
@@ -726,7 +485,15 @@ function mergeMessageChunks(
   return next;
 }
 
-function assistantToolCalls(message: BaseMessage): unknown[] {
+function assistantToolCalls(message: BaseMessage, apiFormat: ModelApiFormat): unknown[] {
+  const metadata = message.response_metadata;
+  if (apiFormat === "openai-responses" && isRecord(metadata)
+    && metadata.status === "completed" && Array.isArray(metadata.output)) {
+    // The SDK's streamed calls can retain partial/empty args even though the
+    // completed response contains the full arguments. Use that final snapshot.
+    return metadata.output.flatMap((item: unknown) => isRecord(item) && item.type === "function_call"
+      ? [{ id: item.call_id, name: item.name, args: item.arguments }] : []);
+  }
   const calls = isRecord(message) ? message.tool_calls : undefined;
   return Array.isArray(calls) ? calls : [];
 }
@@ -767,6 +534,70 @@ function providerErrorMessage(error: unknown, status: number): string {
   return summarizeModelErrorText(message);
 }
 
+function providerErrorCode(error: unknown): string | null {
+  if (!isRecord(error)) return null;
+  const nested = error.error;
+  const code = error.code ?? (isRecord(nested) ? nested.code : undefined);
+  return typeof code === "string" ? code : null;
+}
+
+function rejectsImageInput(error: unknown): boolean {
+  const status = providerErrorStatus(error);
+  if (status === null || status < 400 || status >= 500) return false;
+  const message = error instanceof Error ? error.message : String(error);
+  const mentionsImage = /(?:image|vision|图片|图像)/iu.test(message);
+  const rejectsCapability = /(?:does not support|not supported|unsupported|不支持)/iu.test(message);
+  return mentionsImage && rejectsCapability;
+}
+
+function withoutHistoricalImageData(messages: ModelMessage[]): ModelMessage[] | null {
+  let latestUserIndex = -1;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index]?.role === "user") {
+      latestUserIndex = index;
+      break;
+    }
+  }
+  if (latestUserIndex < 0) return null;
+  if (messages[latestUserIndex]?.attachments.some(
+    (attachment) => attachment.kind === "image" && attachment.source !== "browser" && attachment.source !== "computer",
+  )) {
+    return null;
+  }
+
+  let changed = false;
+  const result = messages.map((message, messageIndex) => {
+    if (!message.attachments.some((attachment) => (
+      attachment.kind === "image"
+      && (messageIndex < latestUserIndex || attachment.source === "browser" || attachment.source === "computer")
+    ))) return message;
+    changed = true;
+    const attachments = message.attachments.map((attachment) => {
+      if (
+        attachment.kind !== "image"
+        || (messageIndex >= latestUserIndex && attachment.source !== "browser" && attachment.source !== "computer")
+      ) return attachment;
+      return {
+        content: `${attachment.source === "browser"
+          ? "[当前模型不支持视觉输入，浏览器截图字节已省略]"
+          : attachment.source === "computer" ? "[当前模型不支持视觉输入，窗口截图字节已省略；请使用 observe 读取控件]"
+          : "[历史图片未发送给当前模型]"}\n${modelImageAttachmentCaption(attachment)}`,
+        contextTokens: attachment.contextTokens,
+        id: attachment.id,
+        kind: "text" as const,
+        mimeType: attachment.mimeType,
+        name: attachment.name,
+        projectPath: attachment.projectPath,
+        readState: attachment.readState,
+        source: attachment.source,
+        truncated: attachment.truncated,
+      };
+    });
+    return { ...message, attachments };
+  });
+  return changed ? result : null;
+}
+
 export class LangChainModelAdapter implements ModelProviderAdapter {
   public constructor(
     private readonly apiFormat: ModelApiFormat,
@@ -781,14 +612,45 @@ export class LangChainModelAdapter implements ModelProviderAdapter {
       );
     }
 
-    const model = this.factory(input, this.request);
+    let receivedProviderOutput = false;
+    try {
+      return await this.completeTurnOnce(input, () => {
+        receivedProviderOutput = true;
+      });
+    } catch (error) {
+      const fallbackMessages = receivedProviderOutput || !rejectsImageInput(error)
+        ? null
+        : withoutHistoricalImageData(input.messages);
+      if (fallbackMessages === null) throw error;
+      return this.completeTurnOnce({ ...input, messages: fallbackMessages });
+    }
+  }
+
+  private async completeTurnOnce(
+    input: CompleteTurnInput,
+    onProviderOutput: () => void = () => undefined,
+  ): Promise<ModelTurnResult> {
+    let fingerprint: RequestFingerprint | undefined;
+    let requestStartedAt: number | undefined;
+    let firstTokenLatencyMs: number | undefined;
+    let firstTokenReceivedAt: number | undefined;
+    const model = this.factory(input, (url, options) => {
+      fingerprint = requestFingerprint(options?.body);
+      requestStartedAt = performance.now();
+      return this.request(url, options);
+    });
     const boundModel = input.tools.length === 0 || model.bindTools === undefined
       ? model
       : bindModelTools(model, input);
     const messages = toLangChainMessages(input.messages, input);
     let content = "";
     let latest: LangChainAssistantMessage | null = null;
+    let reasoningContent = "";
     let reasoningStarted = false;
+    const reasoningKind = this.apiFormat === "openai-chat-completions"
+      && !isGptReasoningSummaryModel(input.configuration.modelId)
+      ? "content"
+      : "summary";
     try {
       const stream = await boundModel.stream(messages, {
         maxRetries: 0,
@@ -796,17 +658,30 @@ export class LangChainModelAdapter implements ModelProviderAdapter {
       });
       for await (const chunk of stream) {
         if (input.signal.aborted) throw input.signal.reason;
+        onProviderOutput();
         const text = textFromContent(chunk.content);
+        const reasoningDeltas = reasoningFromMessage(chunk);
+        const hasToolOutput = isRecord(chunk) && Array.isArray(chunk.tool_call_chunks)
+          && chunk.tool_call_chunks.some((call: unknown) => isRecord(call)
+            && ((typeof call.name === "string" && call.name.length > 0)
+              || (typeof call.args === "string" && call.args.length > 0)));
+        if (firstTokenReceivedAt === undefined
+          && (text.length > 0 || reasoningDeltas.some((delta) => delta.length > 0) || hasToolOutput)) {
+          firstTokenReceivedAt = performance.now();
+          if (requestStartedAt !== undefined) {
+            firstTokenLatencyMs = Math.max(0, Math.round(firstTokenReceivedAt - requestStartedAt));
+            input.onFirstToken?.(firstTokenLatencyMs);
+          }
+        }
         if (text.length > 0) {
           content += text;
           input.onTextDelta(text);
         }
-        for (const reasoning of reasoningFromMessage(chunk)) {
+        for (const reasoning of reasoningDeltas) {
+          if (reasoningKind === "content") reasoningContent += reasoning;
           input.onReasoningDelta?.({
             delta: reasoning,
-            kind: this.apiFormat === "openai-responses" || this.apiFormat === "anthropic-messages"
-              ? "summary"
-              : "content",
+            kind: reasoningKind,
             reset: !reasoningStarted,
           });
           reasoningStarted = true;
@@ -818,23 +693,37 @@ export class LangChainModelAdapter implements ModelProviderAdapter {
       if (latest === null) {
         throw new ModelResponseError("LangChain model returned no response chunks.");
       }
-      const toolCalls = assistantToolCalls(latest).map(normalizeToolCall);
-      const savedProviderState = providerState(input, latest);
+      const toolCalls = assistantToolCalls(latest, this.apiFormat).map(normalizeToolCall);
+      const savedProviderState = providerState(input, latest, fingerprint);
+      if (savedProviderState !== undefined) {
+        if (firstTokenLatencyMs !== undefined) savedProviderState.firstTokenLatencyMs = firstTokenLatencyMs;
+        if (firstTokenReceivedAt !== undefined) {
+          savedProviderState.generationDurationMs = Math.max(0, Math.round(performance.now() - firstTokenReceivedAt));
+        }
+      }
       return {
         content,
         finishReason: readFinishReason(latest),
         ...(savedProviderState === undefined
           ? {}
           : { providerState: savedProviderState }),
+        ...(reasoningContent.length === 0 ? {} : { reasoningContent }),
         toolCalls,
       };
     } catch (error) {
       if (input.signal.aborted || isAbortError(error)) throw error;
+      if (error instanceof ModelRequestError && error.retryable === false) throw error;
       const status = providerErrorStatus(error);
       if (status !== null) {
+        const usageHint = status === 429 && input.configuration.authentication?.type === "chatgpt-plan"
+          ? " 请求可能受到频率或套餐限制，请通过输入框旁的“管理用量”查看。"
+          : "";
+        const usageLimited = input.configuration.authentication?.type === "chatgpt-plan"
+          && providerErrorCode(error) === "subscription_sharing_usage_limit_exceeded";
         throw new ModelRequestError(
           status,
-          `Model request failed (${status}): ${providerErrorMessage(error, status)}`,
+          `Model request failed (${status}): ${providerErrorMessage(error, status)}${usageHint}`,
+          usageLimited ? false : undefined,
         );
       }
       throw error;

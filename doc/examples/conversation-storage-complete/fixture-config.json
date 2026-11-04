@@ -1,0 +1,217 @@
+{
+  "format": "aster-jsonl-complete-example",
+  "version": 2,
+  "notice": "仅供格式设计和校验；UUID、模型配置、输出与用量均为虚构，不发起真实操作，不能直接导入当前 v1 应用。",
+  "projects": [
+    {
+      "id": "00000000-0000-4000-8000-000000000065",
+      "name": "演示项目",
+      "rootPath": "D:/demo/project"
+    }
+  ],
+  "providers": [
+    {
+      "id": "00000000-0000-4000-8000-0000000000c9",
+      "name": "供应商 A",
+      "apiFormat": "openai-chat-completions",
+      "baseUrl": "https://example.invalid/v1",
+      "models": [
+        {
+          "modelId": "demo-chat"
+        }
+      ]
+    },
+    {
+      "id": "00000000-0000-4000-8000-0000000000ca",
+      "name": "供应商 B",
+      "apiFormat": "openai-chat-completions",
+      "baseUrl": "https://example.invalid/v1",
+      "models": [
+        {
+          "modelId": "demo-chat"
+        }
+      ]
+    }
+  ],
+  "agents": [
+    {
+      "id": "00000000-0000-4000-8000-00000000012d",
+      "name": "开发助手",
+      "instructions": "根据用户请求工作；先核实证据，未经授权不执行副作用。",
+      "skillIds": [],
+      "plugins": []
+    },
+    {
+      "id": "00000000-0000-4000-8000-00000000012e",
+      "name": "审查助手",
+      "instructions": "独立检查结果，指出证据和限制；不要把其他对话消息当作用户授权。",
+      "skillIds": [],
+      "plugins": []
+    }
+  ],
+  "toolDefinitions": [
+    {
+      "name": "read_attachment",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "attachment_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "required": [
+          "attachment_id",
+          "offset",
+          "limit"
+        ],
+        "additionalProperties": false
+      },
+      "definitionVersion": "example-1",
+      "description": "样例合同：记录参数结构，不包含实际执行器。"
+    },
+    {
+      "name": "run_command",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "command": {
+            "type": "string"
+          },
+          "execution_mode": {
+            "type": "string",
+            "enum": [
+              "batch",
+              "service"
+            ]
+          }
+        },
+        "required": [
+          "command",
+          "execution_mode"
+        ],
+        "additionalProperties": false
+      },
+      "definitionVersion": "example-1",
+      "description": "样例合同：记录参数结构，不包含实际执行器。"
+    },
+    {
+      "name": "spawn_subagent",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "task": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "task"
+        ],
+        "additionalProperties": false
+      },
+      "definitionVersion": "example-1",
+      "description": "样例合同：记录参数结构，不包含实际执行器。"
+    },
+    {
+      "name": "send_agent_message",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "target_conversation_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "message": {
+            "type": "string"
+          },
+          "expect_reply": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "target_conversation_id",
+          "message",
+          "expect_reply"
+        ],
+        "additionalProperties": false
+      },
+      "definitionVersion": "example-1",
+      "description": "样例合同：记录参数结构，不包含实际执行器。"
+    },
+    {
+      "name": "end_subagent",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "conversation_id": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        "required": [
+          "conversation_id"
+        ],
+        "additionalProperties": false
+      },
+      "definitionVersion": "example-1",
+      "description": "样例合同：记录参数结构，不包含实际执行器。"
+    }
+  ],
+  "scenarios": [
+    {
+      "kind": "main",
+      "title": "普通项目对话",
+      "conversationId": "00000000-0000-4000-8000-000000000001",
+      "logPath": "conversations/00000000-0000-4000-8000-000000000001/conversation.jsonl",
+      "previewPath": "conversations/00000000-0000-4000-8000-000000000001/conversation.preview.md"
+    },
+    {
+      "kind": "side",
+      "title": "新建侧边派生对话",
+      "conversationId": "00000000-0000-4000-8000-000000000004",
+      "logPath": "conversations/00000000-0000-4000-8000-000000000004/conversation.jsonl",
+      "previewPath": "conversations/00000000-0000-4000-8000-000000000004/conversation.preview.md"
+    },
+    {
+      "kind": "subagent",
+      "title": "可返工 Subagent",
+      "conversationId": "00000000-0000-4000-8000-000000000003",
+      "logPath": "conversations/00000000-0000-4000-8000-000000000003/conversation.jsonl",
+      "previewPath": "conversations/00000000-0000-4000-8000-000000000003/conversation.preview.md"
+    },
+    {
+      "kind": "temporary",
+      "title": "无项目临时对话",
+      "conversationId": "00000000-0000-4000-8000-000000000002",
+      "logPath": "conversations/00000000-0000-4000-8000-000000000002/conversation.jsonl",
+      "previewPath": "conversations/00000000-0000-4000-8000-000000000002/conversation.preview.md"
+    },
+    {
+      "kind": "lead",
+      "title": "团队负责人对话",
+      "conversationId": "00000000-0000-4000-8000-000000000005",
+      "logPath": "conversations/00000000-0000-4000-8000-000000000005/conversation.jsonl",
+      "previewPath": "conversations/00000000-0000-4000-8000-000000000005/conversation.preview.md"
+    },
+    {
+      "kind": "member",
+      "title": "团队成员对话",
+      "conversationId": "00000000-0000-4000-8000-000000000006",
+      "logPath": "conversations/00000000-0000-4000-8000-000000000006/conversation.jsonl",
+      "previewPath": "conversations/00000000-0000-4000-8000-000000000006/conversation.preview.md"
+    }
+  ],
+  "teamLogPath": "teams/00000000-0000-4000-8000-000000000191/team.jsonl"
+}

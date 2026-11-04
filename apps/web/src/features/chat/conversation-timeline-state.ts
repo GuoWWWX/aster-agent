@@ -4,6 +4,24 @@ import type {
   ConversationTimelineItem,
 } from "@agent/protocol";
 
+export function shouldApplyTimelineLoad(
+  requestId: number,
+  latestRequestId: number,
+  requestRevision: number,
+  latestRevision: number,
+): boolean {
+  return requestId === latestRequestId && requestRevision === latestRevision;
+}
+
+export function shouldResetTimelinePaging(
+  current: readonly ConversationTimelineItem[],
+  latestPage: readonly ConversationTimelineItem[],
+): boolean {
+  if (current.length === 0) return false;
+  const currentIds = new Set(current.map((item) => item.id));
+  return !latestPage.some((item) => currentIds.has(item.id));
+}
+
 export function completeStreamingAssistantMessages(
   timeline: ConversationTimelineItem[],
   exceptMessageId?: string,
@@ -55,7 +73,52 @@ export function appendAssistantDelta(
 
   return finalizedTimeline.map((item) =>
     item.id === existing.id && item.kind === "message"
-      ? { ...item, content: `${item.content}${event.delta}`, status: "streaming" }
+      ? { ...item, content: event.reset ? event.delta : `${item.content}${event.delta}`, status: "streaming" }
+      : item,
+  );
+}
+
+export function appendAssistantReasoningDelta(
+  timeline: ConversationTimelineItem[],
+  event: Extract<ConversationRunEvent, { type: "assistant.reasoning_delta" }>,
+): ConversationTimelineItem[] {
+  if (event.kind !== "content") return timeline;
+
+  const finalizedTimeline = completeStreamingAssistantMessages(timeline, event.messageId);
+  const existing = finalizedTimeline.find(
+    (item): item is ConversationMessageItem =>
+      item.kind === "message" && item.id === event.messageId && item.role === "assistant",
+  );
+  if (existing === undefined) {
+    return [
+      ...finalizedTimeline,
+      {
+        attachments: [],
+        completedAt: null,
+        content: "",
+        conversationId: event.conversationId,
+        createdAt: new Date().toISOString(),
+        durationMs: null,
+        id: event.messageId,
+        kind: "message",
+        modelId: event.modelId,
+        reasoningContent: event.delta,
+        role: "assistant",
+        runId: event.runId,
+        status: "streaming",
+      },
+    ];
+  }
+
+  return finalizedTimeline.map((item) =>
+    item.id === existing.id && item.kind === "message"
+      ? {
+          ...item,
+          reasoningContent: event.reset
+            ? event.delta
+            : `${item.reasoningContent ?? ""}${event.delta}`,
+          status: "streaming",
+        }
       : item,
   );
 }

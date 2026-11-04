@@ -1,7 +1,7 @@
 # md-king 迁移源清单
 
-> 文档状态：首批 UI 外壳基线  
-> 记录时间：2026-08-15  
+> 文档状态：UI 外壳与 Markdown 编辑器迁移记录
+> 最近同步：2026-10-20（历史批次见各节）
 > 源目录：`D:\Code\Project\AI\md-king`  
 > 目标目录：`D:\Code\Project\202608\Agent`
 
@@ -53,6 +53,14 @@ HEAD：eaa5d562dc849b5a2887dc068af8d0df5f947aea
 - `SKILL.md` 使用 YAML frontmatter 的 `name`、`description` 和 Markdown 指令正文；页面不再暴露整组 Skill JSON 编辑。
 - `apps/web/src/components/editor/document-code-editor.tsx` 复用本清单第 5 节记录的 MD King CodeMirror 最小内核，提供 Markdown 编辑、主题热切换和快捷保存。
 - `apps/web/src/components/markdown/agent-markdown.tsx` 提供只读预览；不迁入 MD King 的 Mermaid、图片、表格和 Tauri 闭包。
+
+### 6.1 对话 Markdown 列表标记
+
+| 源文件 | SHA-256 | 目标路径 | 差异理由 |
+| --- | --- | --- | --- |
+| `src/lib/style-manager-data.ts` | `B59AC27D58DFF59E835866A411481DC2167B9D4147F11A7B63BF21C73C730C94` | `apps/web/src/components/markdown/agent-markdown.css` | 参考 md-king 默认的一级实心圆点、二级空心圆、三级方块层级，在只读对话渲染中用原生 `list-style-type` 恢复被 Tailwind reset 清除的列表符号；圆点与有序编号继承正文颜色，任务列表继续以复选框作为唯一标记，不迁入模板样式配置。 |
+
+验证：`agent-markdown.test.ts` 加载真实 CSS，断言三级无序列表与有序列表的计算样式。
 
 ## 7. Markdown 实时预览编辑器迁移
 
@@ -131,3 +139,141 @@ HEAD：eaa5d562dc849b5a2887dc068af8d0df5f947aea
 新增引擎回归：`apps/web/src/components/editor/cm/live-preview.test.ts` 使用逐文件 `jsdom` 环境和真实 `EditorView`，断言标题、Callout、表格、Mermaid 与 frontmatter 块级/行级装饰。
 
 验证：Web typecheck/lint/test（30/139）、Desktop typecheck/lint/test（40/308）、Protocol test（5/38）和生产 build 通过；Vite 产物包含独立 Mermaid chunk。Electron/浏览器手工视觉验收尚未完成：Browser 插件初始化报“系统找不到指定的路径”。
+
+### 7.5 侧边 Markdown 编辑器同步到当前 md-king（2026-09-02）
+
+> 源仓库基线：`main` / `d64bcde`。本次只同步侧边 Markdown 查看与编辑中的可见渲染及直接编辑交互；md-king 的文档标签、Word 导出与 Tauri 宿主状态不属于 Aster 侧边栏视觉合同。
+
+| 源文件 | SHA-256 | 目标路径 | 差异理由 |
+| --- | --- | --- | --- |
+| `src/index.css` | `6B4035B43C3DD4F5DEB304454EC534E5343633392CC54343A8FAD4C2906EBEBA` | `apps/web/src/components/editor/markdown-editor.css` | 继续由提取脚本机械生成；新增 Mermaid 图题的明暗主题规则。脚本目标改为当前 worktree 根目录，避免同步时误写共享 checkout；产物末尾仅追加列表圆点与编号继承正文颜色的 Aster 约定。 |
+| `src/components/editor/cm/live-preview.ts` | `678CB5DF1D2B5BA8D539DB363B52B3DB291AD50E0563BF54D3F7B90005CE8A33` | `apps/web/src/components/editor/cm/live-preview.ts` | 同步 Mermaid 围栏/相邻加粗题注、标题 `{-}`/`{.unnumbered}` 隐藏和题注邻接表格边界；仅保留 ESM 相对路径与严格索引检查差异。 |
+| `src/components/editor/cm/widgets.ts` | `7099AE313C85E736F42EAAF3B92D5770A91E915992FEFF46B141BC910F805D25` | `apps/web/src/components/editor/cm/widgets.ts` | 同步 Mermaid 图题和表格阅读/编辑态共用的单元格选择、复制交互；图片解析继续走 Aster resolver，媒体查看继续走 Aster Dialog。 |
+| `src/components/editor/cm/markdown-table.ts` | `F252A415E6F87D693BCB443AAEC6347BFC97B57E4B11238391F6D690A170B47B` | `apps/web/src/components/editor/cm/markdown-table.ts` | 同步阅读/编辑共用的表格单元格扩选纯函数；保留本项目更严格的数组越界保护。 |
+| `src/lib/mermaid.ts` | `B64ADC869B2525DCB1CEF1888536672FE3C0DDD5DFE44BB590160A28C3A066AE` | `apps/web/src/lib/mermaid.ts` | 同步微软雅黑字体、HTML label、换行宽度、节点与层级间距；保留相对导入和严格索引检查。 |
+| `src/lib/mermaid-fence.ts` | `8B30C12FB2E38D9CD809DF329BA89CE2225AFC6DEAB2C972CE3722C04BF1AB84` | `apps/web/src/lib/mermaid-fence.ts` | 只提取实时预览使用的 Mermaid caption 与整行加粗题注解析；不迁入仅服务 Word 转换的图题样式块及前后文本重写函数。 |
+
+样式策略：侧边栏外壳仍使用 Tailwind；`markdown-editor.css` 仅承载 CodeMirror 动态 `mk-cm-*` 类、组合选择器和 md-king 机械迁移规则，属于 CSS 触发条件 1、2、5、6，不新增手写平行样式系统。
+
+## 8. Markdown 更新同步（2026-10-14）
+
+源快照：`D:\Code\Project\AI\md-king`，`726cf666d79a6f8a36ea6c593646ab247706cf7a`（v1.1.13），工作区干净。对比 §7.5 的 `d64bcde` 基线；源仓库只读。本批先合并已有主题/定时任务 PR #38，再从 `develop@ccdfbcb` 创建独立分支 `codex/markdown-upstream-sync`。
+
+### 8.1 范围与行为
+
+- 同步编辑器的公式容错、引用内公式和代码块、光标绘制、受控 HTML 排版、紧贴中文的斜体、短分隔线与公式竖线表格解析、列宽权重、题注和带文字分隔线。
+- 同步 Mermaid 的方向容错、节点/子图排版、类图与时序图对比度、SVG 尺寸解析、主题缓存和原位重绘。对话展示也使用此渲染服务，支持查看源码、复制和现有媒体放大查看器。
+- 对话中的数学、表格、HTML、强调、标题属性和题注复用共享解析器；Aster 自有的代码复制、终端颜色、文件类型图标和媒体查看入口继续由本项目持有。
+- 未迁入 MDKing 的 Tauri、Word/DOCX 导出、窗口外壳、Outline 和调试接口；Aster 的 IPC、文件解析、草稿与保存契约保留。
+
+### 8.2 源文件身份
+
+以下哈希均为源文件 SHA256。`cm/*` 目标位于 `apps/web/src/components/editor/cm/`；`lib/*` 目标位于 `apps/web/src/lib/`。
+
+| 源文件 | SHA256 | 目标与差异 |
+| --- | --- | --- |
+| `src/components/editor/cm/live-preview.ts` | `45F7FD6A665EA993A1C43C3B03DEC5CC2F9172FB5DE628536DAF4C6B090189A3` | `cm/live-preview.ts`；相对 ESM 导入、严格数组边界与可选属性检查。 |
+| `src/components/editor/cm/widgets.ts` | `94B7DBD8BF986EBD1D66F200FE01C9825F852DEBE5865267485065909C2DEEA0` | `cm/widgets.ts`；Aster 图片 resolver、`data-theme`、Widget override、短分隔线显示宽度与显式 KaTeX `trust: false`。 |
+| `src/components/editor/cm/markdown-table.ts` | `3F7FA1CAB693D0AE74CE5024B2E6FAD83120D75715593A0B1272F149FE2AD68E` | `cm/markdown-table.ts`；保留分隔线权重、序列化及行列操作；严格边界检查。 |
+| `src/components/editor/cm/source-indent.ts` | `4134B09B124AF5F04BBDFBD76684CA04DC05D48549E352070ED171EBBFB62FB3` | `cm/source-indent.ts`；引用内列表前缀；数组访问保护。 |
+| `src/components/editor/cm/markdown-language.ts` | `4C2DE817C86DA54CB8CA13CD0C60297ECAEA4FD540EF15D2282295766B9ADAF8` | `cm/markdown-language.ts`；恢复 HTMLTag 语法节点，仍禁用 HTMLBlock/IndentedCode。 |
+| `src/components/editor/cm/table-inline-renderer.ts` | `78D15BC1E2A4C0119E64618FD18D787587E7F3197DA0EF8E6B2B50A07E4E2217` | `cm/table-inline-renderer.ts`；类型适配，结构化 DOM，HTML 属性白名单，显式 KaTeX `trust: false`。 |
+| `src/components/editor/cm/cursor.ts` | `248868A6D1C2422F764F1D7DDFE33218CBEC8E7114C88AE95FBBC16B6A62A249` | `cm/cursor.ts`；单独绘制光标，保留原生选区。 |
+| `src/components/editor/cm/theme.ts` | `8F228BBC8C643B5DD58851552E4C96EFC225CBB1C1D70E51C6AE30A9C6F0E09A` | `apps/web/src/components/editor/markdown-editor-theme.ts`；同步光标、正文色与横向溢出约束，保留 Aster 选区令牌。 |
+| `src/components/editor/live-markdown-editor.tsx` | `6884110DCD49C95A117371AB24613D630F93F7918AD6F2575C1DDDFAF638B34A` | 同路径加 `apps/web/`；仅取光标、块公式、原位主题刷新与换文件滚动重置，保留 Aster 保存正文参数、contentRevision、图片导入等宿主契约。 |
+| `src/lib/mermaid.ts` | `2BE73A246220BE9705AF1A121BC03BF2D0A3E21C9641BA8125F25688BCD3D503` | `lib/mermaid.ts`；相对导入、严格类型适配，串行化全局配置与异步绘制，保持 `securityLevel: strict`。 |
+| `src/lib/markdown-math.ts` | `249CE961BCCEA74908E64D56600723B993AAC2B94B27313C10E3BA5723F1E8E6` | `lib/markdown-math.ts`；共享公式范围和容错，严格边界检查。 |
+| `src/lib/markdown-inline-html.ts` | `7D9C28C71F1EE7812F8EB63C82A2D9D0CFCF04A21038275528FFAF14284FE066` | `lib/markdown-inline-html.ts`；白名单语法解析；对话另加安全输出层。 |
+| `src/lib/relaxed-emphasis.ts` | `4ED7C8A8ECE1BF2C11B395290375CAD5F777D793E79C52820782C8C7D6F8C0DA` | `lib/relaxed-emphasis.ts`；与已有宽松粗体解析共同使用。 |
+| `src/lib/horizontal-rule-text.ts` | `3D056338DAF2BA83D2F29B96E7325F04ACE1F562936F13ADF60BB06C513D75E8` | `lib/horizontal-rule-text.ts`；对话和编辑器共享带文字分隔线语法。 |
+| `src/lib/markdown-heading-attributes.ts` | `37084CE1263F5C4EFEDA6AF98C9CDD5F4BC8844AA51053CF647B89D8A9C171B1` | `lib/markdown-heading-attributes.ts`；阅读态隐藏不编号控制标记。 |
+| `src/lib/markdown-block-caption.ts` | `9CBB48271219449DCB8CD9116FBDA61DD0A84B03AFB20050C65BA944C8E0FB55` | `lib/markdown-block-caption.ts`；兼容紧邻表格的加粗题注。 |
+| `src/lib/markdown-image-caption.ts` | `4F9F44A3CC547F685DBF2EECD3890982FEFE86A2729C11A87374A0FCAD5582AD` | `lib/markdown-image-caption.ts`；相邻图片题注/旧 custom-style Div 提取，严格边界检查。 |
+| `src/index.css` | `B1239F9FB5EDB30648D4705ED34BD60D672190C9C79330A4712A2B8D74EEE645` | `apps/web/src/components/editor/markdown-editor.css`；脚本重提取 324 条规则，沿用外壳排除名单和 `.dark` 改写。 |
+
+### 8.3 Aster 接入差异
+
+1. 新增 `lib/markdown-math-plugin.ts` 和 `components/markdown/markdown-rendering-plugins.ts` 接入对话。HTML 仅输出受控标签；脚本/iframe/SVG 源标签按文字显示，过滤事件、样式和危险地址。受控任务复选框使用独立 token，不绕过用户 HTML 过滤。
+2. 对话表格继续遵循已有的表头居中、正文左对齐约定。编辑器保留上游对齐和长分隔线列宽权重；一/二横线仅按最小三横线的视觉宽度显示，保存仍保留原分隔线。
+3. Mermaid 配置为全局状态；不同消费者的初始化与异步渲染串行执行，同源同主题请求合并，错误不阻断下一张图。切换主题保留两套缓存，并保留旧 SVG 高度直至新图完成。
+4. 对话 memo 化 HTML 挂载对象；仅主题变化时不重建原生 details、源码区域和图表容器。编辑器主题只重配颜色/光标，不重建块 StateField、内容、选区和历史。
+5. 对话仅将完整闭合的 Mermaid 围栏替换为图表，流式未完成代码继续显示源码。题注只吸收紧邻行，原生 caption 优先；行内/引用内图片不打乱独立图片题注索引。
+6. `markdown-token-bridge.css` 为上游固定浅色的键盘标签桥接主题色。`agent-markdown.css` 的新增规则属于 CSS 触发条件 1/2/3；生成编辑器 CSS 仍只由提取脚本修改。
+7. 上游六组 lib 测试迁入 Vitest，保留有意义的纯解析用例；引用代码/公式/HTML 行为直接测试实际 CodeMirror 装饰，避免复制实现算法作为测试。Aster 媒体查看器已有滚轮定点缩放、拖动、适应窗口和图库导航，继续复用它。
+
+### 8.4 验证
+
+- 全仓 lint、typecheck、生产 build 通过；生成 CSS 重跑幂等，无外壳选择器泄漏。
+- 脚本 6 项、协议 119 项、Desktop 859 项通过；Desktop 默认并发在本机曾出现超时和 Windows 临时目录占用，使用 `--maxWorkers=2` 完整重跑通过。
+- Web 104 个测试文件、661 项测试全部通过，覆盖 HTML 过滤、数学、引用代码、短表格、题注、Mermaid 并发、源码复制与编辑器保存/主题/文档切换。
+- 实际组件在 1440×900、1024×680 明暗主题检查；页面/编辑器无整体横向溢出，图表源码、放大及缩放交互可用。
+- 从本 worktree 根目录 `pnpm dev` 启动 HTTP Renderer；React/CSS 修改经 HMR 生效，Electron 主 PID 保持不变。
+
+### 8.5 Aster 内部分模块（2026-10-19）
+
+Mermaid 的静态字体、主题 CSS 与引擎配置归入 `apps/web/src/lib/mermaid-theme.ts`；`mermaid.ts` 继续拥有动态加载、串行渲染、并发去重和主题缓存。迁出函数体及 CSS 字面量保持一致，仍使用 `securityLevel: strict`，不修改上游源目录或生成的编辑器 CSS。Mermaid、围栏及 CodeMirror 预览原有 14 项回归、Web 类型检查与定向 lint 通过。
+
+CodeMirror Widget 的公式／列表、图表、图片和行内内容分别归入 `text-widgets.ts`、`mermaid-widget.ts`、`image-widget.ts`、`inline-widgets.ts`；共享的 DOM 呈现与 StateEffect 分别归 `widget-dom.ts`、`widget-effects.ts`。原 `widgets.ts` 保留表格 Widget 与兼容导出，原调用方继续引用同一个类和 Effect 实例。27 个声明／函数体保持一致；编辑器和 Markdown 共 19 文件 133 项回归、Web 类型检查与定向 lint 通过。
+
+表格阅读态的 DOM、选区和事件监听归 `table-readonly-view.ts`；返回的 disposer 由原 Widget 在 `destroy` 中执行，`updateDOM` 继续转移原清理归属。表格编辑态、草稿、提交与 CodeMirror 状态仍归原 Widget，主题、DOM 类名和键盘／复制行为不变，原有 133 项回归再次通过。
+
+表格行列拖动的临时状态、拖动影像和落点计算归 `table-reorder-interaction.ts`；Widget 保留文档监听注册、草稿提交和销毁时的释放调用。跨行列顺序仍通过原 Markdown 表格操作更新，编辑器和 Markdown 的 133 项回归、类型检查与定向 lint 通过。
+
+
+## 9. Markdown 与 Mermaid 主题同步（2026-10-20）
+
+源快照：`main@87dcfe3`（v1.1.18），源工作区干净；与 §8 的 `726cf666` 逐文件核对，源目录只读。目标 worktree 使用 `codex/markdown-editor-upstream-sync`，从 `origin/develop@49ffa27` 建立。Mermaid 依赖由 11.x 更新为源项目锁定的 12.2.0，以使用新增原生主题。
+
+### 9.1 文件身份与适配
+
+目标简写默认位于 `apps/web/src/`。以下为本次源文件实际字节 SHA-256，不覆盖历史迁移记录。
+
+| 源文件 | SHA-256 | 目标与差异 |
+| --- | --- | --- |
+| `src/components/editor/cm/mermaid-language.ts` | `35CA86F8799B8172D3878AB26A823C1BA447AC58F0F66779EB16A2820F790062` | `components/editor/cm/mermaid-language.ts`；同一源码词法用于文档围栏与对话源码高亮。 |
+| `src/components/editor/live-markdown-editor.tsx` | `12A99F6E8409136F8E70A576704A90980B6F3934A50EC57FC6E2FD582B5B6E66` | `components/editor/live-markdown-editor.tsx`；仅同步语言扩展及配色刷新依赖，保留 Aster 草稿、保存和文件生命周期。 |
+| `src/components/editor/cm/widgets.ts` | `8C2DA53129C9E2F89E8978AFCBEC2A74BE7BE53DF3EA1086A60CDCBF876202B8` | 上游改动为 Tauri 剪贴板读取适配；Aster 保留 Electron Renderer 的 Clipboard API，不迁入 Tauri。图表刷新仍归 `cm/mermaid-widget.ts`，另加异步版本保护。 |
+| `src/lib/mermaid.ts` | `8E9635A2385BF12F6F28336E2D16142E7222D4914B689B5815190136784ED601` | `lib/mermaid.ts`；同步主题缓存身份、串行绘制、原生主题保留、对比度及看板修复；保留严格索引、SVG 尺寸解析和 Aster 图片复制。 |
+| `src/lib/mermaid-config.js` | `04D6E39B7FBA5D4F972F67C9770F1E517A4F2EA99283FD2BF7371EC201C23744` | `lib/mermaid-theme.ts`、`lib/mermaid-layout.ts`、`lib/mermaid-theme-settings.ts`；按配置、附着 SVG 几何与纯主题选择拆为 TypeScript，保持 `securityLevel: strict`。 |
+| `src/lib/mermaid-config.d.ts` | `6DF9912B330F0BEE1A33ECBDB66C96A95659A3EDE5A75E43A170BBB6BD16A6C3` | `packages/protocol/src/mermaid-theme-settings.ts`；以 Zod 验证全局深浅主题、23 类图表覆盖与具名组合，复用应用设置持久化。 |
+| `src/lib/markdown-block-caption.ts` | `C761A6BC6F7523770A1C9BF15C47EC32205A9C289816DF0EA8348625CB7CE161` | `lib/markdown-block-caption.ts`；同步跨空行编号题注和附录字母编号，保留严格索引检查。 |
+| `src/lib/markdown-image-caption.ts` | `F34A16F3BC548C17BE53B838F7FD2BBD0B245606FEB8809A13D7E9DA3877BB72` | `lib/markdown-image-caption.ts`；同步显式编号图片题注的空行关联，普通加粗段落不跨空行吸收。 |
+| `src/components/settings/mermaid-theme-dialog.tsx` | `79535AC3F681879C6CFE2681DF99C055C349F25D576243FFC01C89889D4BB1A2` | `features/settings/appearance/mermaid-theme-settings.tsx` 与 `mermaid-theme-preview.tsx`；使用 Aster 的 Dialog、Select、IconButton 和语义 Token，入口在设置→外观，不迁入源项目窗口或 Word 导出状态。 |
+| `src/components/settings/mermaid-theme-samples.ts` | `8FFF832BC0EE5F43201432B71D4E53C97B528AECE3B966C650BEACF380180232` | 同名文件位于 `features/settings/appearance/`；23 类预览样例仅替换示例产品名。 |
+| `src/index.css` | `D82FEED3736D71B525BEE3F2D58EFC64C1AEB99A2B959553E2D177E393C2EF15` | 重跑 `scripts/extract-md-king-editor-css.mjs`，仍提取 324 条规则；新增设置弹层 CSS 不进入编辑器。脚本显式桥接深色表格菜单底色到 `--app-panel`，保留 Aster 当前主题。 |
+| `src/components/editor/cm/mermaid-language.test.ts` | `B15DA84D8B9D17F006ABB3507DE1D02824A4FB148C295E6E513974008D56A58F` | 迁入 Vitest；保留实际解析树的词法断言。 |
+| `src/lib/markdown-block-caption.test.ts` | `4B014604C248E93EDAC5980B05286F4B7C44D121F597BC6D9FFD96DE15D3F2C0` | 迁入新增编号与附录题注回归，保留 Aster 既有用例。 |
+| `src/lib/markdown-image-caption.test.ts` | `F15DC9F4D6174BCC1731707F834A12F17E75CE848E8A198D3862CC5016028014` | 迁入新增跨空行图片题注回归，保留 Aster 既有用例。 |
+
+### 9.2 接入行为与边界
+
+- 对话正文与侧边 Markdown 共用 Mermaid 渲染队列、主题选择及缓存。浅深画布与每图类型的实际主题都进入缓存键，切换配色保留原 SVG 至新图完成；编辑器不重建，保留正文、选区、undo 与滚动位置。连续刷新用版本标记丢弃过期结果，Widget 更新源码后同步刷新来源。
+- 设置→外观→Mermaid 图表配色支持 11 套主题任意深浅组合、7 组快速搭配、23 类图表分别覆盖、继承/清除覆盖、实时双模式预览、自定义组合新增/更新/应用/删除、恢复默认及取消草稿。应用后走原有应用设置保存通道；恢复默认保留已保存组合。
+- 配置新增 `appearance.mermaidThemes`，旧配置缺失时默认 Redux Color / Redux Dark Color。严格协议验证和 JSONC 存储继续由原模块持有，不新增 IPC、独立配置文件或数据库迁移。
+- Mermaid 源码词法复用于侧边编辑、对话普通/虚拟源码及完整图表源码切换。未闭合的流式围栏继续显示源码，安全 HTML 过滤及源码复制保持原语义。
+- 核对源项目全部新增文件：Word/DOCX 题注自动编号、导出样式、转换输入、更新器及 Tauri 剪贴板/文档打开属于源宿主能力，不迁入 Aster；编辑与对话实际使用的题注识别纯函数已同步。生成 CSS 仅经提取脚本更新，未复制源设置页的全局 `[data-slot]` 覆盖。
+
+### 9.3 验证
+
+- Web 全量 169 个测试文件通过（`--maxWorkers=2`）；最终题注回归另行验证 11 项通过。首轮高并发下两项设置页测试超时，单独 14 项复跑与降低并发的全量均通过，未放宽超时门限。
+- Protocol 全量 28 文件 / 260 项通过；真实 JSONC 应用设置存储 11 项通过，包含新建存储实例后恢复主题、图类型覆盖与自定义组合。
+- 全仓 `pnpm typecheck`、`pnpm build`，全部变更 TS/TSX 的定向 ESLint 与 Protocol lint 通过；未修改或额外运行无关 Agent Runtime 的全套后端行为测试。
+- 真实组件的无界面 Edge 验收：23 类图表 × 2 模式及 11 套主题 × 2 模式共 68 个组合均渲染成功；多行看板标题与任务卡片间距至少 10px。配置弹框支持全部主题、覆盖、组合应用、应用/取消；对话与文档同步刷新，草稿、选区和实际浏览器滚动位置保留。
+- Mermaid 源码高亮与 PNG 转图可用；浅/深主题、1400×1000 与 480px 窄窗口截图检查通过，弹框无整体横向溢出。使用隔离的无界面浏览器，未操作、切换或重启现有桌面窗口，也未连接其数据目录。
+- 编辑器 CSS 提取 324 条规则，重跑字节一致，无源应用外壳选择器泄漏；`git diff --check` 通过，源仓库仍为干净的 `87dcfe3`。
+
+### 9.4 表格垂直对齐补齐（2026-10-20）
+
+源表格沿用浏览器的单元格垂直居中，侧边编辑与只读视图已保留；对话的 `agent-markdown.css` 仍显式指定顶部对齐，本次将表头与正文单元格统一为 `vertical-align: middle`。仅修改对话样式，不改生成的编辑器 CSS 或源仓库，横向对齐保持原约定。
+
+验证：无界面 Edge 在 1440px／480px、浅／深主题下检查三种实际视图，共 48 次长短文字混排行高测量通过；侧边单元格编辑与提交正常。Markdown 与编辑器 22 文件／143 项测试、Web 类型检查与生产构建通过，未操作现有桌面窗口。
+
+### 9.5 配色弹框视觉与原生浮层修复（2026-10-20）
+
+源仍为干净的 `87dcfe3`；`src/components/settings/mermaid-theme-dialog.tsx` SHA-256 仍为 `79535AC3F681879C6CFE2681DF99C055C349F25D576243FFC01C89889D4BB1A2`。补齐此前遗漏的四组四色预览、选中勾选、整体选项深浅主题说明、组合说明／单独设置计数，以及带模式图标和实际主题名的预览卡。布局、圆角、字体与间距继续桥接 Aster 的组件和 Token，不迁入源应用外壳。
+
+目标为 `features/settings/appearance/mermaid-theme-presets.tsx`、`mermaid-theme-settings.tsx` 和 `mermaid-theme-preview.tsx`。预览恢复源项目“仅有效主题影响当前图”的依赖语义，组合列表或其他图的配置不重绘当前图；迟到结果不覆盖新主题。关闭的 ThemeSelect 仅挂载当前选项，展开后仍提供全部 11 款及继承项。
+
+Aster 独立浮层使 Radix 的全局 document 与真实控件文档不同：复现到弹框初开连续 84 次焦点跳转，以及异步图像替换抢走输入焦点；Select 的箭头和前缀定位也会误读焦点。使用固定版本的 pnpm 补丁修复 FocusScope 1.1.16、Select 2.3.7 的 ownerDocument 归属，同时覆盖 CJS／ESM。补丁、锁文件与说明一同提交，不直接维护 node_modules 副本；没有修改源 md-king 或生成的编辑器 CSS。
+
+验证：Web 全量 172 文件／1280 项通过，变更 TSX 的定向 ESLint、Web 类型检查与生产构建通过；离线 frozen-lockfile 安装通过。隔离的无界面 Edge 以真实跨文档弹框复现并确认初开焦点跳转从 84 次降至 1 次，异步预览保留输入焦点，键盘选择、组合应用／取消、连续开关 12 次及明暗／宽窄截图检查均通过。重新验证 23 类图表双模式及 11 套主题双模式共 68 次渲染，对话与编辑器刷新保留草稿、选区和滚动位置。现有开发窗口通过 Vite 更新补丁及前端，Electron 主进程 PID 37484 不变；未操作用户桌面输入，未另设应用数据目录。

@@ -1,9 +1,13 @@
-/* CSS trigger #2: global scrollbar pseudo-elements require vendor selectors. */
+/* CSS triggers #2 and #5: shared focus, scrollbar selectors and editor scroller. */
 
 * {
   box-sizing: border-box;
   scrollbar-color: color-mix(in srgb, var(--app-muted-foreground) 30%, transparent) transparent;
   scrollbar-width: thin;
+}
+
+:where(textarea, .cm-scroller) {
+  scrollbar-gutter: stable;
 }
 
 *::-webkit-scrollbar {
@@ -61,7 +65,13 @@ button:disabled {
   cursor: default;
 }
 
+/* Keep legacy CSS and browser outlines consistent with the Tailwind keyboard variant.
+ * Editable fields retain their editing focus; selection borders and shadows stay intact. */
+:root[data-input-modality="pointer"] :focus-visible:not(input, textarea, select, [contenteditable="true"], [contenteditable=""], [role="textbox"]) {
+  outline: none !important;
+}
+
 ::selection {
-  background: var(--app-selection);
-  color: var(--app-selection-foreground);
+  background: var(--app-text-selection);
+  color: var(--app-text-selection-foreground);
 }

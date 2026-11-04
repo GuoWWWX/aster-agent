@@ -15,10 +15,28 @@ export type ModelProviderState = {
   baseUrl: string;
   modelId: string;
   payload: unknown;
+  firstTokenLatencyMs?: number;
+  generationDurationMs?: number;
+  usage?: ModelProviderTokenUsage;
 };
 
+export type ModelProviderTokenUsage = {
+  cacheCreationInputTokens?: number;
+  cachedInputTokens?: number;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+};
+
+/** Account authorization is provider-specific; each kind must select its own request rules. */
+export type ModelAuthentication =
+  | { type: "api-key" }
+  | { type: "chatgpt-plan"; getAccessToken: () => Promise<string> };
+
 export type ModelConfiguration = {
+  modelType?: "chat" | "image";
   apiKey: string;
+  authentication?: ModelAuthentication;
   apiFormat: ModelApiFormat;
   baseUrl: string;
   contextCompression?: ContextCompressionThreshold;
@@ -27,7 +45,12 @@ export type ModelConfiguration = {
   reasoningOptions: ModelReasoningOption[];
 };
 
+/** Model metadata safe to use without decrypting a provider credential. */
+export type ModelContextConfiguration = Omit<ModelConfiguration, "apiKey" | "authentication">;
+
 export type ModelMessage = {
+  /** Request state snapshot retained within the current execution graph, never a new user input. */
+  runtimeContext?: "queue" | "skills" | "checklist" | "directory";
   attachments: ModelMessageAttachment[];
   content: string;
   providerState?: ModelProviderState;
@@ -37,13 +60,14 @@ export type ModelMessage = {
 };
 
 export type ModelMessageAttachment = {
+  readPath?: string | undefined;
   contextTokens: number;
   id: string;
   mimeType: string;
   name: string;
   projectPath: string | null;
   readState: "full" | "metadata_only" | "preview";
-  source: "project" | "upload";
+  source: "browser" | "project" | "upload" | "computer" | "generated";
   truncated: boolean;
 } & (
   | { content: string; kind: "text" }
@@ -51,14 +75,19 @@ export type ModelMessageAttachment = {
 );
 
 export function modelImageAttachmentCaption(
-  attachment: Pick<ModelMessageAttachment, "id" | "name" | "projectPath" | "source">
+  attachment: Pick<ModelMessageAttachment, "id" | "name" | "projectPath" | "source" | "readPath">
 ): string {
-  const location = attachment.projectPath === null
-    ? "用户上传图片"
-    : `项目图片 ${attachment.projectPath}`;
+  const location = attachment.source === "browser"
+    ? "浏览器工具截图"
+    : attachment.source === "computer" ? "电脑控制窗口截图"
+    : attachment.source === "generated" ? "已生成图片"
+    : attachment.projectPath === null
+      ? "用户上传图片"
+      : `项目图片 ${attachment.projectPath}`;
   return [
     `[图片附件 ${attachment.name}]`,
     `attachment_id: ${attachment.id}`,
+    ...(attachment.readPath === undefined ? [] : [`path: ${attachment.readPath}`]),
     `source: ${location}`
   ].join("\n");
 }
@@ -73,19 +102,23 @@ export type ModelTurnResult = {
   content: string;
   finishReason: string | null;
   providerState?: ModelProviderState;
+  reasoningContent?: string;
   toolCalls: ModelToolCall[];
 };
 
 export type ModelReasoningDelta = {
   delta: string;
-  kind: "summary" | "content";
+  kind: "summary" | "content" | "progress";
   reset: boolean;
 };
 
 export type CompleteTurnInput = {
+  /** Stable opaque conversation scope; never a per-request or Run identifier. */
+  cacheKey?: string;
   configuration: ModelConfiguration;
   maxOutputTokens: number;
   messages: ModelMessage[];
+  onFirstToken?(latencyMs: number): void;
   onReasoningDelta?(event: ModelReasoningDelta): void;
   onTextDelta(delta: string): void;
   reasoning: ModelReasoningOption | undefined;

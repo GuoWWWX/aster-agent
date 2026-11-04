@@ -1,6 +1,8 @@
 import { z } from "zod";
+import { userQuestionSchema } from "./user-question.js";
 
 import { agentErrorSchema } from "./agent-error.js";
+import { agentAvatarIconSchema } from "./agent-avatar.js";
 
 import {
   contextCompressionModeSchema,
@@ -89,8 +91,17 @@ export const conversationThreadKindSchema = z.enum([
   "subagent"
 ]);
 
+export const conversationPermissionModeSchema = z.enum([
+  "read_only",
+  "ask_before_changes",
+  "request_approval",
+  "auto_review",
+  "full_access"
+]);
+
 export const conversationAgentBindingSchema = z
   .object({
+    avatarIcon: agentAvatarIconSchema.nullable().optional(),
     id: z.string().trim().min(1).max(200),
     instructions: z.string().trim().max(MAX_AGENT_INSTRUCTIONS_LENGTH),
     isDefault: z.boolean(),
@@ -111,12 +122,32 @@ export const conversationAttachmentSchema = z
     name: z.string().trim().min(1).max(255),
     projectPath: z.string().trim().min(1).max(4_096).nullable(),
     sizeBytes: z.number().int().nonnegative().max(MAX_ATTACHMENT_BYTES),
-    source: z.enum(["project", "upload"]),
+    source: z.enum(["project", "upload", "browser", "computer", "generated"]),
     truncated: z.boolean()
   })
   .strict();
 
 export const conversationAttachmentListSchema = z.array(conversationAttachmentSchema);
+
+export const readConversationAttachmentPreviewInputSchema = z
+  .object({
+    attachmentId: z.string().uuid(),
+    conversationId: conversationIdSchema,
+  })
+  .strict();
+
+export const conversationAttachmentPreviewSchema = z
+  .object({
+    data: z.string()
+      .min(4)
+      .max(Math.ceil(MAX_ATTACHMENT_BYTES * 4 / 3) + 4)
+      .regex(/^[A-Za-z0-9+/]*={0,2}$/u)
+      .refine((value) => value.length % 4 === 0, {
+        message: "Attachment preview base64 must contain complete quartets.",
+      }),
+    mimeType: z.string().trim().min(1).max(255),
+  })
+  .strict();
 
 export const removeConversationAttachmentInputSchema = z
   .object({
@@ -147,10 +178,12 @@ export const importConversationAttachmentBytesInputSchema = z
 
 export const conversationSummarySchema = z
   .object({
+    coordinationTeamInstanceId: z.string().uuid().optional(),
     activeSubagentCount: z.number().int().nonnegative().default(0),
     activeRunId: runIdSchema.nullable(),
     agentId: z.string().trim().min(1).max(200).nullable().default(null),
     archivedAt: isoTimestampSchema.nullable().default(null),
+    avatarIcon: agentAvatarIconSchema.nullable().optional(),
     createdAt: isoTimestampSchema,
     hasUnreadResult: z.boolean().default(false),
     id: conversationIdSchema,
@@ -159,6 +192,8 @@ export const conversationSummarySchema = z
     lastRunStatus: conversationRunStatusSchema.nullable(),
     modelSelection: conversationModelSelectionSchema.nullable().default(null),
     parentConversationId: conversationIdSchema.nullable().default(null),
+    permissionMode: conversationPermissionModeSchema.optional(),
+    coordinationMode: z.enum(["direct", "parallel_queue"]).optional(),
     pinOrder: z.number().int().positive().nullable().optional(),
     projectId: projectIdSchema.nullable(),
     subagentTaskStatus: z.enum([
@@ -166,9 +201,11 @@ export const conversationSummarySchema = z
       "running",
       "completed",
       "failed",
-      "cancelled"
+      "cancelled",
+      "ended"
     ]).nullable().optional(),
     teamId: z.string().trim().min(1).max(200).nullable().default(null),
+    teamWorkItemId: z.string().uuid().nullable().default(null),
     threadKind: conversationThreadKindSchema.default("agent"),
     title: z.string().trim().min(1).max(MAX_TITLE_LENGTH),
     updatedAt: isoTimestampSchema,
@@ -209,16 +246,7 @@ export const conversationTaskSchema = z
 const conversationTaskCollectionSchema = z
   .array(conversationTaskSchema)
   .min(1)
-  .max(20)
-  .superRefine((tasks, context) => {
-    if (tasks.filter((task) => task.status === "running").length > 1) {
-      context.addIssue({
-        code: "custom",
-        message: "A task list can only have one running task.",
-        path: []
-      });
-    }
-  });
+  .max(20);
 
 export const conversationTaskListSchema = z
   .object({
@@ -237,6 +265,7 @@ export const createConversationInputSchema = z
   .object({
     agent: conversationAgentBindingSchema.optional(),
     modelSelection: conversationModelSelectionSchema.optional(),
+    parentConversationId: conversationIdSchema.optional(),
     projectId: projectIdSchema.nullable().optional(),
     teamId: z.string().trim().min(1).max(200).nullable().optional(),
     threadKind: z.enum(["agent", "team_lead"]).optional()
@@ -255,6 +284,13 @@ export const createConversationInputSchema = z
         code: "custom",
         message: "A team conversation must identify its Agent profile.",
         path: ["agent"]
+      });
+    }
+    if (value.parentConversationId !== undefined && value.threadKind !== "team_lead") {
+      context.addIssue({
+        code: "custom",
+        message: "Only Team Lead execution conversations may declare a parent conversation.",
+        path: ["parentConversationId"],
       });
     }
   });
@@ -280,6 +316,14 @@ export const setConversationModelSelectionInputSchema = z
   })
   .strict();
 
+export const setConversationPermissionModeInputSchema = z
+  .object({
+    conversationId: conversationIdSchema,
+    permissionMode: conversationPermissionModeSchema,
+    coordinationMode: z.enum(["direct", "parallel_queue"]).optional(),
+  })
+  .strict();
+
 export const conversationReferenceInputSchema = z
   .object({ conversationId: conversationIdSchema })
   .strict();
@@ -290,6 +334,20 @@ export const setTeamCoordinatorInputSchema = z
   .object({
     conversationId: conversationIdSchema,
     teamId: teamIdInputSchema,
+  })
+  .strict();
+
+export const ensureTeamMemberConversationInputSchema = z
+  .object({
+    agentId: z.string().trim().min(1).max(200),
+    teamId: teamIdInputSchema,
+  })
+  .strict();
+
+export const teamMemberConversationViewSchema = z
+  .object({
+    lead: conversationSummarySchema,
+    member: conversationSummarySchema,
   })
   .strict();
 
@@ -338,7 +396,12 @@ export const conversationMessageItemSchema = z
     durationMs: z.number().int().nonnegative().nullable().optional(),
     id: timelineItemIdSchema,
     kind: z.literal("message"),
+    groupSource: z.object({
+      teamInstanceId: z.string().uuid(), messageId: z.string().uuid(),
+      senderConversationId: z.string().uuid().nullable(), senderName: z.string(),
+    }).strict().optional(),
     modelId: z.string().min(1).max(200).nullable(),
+    reasoningContent: z.string().max(MAX_MESSAGE_LENGTH).nullable().optional(),
     role: conversationMessageRoleSchema,
     runId: runIdSchema.nullable(),
     status: conversationMessageStatusSchema
@@ -350,7 +413,8 @@ export const conversationToolStatusSchema = z.enum([
   "awaiting_approval",
   "completed",
   "failed",
-  "rejected"
+  "rejected",
+  "cancelled"
 ]);
 
 /** Scheduler decision recorded for observability; omitted on legacy tool rows. */
@@ -373,6 +437,31 @@ export const conversationToolItemSchema = z
   })
   .strict();
 
+export const conversationModelRetryStatusSchema = z.enum([
+  "retrying",
+  "completed",
+  "failed",
+]);
+
+/** One durable model-request retry lifecycle within a Run. */
+export const conversationModelRetryItemSchema = z
+  .object({
+    attempt: z.number().int().min(1).max(20),
+    completedAt: isoTimestampSchema.nullable().optional(),
+    conversationId: conversationIdSchema,
+    createdAt: isoTimestampSchema,
+    durationMs: z.number().int().nonnegative().nullable().optional(),
+    id: timelineItemIdSchema,
+    kind: z.literal("model_retry"),
+    maxAttempts: z.number().int().min(1).max(20),
+    reason: z.string().trim().min(1).max(1_000),
+    retryInMs: z.number().int().positive().max(60_000).nullable(),
+    runId: runIdSchema,
+    status: conversationModelRetryStatusSchema,
+    updatedAt: isoTimestampSchema,
+  })
+  .strict();
+
 export const conversationAgentMessageStatusSchema = z.enum(["unread", "read"]);
 export const conversationAgentMessageTypeSchema = z.enum([
   "message",
@@ -381,15 +470,28 @@ export const conversationAgentMessageTypeSchema = z.enum([
   "task_result",
 ]);
 
+export const conversationRunFileChangeSchema = z.object({
+  path: z.string().trim().min(1).max(4_096),
+  toolName: z.enum(["write_file", "replace_in_file", "delete_file", "apply_patch"]),
+}).strict();
+
 export const conversationAgentMessageItemSchema = z
   .object({
+    autoWake: z.boolean().optional(),
+    deliveryMode: z.enum(["queue", "steer"]).optional(),
+    consumedByRunId: runIdSchema.optional(),
+    executionStatus: z.enum(["completed", "failed", "cancelled"]).optional(),
+    summaryStatus: z.enum(["provided", "missing"]).optional(),
+    executionError: z.string().nullable().optional(),
     content: z.string().trim().min(1).max(20_000),
     conversationId: conversationIdSchema,
     createdAt: isoTimestampSchema,
+    fileChanges: z.array(conversationRunFileChangeSchema).max(50).default([]),
     id: timelineItemIdSchema,
     kind: z.literal("agent_message"),
     messageType: conversationAgentMessageTypeSchema.default("message"),
     readAt: isoTimestampSchema.nullable(),
+    replyInstruction: z.string().trim().min(1).max(1_000).nullable().default(null),
     runId: runIdSchema.nullable(),
     senderConversationId: conversationIdSchema,
     senderTitle: z.string().trim().min(1).max(MAX_TITLE_LENGTH),
@@ -401,6 +503,7 @@ export const conversationAgentMessageItemSchema = z
 export const conversationTimelineItemSchema = z.discriminatedUnion("kind", [
   conversationAgentMessageItemSchema,
   conversationMessageItemSchema,
+  conversationModelRetryItemSchema,
   conversationToolItemSchema
 ]);
 
@@ -408,11 +511,47 @@ export const conversationTimelineResponseSchema = z.array(
   conversationTimelineItemSchema
 );
 
-export const conversationPermissionModeSchema = z.enum([
-  "read_only",
-  "ask_before_changes",
-  "full_access"
-]);
+export const conversationTimelinePageInputSchema = z.object({
+  afterSequence: z.number().int().positive().optional(),
+  aroundItemId: z.string().uuid().optional(),
+  beforeSequence: z.number().int().positive().optional(),
+  conversationId: conversationIdSchema,
+  limit: z.number().int().min(20).max(200).default(120),
+}).strict().refine((input) => [input.afterSequence, input.aroundItemId, input.beforeSequence]
+  .filter((value) => value !== undefined).length <= 1, "Only one timeline cursor may be supplied.");
+
+export const conversationTimelinePageSchema = z.object({
+  hasMore: z.boolean(),
+  items: z.array(conversationTimelineItemSchema).max(200),
+  nextBeforeSequence: z.number().int().positive().nullable(),
+  nextAfterSequence: z.number().int().positive().nullable().optional(),
+}).strict();
+
+export const conversationSearchInputSchema = z
+  .object({
+    beforeSequence: z.number().int().positive().optional(),
+    conversationId: conversationIdSchema.optional(),
+    limit: z.number().int().min(1).max(100).default(50),
+    query: z.string().trim().min(1).max(500),
+  })
+  .strict();
+
+export const conversationSearchResultSchema = z
+  .object({
+    content: z.string().max(2_000),
+    conversationId: conversationIdSchema,
+    conversationTitle: z.string().trim().min(1).max(MAX_TITLE_LENGTH),
+    createdAt: isoTimestampSchema,
+    itemId: timelineItemIdSchema,
+    parentConversationId: conversationIdSchema.nullable(),
+    projectId: projectIdSchema.nullable(),
+    role: z.enum(["user", "assistant", "agent"]),
+    sequence: z.number().int().positive(),
+    threadKind: conversationThreadKindSchema,
+  })
+  .strict();
+
+export const conversationSearchResponseSchema = z.array(conversationSearchResultSchema).max(100);
 
 export const conversationMessageDeliveryModeSchema = z.enum(["queue", "steer"]);
 
@@ -476,13 +615,45 @@ export const conversationContextUsageSchema = z
     estimatedAttachmentTokens: z.number().int().nonnegative().default(0),
     estimatedReferenceTokens: z.number().int().nonnegative().default(0),
     estimatedInputTokens: z.number().int().nonnegative(),
+    estimatedSkillCatalogTokens: z.number().int().nonnegative().default(0),
     estimatedSystemTokens: z.number().int().nonnegative(),
+    estimatedTaskListTokens: z.number().int().nonnegative().default(0),
     estimatedToolDefinitionTokens: z.number().int().nonnegative(),
     estimatedToolTokens: z.number().int().nonnegative(),
     historyCharacters: z.number().int().nonnegative(),
     includedMessageCount: z.number().int().nonnegative(),
     omittedMessageCount: z.number().int().nonnegative(),
-    outputReserveTokens: z.number().int().nonnegative()
+    outputReserveTokens: z.number().int().nonnegative(),
+    providerCache: z
+      .object({
+        firstTokenLatencyMs: z.number().int().nonnegative().nullable().optional(),
+        outputTokensPerSecond: z.number().nonnegative().nullable().optional(),
+        lastReportedHitRate: z.number().min(0).max(1).optional(),
+        cumulative: z
+          .object({
+            cacheCreationInputTokens: z.number().int().nonnegative(),
+            cachedInputTokens: z.number().int().nonnegative(),
+            hitRate: z.number().min(0).max(1).nullable(),
+            inputTokens: z.number().int().nonnegative(),
+            reportedRequestCount: z.number().int().nonnegative(),
+            requestCount: z.number().int().nonnegative(),
+          })
+          .strict(),
+        latest: z
+          .object({
+            cacheCreationInputTokens: z.number().int().nonnegative().nullable(),
+            cachedInputTokens: z.number().int().nonnegative().nullable(),
+            hitRate: z.number().min(0).max(1).nullable(),
+            inputTokens: z.number().int().nonnegative(),
+            outputTokens: z.number().int().nonnegative(),
+            trendDelta: z.number().min(-1).max(1).nullable(),
+          })
+          .strict()
+          .nullable(),
+      })
+      .strict()
+      .optional(),
+    skillReserveTokens: z.number().int().nonnegative().default(0)
   })
   .strict();
 
@@ -520,19 +691,16 @@ export const modelApiFormatSchema = z.enum([
   "google-gemini"
 ]);
 
-const OPENAI_CHAT_REASONING_EFFORTS = new Set(["low", "medium", "high"]);
-const GPT_5_6_REASONING_EFFORTS = new Set(["none", "low", "medium", "high", "xhigh", "max"]);
-const GEMINI_3_THINKING_LEVELS = new Set(["minimal", "low", "medium", "high"]);
+const GEMINI_THINKING_LEVELS = new Set(["minimal", "low", "medium", "high"]);
 
-export function isGpt56ReasoningModel(modelId: string): boolean {
-  const normalizedModelId = modelId.trim().toLocaleLowerCase();
-  return normalizedModelId === "gpt-5.6" || normalizedModelId.startsWith("gpt-5.6-");
+export function isGptReasoningSummaryModel(modelId: string): boolean {
+  const normalizedModelId = modelId.trim().toLocaleLowerCase().split("/").at(-1) ?? "";
+  return /^gpt-\d+(?:[.-]|$)/u.test(normalizedModelId);
 }
 
-export function isGemini3ReasoningModel(modelId: string): boolean {
+export function isGeminiThinkingLevelModel(modelId: string): boolean {
   const normalizedModelId = modelId.trim().toLocaleLowerCase().replace(/^models\//, "");
-  return normalizedModelId === "gemini-3" || normalizedModelId.startsWith("gemini-3.")
-    || normalizedModelId.startsWith("gemini-3-");
+  return /^gemini-[34](?:[.-]|$)/u.test(normalizedModelId);
 }
 
 export type ModelReasoningOption = z.infer<typeof modelReasoningOptionSchema>;
@@ -540,33 +708,20 @@ export type ModelReasoningOption = z.infer<typeof modelReasoningOptionSchema>;
 export function isReasoningOptionSupportedByApiFormat(
   apiFormat: ModelApiFormat,
   option: ModelReasoningOption,
-  modelId = ""
+  _modelId = ""
 ): boolean {
-  if (apiFormat === "openai-chat-completions") {
-    return option.kind === "custom_effort" || (
-      option.kind === "effort" && (
-        isGpt56ReasoningModel(modelId)
-          ? GPT_5_6_REASONING_EFFORTS.has(option.value)
-          : OPENAI_CHAT_REASONING_EFFORTS.has(option.value)
-      )
-    );
-  }
-  if (apiFormat === "openai-responses") {
-    return option.kind === "custom_effort" || (
-      option.kind === "effort" && (
-        !isGpt56ReasoningModel(modelId) || GPT_5_6_REASONING_EFFORTS.has(option.value)
-      )
-    );
+  // This boundary validates transport shape. Model-specific supported levels
+  // belong to the editable reasoning catalog, not protocol-wide allowlists.
+  void _modelId; // Retain the existing call signature for saved-profile callers.
+  if (apiFormat === "openai-chat-completions" || apiFormat === "openai-responses") {
+    return option.kind === "custom_effort" || option.kind === "effort";
   }
   if (apiFormat === "anthropic-messages") {
-    return option.kind === "token_budget" && option.value >= 1_024 && option.value < 8_192;
+    return option.kind === "effort" || option.kind === "custom_effort"
+      || (option.kind === "token_budget" && option.value >= 1_024 && option.value < 8_192);
   }
-  if (isGemini3ReasoningModel(modelId)) {
-    return option.kind === "effort" && GEMINI_3_THINKING_LEVELS.has(option.value);
-  }
-  return option.kind === "token_budget" && (
-    option.value === -1 || option.value >= 0
-  );
+  return (option.kind === "effort" && GEMINI_THINKING_LEVELS.has(option.value))
+    || (option.kind === "token_budget" && option.value >= -1);
 }
 
 export function isReasoningOptionEnabled(option: ModelReasoningOption): boolean {
@@ -583,6 +738,7 @@ export const modelConnectionStatusSchema = z.enum(["unknown", "healthy", "error"
 
 export const modelProfileSchema = z
   .object({
+    modelType: z.enum(["chat", "image"]).optional(),
     connectionStatus: modelConnectionStatusSchema.default("unknown"),
     connectionStatusUpdatedAt: isoTimestampSchema.nullable().default(null),
     contextCompression: contextCompressionThresholdSchema.optional(),
@@ -591,6 +747,7 @@ export const modelProfileSchema = z
     modelId: z.string().trim().min(1).max(200),
     lastSuccessfulAt: isoTimestampSchema.nullable().default(null),
     providerApiFormat: modelApiFormatSchema,
+    providerAuthentication: z.literal("chatgpt").optional(),
     providerBaseUrl: z.string().url(),
     providerId: providerIdSchema,
     providerName: providerNameSchema,
@@ -603,6 +760,7 @@ export const modelProfileSchema = z
 
 export const discoveredModelSchema = z
   .object({
+    modelType: z.enum(["chat", "image"]).optional(),
     modelId: z.string().trim().min(1).max(200),
     ownedBy: z.string().trim().min(1).max(200).nullable()
   })
@@ -638,6 +796,7 @@ export const saveModelConfigurationInputSchema = z
     models: z
       .array(
         modelProfileSchema.pick({
+          modelType: true,
           contextCompression: true,
           contextWindow: true,
           displayName: true,
@@ -784,7 +943,8 @@ export const sendTeamMessageInputSchema = z
 
 export const replaceLatestConversationMessageInputSchema = z
   .object({
-    content: z.string().trim().min(1).max(MAX_MESSAGE_LENGTH),
+    attachmentIds: z.array(z.string().uuid()).max(MAX_CONVERSATION_ATTACHMENTS).optional(),
+    content: z.string().trim().max(MAX_MESSAGE_LENGTH),
     conversationId: conversationIdSchema,
     messageId: timelineItemIdSchema,
     modelId: z.string().trim().min(1).max(200).optional(),
@@ -816,15 +976,25 @@ export const replaceLatestConversationMessageInputSchema = z
         path: ["referencedConversationIds"]
       });
     }
+    if (value.content.length === 0 && (value.attachmentIds?.length ?? 0) === 0) {
+      context.addIssue({
+        code: "custom",
+        message: "A replacement message must contain text or an attachment.",
+        path: ["content"]
+      });
+    }
   });
 
-export const cancelRunInputSchema = z.object({ runId: runIdSchema }).strict();
+export const cancelRunInputSchema = z.union([
+  z.object({ runId: runIdSchema }).strict(),
+  z.object({ conversationId: conversationIdSchema }).strict(),
+]);
 
 export const approveToolChangeInputSchema = z
   .object({
     approved: z.boolean(),
     runId: runIdSchema,
-    scope: z.enum(["once", "session", "agent"]).default("once"),
+    scope: z.enum(["once", "session"]).default("once"),
     toolId: timelineItemIdSchema
   })
   .strict();
@@ -883,21 +1053,29 @@ const runStartedEventSchema = z
 const modelRequestStartedEventSchema = z
   .object({
     conversationId: conversationIdSchema,
+    estimatedInputTokens: z.number().int().nonnegative().optional(),
     runId: runIdSchema,
     type: z.literal("model.request_started")
   })
   .strict();
 
-const modelRequestRetryingEventSchema = z
+const modelFirstTokenEventSchema = z.object({
+  conversationId: conversationIdSchema,
+  runId: runIdSchema,
+  latencyMs: z.number().int().nonnegative(),
+  type: z.literal("model.first_token_received"),
+}).strict();
+
+const modelRetryUpdatedEventSchema = z
   .object({
-    attempt: z.number().int().min(1).max(5),
     conversationId: conversationIdSchema,
-    reason: z.string().trim().min(1).max(1_000).optional(),
-    retryInMs: z.number().int().positive().max(60_000),
+    retry: conversationModelRetryItemSchema,
     runId: runIdSchema,
-    type: z.literal("model.request_retrying")
+    type: z.literal("model.retry_updated")
   })
   .strict();
+
+export const conversationStreamSubscriptionSchema = z.array(conversationIdSchema).max(1_000);
 
 const assistantDeltaEventSchema = z
   .object({
@@ -906,6 +1084,8 @@ const assistantDeltaEventSchema = z
     messageId: timelineItemIdSchema,
     modelId: z.string().min(1).max(200),
     runId: runIdSchema,
+    teamWorkItemId: z.string().uuid().optional(),
+    reset: z.boolean().optional(),
     type: z.literal("assistant.delta")
   })
   .strict();
@@ -914,10 +1094,20 @@ const assistantReasoningDeltaEventSchema = z
   .object({
     conversationId: conversationIdSchema,
     delta: z.string().min(1).max(MAX_MESSAGE_LENGTH),
-    kind: z.enum(["summary", "content"]),
+    kind: z.enum(["summary", "content", "progress"]),
+    messageId: timelineItemIdSchema,
+    modelId: z.string().min(1).max(200),
     reset: z.boolean(),
     runId: runIdSchema,
     type: z.literal("assistant.reasoning_delta")
+  })
+  .strict();
+
+const agentMessageReceivedEventSchema = z
+  .object({
+    conversationId: conversationIdSchema,
+    message: conversationAgentMessageItemSchema,
+    type: z.literal("agent_message.received")
   })
   .strict();
 
@@ -933,7 +1123,9 @@ const taskListUpdatedEventSchema = z
 const pendingMessagesUpdatedEventSchema = z
   .object({
     conversationId: conversationIdSchema,
+    consumedMessages: z.array(conversationMessageItemSchema).optional(),
     pendingMessages: conversationPendingMessageListSchema,
+    queuePaused: z.boolean().optional(),
     type: z.literal("pending_messages.updated")
   })
   .strict();
@@ -949,6 +1141,9 @@ const toolStartedEventSchema = z
 
 const toolOutputDeltaEventSchema = z
   .object({
+    reset: z.boolean().optional(),
+    startedAt: z.string().datetime().optional(),
+    completedAt: z.string().datetime().nullable().optional(),
     commandId: z.string().uuid(),
     conversationId: conversationIdSchema,
     delta: z.string().max(MAX_MESSAGE_LENGTH),
@@ -1010,11 +1205,17 @@ const runFinishedEventSchema = z
   .strict();
 
 export const conversationRunEventSchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("collaboration.changed"), conversationId: conversationIdSchema, teamInstanceId: z.string().uuid().optional(), reason: z.literal("read").optional() }).strict(),
+  z.object({ type: z.literal("user_question.updated"), conversationId: conversationIdSchema, question: userQuestionSchema,
+    reason: z.enum(["created", "answered", "viewed", "cancelled"]) }).strict(),
+  z.object({ type: z.literal("notification.activated"), conversationId: conversationIdSchema }).strict(),
   runStartedEventSchema,
   modelRequestStartedEventSchema,
-  modelRequestRetryingEventSchema,
+  modelFirstTokenEventSchema,
+  modelRetryUpdatedEventSchema,
   assistantReasoningDeltaEventSchema,
   assistantDeltaEventSchema,
+  agentMessageReceivedEventSchema,
   taskListUpdatedEventSchema,
   pendingMessagesUpdatedEventSchema,
   toolStartedEventSchema,
@@ -1022,12 +1223,16 @@ export const conversationRunEventSchema = z.discriminatedUnion("type", [
   toolApprovalRequestedEventSchema,
   toolCompletedEventSchema,
   conversationUpdatedEventSchema,
+  z.object({ type: z.literal("conversation.open_requested"), conversation: conversationSummarySchema }).strict(),
   runFinishedEventSchema
 ]);
 
 export type ConversationSummary = z.infer<typeof conversationSummarySchema>;
 export type ConversationModelSelection = z.infer<typeof conversationModelSelectionSchema>;
 export type ConversationAttachment = z.infer<typeof conversationAttachmentSchema>;
+export type ConversationAttachmentPreview = z.infer<
+  typeof conversationAttachmentPreviewSchema
+>;
 export type ConversationThreadKind = z.infer<typeof conversationThreadKindSchema>;
 export type ConversationAgentBinding = z.infer<typeof conversationAgentBindingSchema>;
 export type ConversationTaskStatus = z.infer<typeof conversationTaskStatusSchema>;
@@ -1049,10 +1254,17 @@ export type SetConversationProjectInput = z.infer<
 export type SetConversationModelSelectionInput = z.infer<
   typeof setConversationModelSelectionInputSchema
 >;
+export type SetConversationPermissionModeInput = z.infer<
+  typeof setConversationPermissionModeInputSchema
+>;
 export type ConversationReferenceInput = z.infer<
   typeof conversationReferenceInputSchema
 >;
 export type SetTeamCoordinatorInput = z.infer<typeof setTeamCoordinatorInputSchema>;
+export type EnsureTeamMemberConversationInput = z.infer<
+  typeof ensureTeamMemberConversationInputSchema
+>;
+export type TeamMemberConversationView = z.infer<typeof teamMemberConversationViewSchema>;
 export type ForkConversationInput = z.infer<typeof forkConversationInputSchema>;
 export type SetConversationArchivedInput = z.infer<
   typeof setConversationArchivedInputSchema
@@ -1066,6 +1278,9 @@ export type ReorderConversationsInput = z.infer<
 export type RemoveConversationAttachmentInput = z.infer<
   typeof removeConversationAttachmentInputSchema
 >;
+export type ReadConversationAttachmentPreviewInput = z.infer<
+  typeof readConversationAttachmentPreviewInputSchema
+>;
 export type ImportConversationAttachmentBytesInput = z.infer<
   typeof importConversationAttachmentBytesInputSchema
 >;
@@ -1075,6 +1290,7 @@ export type ConversationMessageItem = z.infer<
 export type ConversationAgentMessageItem = z.infer<
   typeof conversationAgentMessageItemSchema
 >;
+export type ConversationRunFileChange = z.infer<typeof conversationRunFileChangeSchema>;
 export type ConversationAgentMessageStatus = z.infer<
   typeof conversationAgentMessageStatusSchema
 >;
@@ -1082,12 +1298,20 @@ export type ConversationAgentMessageType = z.infer<
   typeof conversationAgentMessageTypeSchema
 >;
 export type ConversationToolItem = z.infer<typeof conversationToolItemSchema>;
+export type ConversationModelRetryItem = z.infer<typeof conversationModelRetryItemSchema>;
+export type ConversationModelRetryStatus = z.infer<typeof conversationModelRetryStatusSchema>;
 export type ConversationToolExecutionMode = z.infer<
   typeof conversationToolExecutionModeSchema
 >;
 export type ConversationTimelineItem = z.infer<
   typeof conversationTimelineItemSchema
 >;
+export type ConversationTimelinePageInput = z.infer<
+  typeof conversationTimelinePageInputSchema
+>;
+export type ConversationTimelinePage = z.infer<typeof conversationTimelinePageSchema>;
+export type ConversationSearchInput = z.infer<typeof conversationSearchInputSchema>;
+export type ConversationSearchResult = z.infer<typeof conversationSearchResultSchema>;
 export type ConversationPermissionMode = z.infer<
   typeof conversationPermissionModeSchema
 >;

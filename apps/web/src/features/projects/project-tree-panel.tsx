@@ -1,3 +1,4 @@
+import { LoadingState, Spinner } from "../../components/ui/loading.js";
 import {
   ArrowDownAZ,
   ArrowDownUp,
@@ -12,7 +13,6 @@ import {
   FolderPlus,
   GripVertical,
   LocateFixed,
-  LoaderCircle,
   Search,
   X,
 } from "lucide-react";
@@ -25,6 +25,7 @@ import {
   type ReactElement,
 } from "react";
 import { createPortal } from "react-dom";
+import { useNativeOverlayContainer } from "../../components/ui/native-overlay-provider.js";
 import type { ProjectEntry } from "@agent/protocol";
 
 import { IconButton } from "../../components/ui/icon-button.js";
@@ -113,6 +114,7 @@ export function ProjectTreePanel({
   onOpenFile,
   tree,
 }: ProjectTreePanelProps): ReactElement {
+  const nativeOverlayContainer = useNativeOverlayContainer();
   const bodyRef = useRef<HTMLDivElement | null>(null);
   const headerRef = useRef<HTMLElement | null>(null);
   const [createKind, setCreateKind] = useState<"directory" | "file" | null>(null);
@@ -283,7 +285,6 @@ export function ProjectTreePanel({
       >
         <div className="project-tree-panel__heading-row">
           <div>
-            <p className="panel-eyebrow">工作区文件</p>
             <h2 id="project-tree-heading">
               {tree.activeProject?.name ?? "文件"}
             </h2>
@@ -503,6 +504,7 @@ export function ProjectTreePanel({
       {createKind !== null ? createPortal(
         <div
           className="project-tree-panel__dialog-backdrop"
+          data-native-view-overlay=""
           onMouseDown={(event) => {
             if (event.target === event.currentTarget) closeCreateDialog();
           }}
@@ -537,12 +539,12 @@ export function ProjectTreePanel({
                 取消
               </button>
               <button disabled={isCreating || draftName.trim().length === 0} type="submit">
-                {isCreating ? "正在创建…" : "创建"}
+                {isCreating ? <><Spinner size={14} className="mr-[5px]" />正在创建…</> : "创建"}
               </button>
             </div>
           </form>
         </div>,
-        document.body,
+        nativeOverlayContainer ?? document.body,
       ) : null}
     </section>
   );
@@ -579,13 +581,10 @@ function EmptyProjectTree({
   loading?: boolean;
   onAction?: () => void;
 }): ReactElement {
+  if (loading) return <LoadingState label={label} compact className="w-full" />;
   return (
     <div className="project-tree-panel__empty" data-loading={String(loading)}>
-      {loading ? (
-        <LoaderCircle aria-hidden="true" size={17} />
-      ) : (
-        <Folder aria-hidden="true" size={19} />
-      )}
+      <Folder aria-hidden="true" size={19} />
       <p>{label}</p>
       {actionLabel && onAction ? (
         <button type="button" onClick={onAction}>

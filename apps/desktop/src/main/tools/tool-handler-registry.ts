@@ -5,6 +5,7 @@ import type { ToolExecutionPolicy } from "./tool-execution-policy.js";
 export type { ToolExecutionPolicy } from "./tool-execution-policy.js";
 
 export type ToolAvailabilityContext = {
+  conversationId?: string;
   projectId: string | undefined;
   toolName?: string;
 };
@@ -25,17 +26,22 @@ export type ToolHandlerInput<TContext extends ToolHandlerExecutionContext> = {
 export type ToolHandler<TContext extends ToolHandlerExecutionContext> = {
   execute(input: ToolHandlerInput<TContext>): Promise<ToolExecution>;
   getExecutionPolicy?(input: ToolHandlerInput<TContext>): ToolExecutionPolicy;
-  getDefinitions(): readonly ModelToolDefinition[];
+  getDefinitions(context: ToolAvailabilityContext): readonly ModelToolDefinition[];
   isAvailable(context: ToolAvailabilityContext): boolean;
 };
 
 export class ToolHandlerRegistry<TContext extends ToolHandlerExecutionContext> {
-  public constructor(private readonly handlers: readonly ToolHandler<TContext>[]) {}
+  public constructor(
+    private readonly handlers: readonly ToolHandler<TContext>[],
+    private readonly allowedTools: (context: ToolAvailabilityContext) => ReadonlySet<string> | null = () => null,
+  ) {}
 
   public getDefinitions(context: ToolAvailabilityContext): ModelToolDefinition[] {
+    const allowed = this.allowedTools(context);
     const definitions = this.handlers
       .filter((handler) => handler.isAvailable(context))
-      .flatMap((handler) => handler.getDefinitions());
+      .flatMap((handler) => handler.getDefinitions(context).filter(tool =>
+        (allowed === null || allowed.has(tool.name)) && handler.isAvailable({ ...context, toolName: tool.name })));
     const names = new Set<string>();
     for (const definition of definitions) {
       if (names.has(definition.name)) {
@@ -60,11 +66,17 @@ export class ToolHandlerRegistry<TContext extends ToolHandlerExecutionContext> {
   }
 
   private findHandler(input: ToolHandlerInput<TContext>): ToolHandler<TContext> {
+    const allowed = this.allowedTools(input.context);
+    if (allowed !== null && !allowed.has(input.toolName)) throw new Error(`Unknown tool: ${input.toolName}`);
     const availableHandlers = this.handlers.filter((handler) =>
-      handler.isAvailable({ projectId: input.context.projectId, toolName: input.toolName }),
+      handler.isAvailable({
+        conversationId: input.context.conversationId,
+        projectId: input.context.projectId,
+        toolName: input.toolName,
+      }),
     );
     const matches = availableHandlers.filter((handler) =>
-      handler.getDefinitions().some((definition) => definition.name === input.toolName),
+      handler.getDefinitions(input.context).some((definition) => definition.name === input.toolName),
     );
     if (matches.length === 0) throw new Error(`Unknown tool: ${input.toolName}`);
     if (matches.length > 1) throw new Error(`Multiple handlers registered for: ${input.toolName}`);

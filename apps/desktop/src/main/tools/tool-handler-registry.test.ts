@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import type { ToolExecution } from "./project-tool-registry.js";
 import {
@@ -43,6 +43,29 @@ const context: FixtureContext = {
 };
 
 describe("ToolHandlerRegistry", () => {
+  it("applies the same current tool scope to definitions, scheduling and execution", async () => {
+    const execute = vi.fn(() => Promise.resolve(completed("changed")));
+    let allowed = new Set(["read_file"]);
+    const registry = new ToolHandlerRegistry([
+      handler(["read_file", "write_file"], execute),
+    ], () => allowed);
+    expect(registry.getDefinitions(context).map(tool => tool.name)).toEqual(["read_file"]);
+    expect(() => registry.getExecutionPolicy({ context, rawArguments: "{}", toolName: "write_file" })).toThrow("Unknown tool");
+    await expect(registry.execute({ context, rawArguments: "{}", toolName: "write_file" })).rejects.toThrow("Unknown tool");
+    expect(execute).not.toHaveBeenCalled();
+    allowed = new Set(["write_file"]);
+    expect(registry.getDefinitions(context).map(tool => tool.name)).toEqual(["write_file"]);
+    await expect(registry.execute({ context, rawArguments: "{}", toolName: "write_file" })).resolves.toMatchObject({ content: "changed" });
+    expect(execute).toHaveBeenCalledOnce();
+  });
+
+  it("checks per-tool availability while advertising a multi-tool handler", () => {
+    const registry = new ToolHandlerRegistry([{
+      ...handler(["read_file", "write_file"], () => Promise.resolve(completed("read"))),
+      isAvailable: ({ toolName }) => toolName !== "write_file",
+    }]);
+    expect(registry.getDefinitions(context).map(tool => tool.name)).toEqual(["read_file"]);
+  });
   it("returns available definitions and dispatches by tool name", async () => {
     const registry = new ToolHandlerRegistry([
       handler(["read_file"], () => Promise.resolve(completed("read"))),
@@ -68,11 +91,11 @@ describe("ToolHandlerRegistry", () => {
   it("sorts the model-visible manifest by name independently of registration order", () => {
     const registry = new ToolHandlerRegistry([
       handler(["write_file"], () => Promise.resolve(completed("write"))),
-      handler(["list_directory", "read_file"], () => Promise.resolve(completed("read"))),
+      handler(["find_files", "read_file"], () => Promise.resolve(completed("read"))),
     ]);
 
     expect(registry.getDefinitions({ projectId: undefined }).map((tool) => tool.name)).toEqual([
-      "list_directory",
+      "find_files",
       "read_file",
       "write_file",
     ]);

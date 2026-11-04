@@ -3,7 +3,10 @@ import { describe, expect, it } from "vitest";
 import type { StoredContextMessage } from "../storage/agent-database.js";
 import {
   buildManagedContext,
-  parseContextSummary
+  createContextCompactionMessages,
+  parseContextSummary,
+  selectCompactionRetryBatch,
+  normalizeModelFacingToolOutputs,
 } from "./context-manager.js";
 
 function message(
@@ -37,6 +40,47 @@ function build(sourceMessages: StoredContextMessage[], threshold = 5_000) {
 }
 
 describe("context manager", () => {
+  it("keeps delivery references without echoing a second copy of generated source into model context", () => {
+    const displayRef = "artifact:00000000-0000-4000-8000-000000000001";
+    const code = `<main>${"content".repeat(4000)}</main>`;
+    const content = JSON.stringify({ ok: true, value: { displayRef, sourceRef: displayRef, presentation: { kind: "code", language: "html", html: code } } });
+    const source = [{ ...message(1, "tool", content, { toolCallId: "preview" }), attachments: [] }];
+    const normalized = normalizeModelFacingToolOutputs(source);
+    expect(normalized[0]?.content).toContain(displayRef);
+    expect(normalized[0]?.content).not.toContain(code);
+    expect(normalized[0]?.content.length).toBeLessThan(400);
+    expect(source[0]?.content).toBe(content);
+    expect(normalizeModelFacingToolOutputs(normalized)).toEqual(normalized);
+  });
+
+  it("excludes legacy command waits from model history, recall and compaction while keeping other tool pairs", () => {
+    const source = [
+      message(1, "user", "检查命令结果"),
+      message(2, "assistant", "", { toolCalls: [
+        { id: "wait-id", name: "wait_for_commands", arguments: "{}" },
+        { id: "read-id", name: "read_file", arguments: '{"path":"a.txt"}' },
+      ] }),
+      message(3, "tool", "DUPLICATE_WAIT_LOG", { toolCallId: "wait-id" }),
+      message(4, "tool", "file contents", { toolCallId: "read-id" }),
+    ];
+    const plan = build(source);
+    expect(JSON.stringify(plan.messages)).not.toContain("DUPLICATE_WAIT_LOG");
+    expect(plan.messages.find(entry => entry.role === "assistant")?.toolCalls.map(call => call.name)).toEqual(["read_file"]);
+    expect(plan.messages.find(entry => entry.toolCallId === "read-id")?.content).toBe("file contents");
+    const compact = createContextCompactionMessages(null, source);
+    expect(JSON.stringify(compact)).not.toContain("DUPLICATE_WAIT_LOG");
+    const normalized = normalizeModelFacingToolOutputs(source.map(entry => ({ ...entry, attachments: [] })));
+    expect(JSON.stringify(normalized)).not.toContain("wait_for_commands");
+    const recalled = buildManagedContext({
+      checkpoint: { conversationId: "conversation-id", coveredThroughSequence: 4,
+        createdAt: "2026-10-16T00:00:00Z", updatedAt: "2026-10-16T00:00:00Z", summary: "{}" },
+      compressionMode: "tokens", compressionThresholdTokens: 5_000,
+      estimatedSystemTokens: 100, estimatedToolDefinitionTokens: 100, outputReserveTokens: 500,
+      sourceMessages: [...source, message(5, "user", "继续")], relevantMessages: [source[2]!],
+    });
+    expect(JSON.stringify(recalled.messages)).not.toContain("DUPLICATE_WAIT_LOG");
+    expect(source[1]?.toolCalls).toHaveLength(2);
+  });
   it("counts attachment tokens separately and lets them trigger old-turn compaction", () => {
     const source = [1, 2, 3, 4].map((turn) => ({
       ...message(turn, "user", `第 ${turn} 轮`),
@@ -90,7 +134,24 @@ describe("context manager", () => {
 
     expect(toolCall?.toolCalls[0]?.id).toBe("call-old");
     expect(toolResult?.toolCallId).toBe("call-old");
-    expect(toolResult?.content).toContain("工具输出已裁剪");
+    expect(toolResult?.content).toContain("Tool output pruned");
+    expect(toolResult?.content).toContain("ERROR failed build");
+    expect(toolResult?.content.length).toBeLessThan(largeOutput.length);
+    expect(plan.compactionCandidates).toEqual([]);
+  });
+
+  it("keeps large tool results bounded even before conversation compaction is needed", () => {
+    const largeOutput = `begin\n${"ordinary output\n".repeat(1_500)}ERROR failed build\nend`;
+    const plan = build([
+      message(1, "user", "运行构建"),
+      message(2, "assistant", "", {
+        toolCalls: [{ arguments: "{}", id: "call-current", name: "run_command" }],
+      }),
+      message(3, "tool", largeOutput, { toolCallId: "call-current" }),
+    ], 100_000);
+
+    const toolResult = plan.messages.find((item) => item.role === "tool");
+    expect(toolResult?.content).toContain("Tool output pruned");
     expect(toolResult?.content).toContain("ERROR failed build");
     expect(toolResult?.content.length).toBeLessThan(largeOutput.length);
     expect(plan.compactionCandidates).toEqual([]);
@@ -113,6 +174,109 @@ describe("context manager", () => {
     expect(plan.messages.some((item) => item.content.startsWith("第3轮-"))).toBe(true);
     expect(plan.messages.some((item) => item.content.startsWith("第4轮-"))).toBe(true);
     expect(plan.messages.some((item) => item.content.startsWith("第1轮-"))).toBe(false);
+  });
+
+  it("can compact completed tool iterations inside one long-running user turn", () => {
+    const source = [
+      message(1, "user", "持续完成这个任务", { runId: "run-long" }),
+      message(2, "assistant", "", {
+        runId: "run-long",
+        toolCalls: [{ arguments: "{}", id: "call-1", name: "read_file" }],
+      }),
+      message(3, "tool", "a".repeat(8_000), { runId: "run-long", toolCallId: "call-1" }),
+      message(4, "assistant", "", {
+        runId: "run-long",
+        toolCalls: [{ arguments: "{}", id: "call-2", name: "read_file" }],
+      }),
+      message(5, "tool", "b".repeat(8_000), { runId: "run-long", toolCallId: "call-2" }),
+      message(6, "assistant", "", {
+        runId: "run-long",
+        toolCalls: [{ arguments: "{}", id: "call-3", name: "read_file" }],
+      }),
+      message(7, "tool", "c".repeat(8_000), { runId: "run-long", toolCallId: "call-3" }),
+    ];
+
+    const plan = build(source, 5_000);
+
+    // The summary input budget fits the first complete iteration, not both.
+    expect(plan.compactionCandidates.map((item) => item.sequence)).toEqual([1, 2, 3]);
+    expect(plan.compactionCandidates.some((item) => item.toolCallId === "call-3")).toBe(false);
+  });
+
+  it("retries a large single-run summary with fewer complete tool iterations", () => {
+    const source = [message(1, "user", "任务要求", { runId: "long-run" })];
+    for (let index = 0; index < 4; index += 1) {
+      source.push(
+        message(2 + index * 2, "assistant", "", {
+          runId: "long-run", toolCalls: [{ id: `call-${index}`, name: "read_file", arguments: "{}" }],
+        }),
+        message(3 + index * 2, "tool", "evidence", { runId: "long-run", toolCallId: `call-${index}` }),
+      );
+    }
+    const retry = selectCompactionRetryBatch(source);
+    expect(retry.map((item) => item.sequence)).toEqual([1, 2, 3, 4, 5]);
+    expect(retry.filter((item) => item.role === "tool").map((item) => item.toolCallId))
+      .toEqual(retry.flatMap((item) => item.toolCalls.map((call) => call.id)));
+  });
+
+  it("offers eligible old turns for an explicit compaction below the automatic threshold", () => {
+    const source = [1, 2, 3].flatMap((turn) => [
+      message(turn * 10, "user", `第${turn}轮`, { runId: `run-${turn}` }),
+      message(turn * 10 + 1, "assistant", `第${turn}轮完成`, { runId: `run-${turn}` }),
+    ]);
+
+    const plan = buildManagedContext({
+      checkpoint: null,
+      compressionMode: "tokens",
+      compressionThresholdTokens: 100_000,
+      estimatedSystemTokens: 100,
+      estimatedToolDefinitionTokens: 100,
+      forceCompaction: true,
+      outputReserveTokens: 500,
+      sourceMessages: source,
+    });
+
+    expect(plan.compactionCandidates.map((item) => item.runId)).toEqual(["run-1", "run-1"]);
+    expect(plan.compactionCandidates.some((item) => item.runId === "run-2")).toBe(false);
+    expect(plan.compactionCandidates.some((item) => item.runId === "run-3")).toBe(false);
+  });
+
+  it("keeps final answers while bounding tool output sent to the compaction model", () => {
+    const request = createContextCompactionMessages(null, [
+      message(1, "user", "检查构建失败原因", { runId: "run-1" }),
+      message(2, "assistant", "", {
+        runId: "run-1",
+        toolCalls: [{ arguments: "{}", id: "call-1", name: "run_command" }],
+      }),
+      message(3, "tool", `output-start\n${"noise\n".repeat(1_000)}ERROR build failed\noutput-end`, {
+        runId: "run-1",
+        toolCallId: "call-1",
+      }),
+      message(4, "assistant", "构建失败是由缺少依赖造成的。", { runId: "run-1" }),
+    ]);
+    const serializedHistory = request[1]?.content ?? "";
+
+    expect(serializedHistory).toContain("构建失败是由缺少依赖造成的。");
+    expect(serializedHistory).toContain("ERROR build failed");
+    expect(serializedHistory).toContain("Tool output shortened for context compaction");
+    expect(serializedHistory).not.toContain("noise\n".repeat(900));
+  });
+
+  it("retries compaction with a smaller complete-turn prefix", () => {
+    const messages = [
+      message(1, "user", "第一轮", { runId: "run-1" }),
+      message(2, "assistant", "第一轮回答", { runId: "run-1" }),
+      message(3, "user", "第一轮插队补充", { runId: "run-1" }),
+      message(4, "assistant", "第一轮补充回答", { runId: "run-1" }),
+      message(5, "user", "第二轮", { runId: "run-2" }),
+      message(6, "assistant", "第二轮回答", { runId: "run-2" }),
+      message(7, "user", "第三轮", { runId: "run-3" }),
+      message(8, "assistant", "第三轮回答", { runId: "run-3" }),
+    ];
+
+    expect(selectCompactionRetryBatch(messages).map((item) => item.sequence))
+      .toEqual([1, 2, 3, 4, 5, 6]);
+    expect(selectCompactionRetryBatch(messages.slice(0, 2))).toEqual([]);
   });
 
   it("replaces covered source messages with the persisted checkpoint", () => {
@@ -144,10 +308,11 @@ describe("context manager", () => {
     expect(plan.usage.omittedMessageCount).toBe(2);
   });
 
-  it("appends keyword-retrieved history after the chronological context", () => {
+  it("places keyword-retrieved history before the newest user turn", () => {
     const source = [
-      message(1, "user", "当前问题"),
-      message(2, "assistant", "当前回答"),
+      message(1, "user", "上一轮问题"),
+      message(2, "assistant", "上一轮回答"),
+      message(3, "user", "当前问题"),
     ];
     const plan = buildManagedContext({
       checkpoint: null,
@@ -164,14 +329,15 @@ describe("context manager", () => {
     });
 
     expect(plan.messages.slice(0, 2).map((item) => item.content)).toEqual([
-      "当前问题",
-      "当前回答",
+      "上一轮问题",
+      "上一轮回答",
     ]);
-    const related = plan.messages.at(-1);
+    const related = plan.messages.at(-2);
     expect(related?.role).toBe("system");
-    expect(related?.content).toContain("相关历史");
+    expect(related?.content).toContain("Relevant history");
     expect(related?.content).toContain("登录页表单校验");
     expect(related?.content).toContain("复用现有校验组件");
+    expect(plan.messages.at(-1)?.content).toBe("当前问题");
     expect(plan.usage.estimatedReferenceTokens).toBeGreaterThan(0);
   });
 
@@ -202,6 +368,7 @@ describe("context manager", () => {
 
     expect(withSkillReservation.usage.estimatedSystemTokens)
       .toBe(withoutSkillReservation.usage.estimatedSystemTokens + 2_500);
+    expect(withSkillReservation.usage.skillReserveTokens).toBe(2_500);
     expect(withSkillReservation.messages.length)
       .toBeLessThan(withoutSkillReservation.messages.length);
   });
@@ -233,6 +400,7 @@ describe("context manager", () => {
 
     expect(withTaskListReservation.usage.estimatedSystemTokens)
       .toBe(withoutTaskListReservation.usage.estimatedSystemTokens + 2_500);
+    expect(withTaskListReservation.usage.estimatedTaskListTokens).toBe(2_500);
     expect(withTaskListReservation.messages.length)
       .toBeLessThan(withoutTaskListReservation.messages.length);
   });

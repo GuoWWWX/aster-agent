@@ -7,14 +7,18 @@ import {
   approveToolChangeInputSchema,
   cancelRunInputSchema,
   conversationContextUsageInputSchema,
+  conversationSearchInputSchema,
+  conversationTimelinePageInputSchema,
   conversationReferenceInputSchema,
   importConversationAttachmentBytesInputSchema,
   forkConversationInputSchema,
   pendingConversationMessageReferenceInputSchema,
   reorderPendingConversationMessagesInputSchema,
+  readConversationAttachmentPreviewInputSchema,
   removeConversationAttachmentInputSchema,
   createConversationInputSchema,
   discoverModelsInputSchema,
+  ensureTeamMemberConversationInputSchema,
   getModelApiKeyInputSchema,
   testModelConnectionInputSchema,
   reorderConversationsInputSchema,
@@ -22,6 +26,7 @@ import {
   replaceLatestConversationMessageInputSchema,
   setConversationArchivedInputSchema,
   setConversationModelSelectionInputSchema,
+  setConversationPermissionModeInputSchema,
   setConversationProjectInputSchema,
   setConversationPinnedInputSchema,
   saveModelConfigurationInputSchema,
@@ -41,10 +46,29 @@ import {
   reorderProjectsInputSchema,
   renameProjectInputSchema,
   setProjectPinnedInputSchema,
+  setProjectTeamsInNavigatorInputSchema,
   writeProjectFileInputSchema
 } from "./project.js";
 import { integrationConfigurationSchema } from "./integration.js";
+import { browserConfigurationSchema, browserPasswordReferenceSchema } from "./browser.js";
 import { terminalConfigurationSchema } from "./terminal.js";
+import {
+  gitFileDiffInputSchema,
+  gitOperationInputSchema,
+  gitReviewInputSchema,
+  managedBrowserBoundsInputSchema,
+  managedBrowserCommandInputSchema,
+  managedBrowserNavigateInputSchema,
+  managedBrowserOpenInputSchema,
+  managedBrowserReferenceInputSchema,
+  terminalSessionOpenInputSchema,
+  terminalSessionOutputInputSchema,
+  terminalSessionReferenceInputSchema,
+  terminalSessionResizeInputSchema,
+  terminalSessionWriteInputSchema,
+  workspaceBrowserTabOpenedInputSchema,
+  workspaceTerminalTabOpenedInputSchema,
+} from "./developer-tools.js";
 import { contextCompressionConfigurationSchema } from "./context-compression.js";
 import { applicationSettingsSchema } from "./application-settings.js";
 import {
@@ -59,6 +83,28 @@ import {
   skillDocumentReferenceInputSchema,
   skillDocumentSaveInputSchema,
 } from "./skill-document.js";
+import {
+  addTeamWorkItemCommentInputSchema,
+  acceptTeamWorkItemInputSchema,
+  deleteTeamWorkItemInputSchema,
+  getTeamWorkItemExecutionInputSchema,
+  listTeamWorkItemsInputSchema,
+  publishTeamWorkItemInputSchema,
+  requestTeamWorkItemReworkInputSchema,
+  submitTeamWorkItemInputSchema,
+  updateTeamWorkItemInputSchema,
+  updateTeamWorkItemPermissionInputSchema,
+} from "./team-work-item.js";
+import { getTeamCollaborationProjectionInputSchema } from "./team-collaboration.js";
+import {
+  createTeamInstanceInputSchema,
+  ensureTeamInstanceMemberConversationInputSchema,
+  listTeamInstancesInputSchema,
+  renameTeamInstanceInputSchema,
+  reorderTeamInstancesInputSchema,
+  setTeamInstanceArchivedInputSchema,
+  teamInstanceReferenceInputSchema,
+} from "./team-instance.js";
 
 /**
  * Bootstrap IPC methods deliberately accept no renderer-supplied arguments.
@@ -102,6 +148,10 @@ export const setProjectPinnedIpcArgumentsSchema = z.tuple([
   setProjectPinnedInputSchema
 ]);
 
+export const setProjectTeamsInNavigatorIpcArgumentsSchema = z.tuple([
+  setProjectTeamsInNavigatorInputSchema
+]);
+
 export const createConversationIpcArgumentsSchema = z.tuple([
   createConversationInputSchema
 ]);
@@ -122,6 +172,10 @@ export const setConversationModelSelectionIpcArgumentsSchema = z.tuple([
   setConversationModelSelectionInputSchema
 ]);
 
+export const setConversationPermissionModeIpcArgumentsSchema = z.tuple([
+  setConversationPermissionModeInputSchema
+]);
+
 export const setConversationArchivedIpcArgumentsSchema = z.tuple([
   setConversationArchivedInputSchema
 ]);
@@ -132,6 +186,14 @@ export const setConversationPinnedIpcArgumentsSchema = z.tuple([
 
 export const conversationReferenceIpcArgumentsSchema = z.tuple([
   conversationReferenceInputSchema
+]);
+
+export const conversationTimelinePageIpcArgumentsSchema = z.tuple([
+  conversationTimelinePageInputSchema,
+]);
+
+export const conversationSearchIpcArgumentsSchema = z.tuple([
+  conversationSearchInputSchema,
 ]);
 
 export const forkConversationIpcArgumentsSchema = z.tuple([
@@ -149,6 +211,10 @@ export const updatePendingConversationMessageIpcArgumentsSchema = z.tuple([
 export const reorderPendingConversationMessagesIpcArgumentsSchema = z.tuple([
   reorderPendingConversationMessagesInputSchema
 ]);
+export const setPendingQueuePausedIpcArgumentsSchema = z.tuple([
+  conversationReferenceInputSchema.extend({ paused: z.boolean() }).strict(),
+]);
+export const pendingQueuePausedResponseSchema = z.boolean();
 
 export const conversationContextUsageIpcArgumentsSchema = z.tuple([
   conversationContextUsageInputSchema
@@ -156,6 +222,10 @@ export const conversationContextUsageIpcArgumentsSchema = z.tuple([
 
 export const removeConversationAttachmentIpcArgumentsSchema = z.tuple([
   removeConversationAttachmentInputSchema
+]);
+
+export const readConversationAttachmentPreviewIpcArgumentsSchema = z.tuple([
+  readConversationAttachmentPreviewInputSchema,
 ]);
 
 export const importConversationAttachmentBytesIpcArgumentsSchema = z.tuple([
@@ -168,6 +238,82 @@ export const sendConversationMessageIpcArgumentsSchema = z.tuple([
 
 export const setTeamCoordinatorIpcArgumentsSchema = z.tuple([
   setTeamCoordinatorInputSchema,
+]);
+
+export const ensureTeamMemberConversationIpcArgumentsSchema = z.tuple([
+  ensureTeamMemberConversationInputSchema,
+]);
+
+export const listTeamInstancesIpcArgumentsSchema = z.tuple([
+  listTeamInstancesInputSchema,
+]);
+
+export const createTeamInstanceIpcArgumentsSchema = z.tuple([
+  createTeamInstanceInputSchema,
+]);
+
+export const renameTeamInstanceIpcArgumentsSchema = z.tuple([
+  renameTeamInstanceInputSchema,
+]);
+
+export const reorderTeamInstancesIpcArgumentsSchema = z.tuple([
+  reorderTeamInstancesInputSchema,
+]);
+
+export const setTeamInstanceArchivedIpcArgumentsSchema = z.tuple([
+  setTeamInstanceArchivedInputSchema,
+]);
+
+export const deleteTeamInstanceIpcArgumentsSchema = z.tuple([
+  teamInstanceReferenceInputSchema,
+]);
+
+export const ensureTeamInstanceMemberConversationIpcArgumentsSchema = z.tuple([
+  ensureTeamInstanceMemberConversationInputSchema,
+]);
+
+export const listTeamWorkItemsIpcArgumentsSchema = z.tuple([
+  listTeamWorkItemsInputSchema,
+]);
+
+export const getTeamWorkItemExecutionIpcArgumentsSchema = z.tuple([
+  getTeamWorkItemExecutionInputSchema,
+]);
+
+export const getTeamCollaborationProjectionIpcArgumentsSchema = z.tuple([
+  getTeamCollaborationProjectionInputSchema,
+]);
+
+export const submitTeamWorkItemIpcArgumentsSchema = z.tuple([
+  submitTeamWorkItemInputSchema,
+]);
+
+export const updateTeamWorkItemIpcArgumentsSchema = z.tuple([
+  updateTeamWorkItemInputSchema,
+]);
+
+export const deleteTeamWorkItemIpcArgumentsSchema = z.tuple([
+  deleteTeamWorkItemInputSchema,
+]);
+
+export const updateTeamWorkItemPermissionIpcArgumentsSchema = z.tuple([
+  updateTeamWorkItemPermissionInputSchema,
+]);
+
+export const publishTeamWorkItemIpcArgumentsSchema = z.tuple([
+  publishTeamWorkItemInputSchema,
+]);
+
+export const addTeamWorkItemCommentIpcArgumentsSchema = z.tuple([
+  addTeamWorkItemCommentInputSchema,
+]);
+
+export const requestTeamWorkItemReworkIpcArgumentsSchema = z.tuple([
+  requestTeamWorkItemReworkInputSchema,
+]);
+
+export const acceptTeamWorkItemIpcArgumentsSchema = z.tuple([
+  acceptTeamWorkItemInputSchema,
 ]);
 
 export const sendTeamMessageIpcArgumentsSchema = z.tuple([
@@ -195,6 +341,8 @@ export const getModelApiKeyIpcArgumentsSchema = z.tuple([
   getModelApiKeyInputSchema
 ]);
 
+export const deleteModelProviderIpcArgumentsSchema = getModelApiKeyIpcArgumentsSchema;
+
 export const testModelConnectionIpcArgumentsSchema = z.tuple([
   testModelConnectionInputSchema
 ]);
@@ -221,6 +369,41 @@ export const integrationConfigurationIpcArgumentsSchema = z.tuple([
 
 export const terminalConfigurationIpcArgumentsSchema = z.tuple([
   terminalConfigurationSchema,
+]);
+
+export const browserConfigurationIpcArgumentsSchema = z.tuple([
+  browserConfigurationSchema,
+]);
+export const browserPasswordReferenceIpcArgumentsSchema = z.tuple([browserPasswordReferenceSchema]);
+
+export const gitReviewIpcArgumentsSchema = z.tuple([gitReviewInputSchema]);
+export const gitFileDiffIpcArgumentsSchema = z.tuple([gitFileDiffInputSchema]);
+export const gitOperationIpcArgumentsSchema = z.tuple([gitOperationInputSchema]);
+export const terminalSessionOpenIpcArgumentsSchema = z.tuple([terminalSessionOpenInputSchema]);
+export const terminalSessionOutputIpcArgumentsSchema = z.tuple([terminalSessionOutputInputSchema]);
+export const terminalSessionWriteIpcArgumentsSchema = z.tuple([terminalSessionWriteInputSchema]);
+export const terminalSessionResizeIpcArgumentsSchema = z.tuple([terminalSessionResizeInputSchema]);
+export const terminalSessionReferenceIpcArgumentsSchema = z.tuple([
+  terminalSessionReferenceInputSchema,
+]);
+export const workspaceTerminalTabOpenedIpcArgumentsSchema = z.tuple([
+  workspaceTerminalTabOpenedInputSchema,
+]);
+export const workspaceBrowserTabOpenedIpcArgumentsSchema = z.tuple([
+  workspaceBrowserTabOpenedInputSchema,
+]);
+export const managedBrowserOpenIpcArgumentsSchema = z.tuple([managedBrowserOpenInputSchema]);
+export const managedBrowserNavigateIpcArgumentsSchema = z.tuple([
+  managedBrowserNavigateInputSchema,
+]);
+export const managedBrowserCommandIpcArgumentsSchema = z.tuple([
+  managedBrowserCommandInputSchema,
+]);
+export const managedBrowserBoundsIpcArgumentsSchema = z.tuple([
+  managedBrowserBoundsInputSchema,
+]);
+export const managedBrowserReferenceIpcArgumentsSchema = z.tuple([
+  managedBrowserReferenceInputSchema,
 ]);
 
 export const skillDocumentReferenceIpcArgumentsSchema = z.tuple([

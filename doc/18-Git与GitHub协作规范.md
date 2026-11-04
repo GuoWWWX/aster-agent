@@ -134,7 +134,7 @@ PR 默认目标为 `develop`，并应包含：
 | 合并方式 | 启用 squash merge；保留 merge commit 仅用于发布/热修复分支。 |
 | 安全 | 启用 Dependabot alerts、Secret scanning、Push protection（可用时）。 |
 
-当前早期单人迭代阶段， [CI 工作流](../.github/workflows/ci.yml) 仅由维护者在 Actions 页手动触发，运行 `lint`、`typecheck`、`test`、`build`；PR 与 `main`/`develop` 推送不会自动运行。远端 Windows Runner 与本地环境差异仍在收敛中，因此暂不设置必需状态检查。恢复自动 CI 前，先确认这些门禁已能稳定复现本地结果。
+当前早期单人迭代阶段， [CI 工作流](../.github/workflows/ci.yml) 仅由维护者在 Actions 页手动触发，运行 `lint`、`typecheck`、`test:ci`、`build`；PR 与 `main`/`develop` 推送不会自动运行。`test:ci` 串行运行各工作区测试，Windows 托管 Runner 因非交互式及管理员权限环境排除真实电脑输入驱动测试；该测试仍保留在完整 `pnpm test` 中，需在适当的交互式环境单独验证。远端 Windows Runner 与本地环境差异仍在收敛中，因此暂不设置必需状态检查。
 
 ## 5. 发布流程
 
@@ -172,7 +172,7 @@ git push origin v0.2.0
 3. 将 `release/v0.2.0` 的发布修复合回 `develop`。
 4. 在 GitHub Release 记录用户可读变更、已知限制和回滚说明，再删除 release 分支。
 
-自动更新功能尚未实现；在其上线前，GitHub Release 只是安装包分发与版本记录，不代表客户端可自动获得更新。〔FACT｜`apps/desktop/package.json` 当前未声明打包/更新依赖，2026-08-27〕
+本地 Windows x64 NSIS 安装包由 `pnpm package:win` 构建，解包验证使用 `pnpm package:dir`；制品位于 `release/` 并被 Git 忽略。本地构建不自动上传，当前未配置 Windows 代码签名。正式版本标签触发 [Windows release 工作流](../.github/workflows/release.yml)，通过检查后构建并上传安装包、blockmap 与 `latest.yml`；客户端从 GitHub 正式 Release 检查更新。保留历史 blockmap 可提高跨版本差量更新的命中率，缺失时客户端回退完整下载。
 
 ### 5.3 Hotfix 与回滚
 
@@ -207,7 +207,7 @@ git switch -c hotfix/crash-on-startup
 - [x] 推送本地 `main` 到正确的 GitHub 组织/仓库，并创建 `develop`。
 - [ ] 配置本文件第 4 节的分支保护、安全扫描、Actions 权限与合并方式。
 - [ ] 在 Actions 页面确认 `CI` 能在一个文档 PR 上完整运行。
-- [ ] 选择并提交许可证；在 README 中写明。
+- [x] 选择 MIT 许可证，在仓库根目录和 README 中说明；合入默认分支后由 GitHub 识别。
 - [ ] 明确 Issue 模板、维护者/Code Owners 和安全披露渠道。
 - [ ] 在首次发布前实现打包、签名、GitHub Release 与更新链路，并在测试设备完成升级和失败恢复验证。
 

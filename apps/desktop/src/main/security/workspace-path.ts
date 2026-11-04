@@ -61,7 +61,17 @@ export async function resolveWritablePathWithinRoot(
   const resolvedMessages = messages(errorMessages);
   const targetPath = resolvePathWithinRoot(rootPath, relativePath, resolvedMessages);
   const canonicalRootPath = path.resolve(await realpath(rootPath));
-  const canonicalParentPath = path.resolve(await realpath(path.dirname(targetPath)));
+  let parentPath = path.dirname(targetPath);
+  while (true) {
+    try { await lstat(parentPath); break; }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      const ancestor = path.dirname(parentPath);
+      if (ancestor === parentPath) throw error;
+      parentPath = ancestor;
+    }
+  }
+  const canonicalParentPath = path.resolve(await realpath(parentPath));
   if (!isPathInsideRoot(canonicalRootPath, canonicalParentPath)) {
     throw new Error(resolvedMessages.resolvedOutsideRoot);
   }

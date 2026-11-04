@@ -1,13 +1,40 @@
-import { app, BrowserWindow } from "electron";
+import { HtmlPreviewServer } from "../preview/html-preview-server.js";
+import { ScheduledTaskController } from "../schedules/scheduled-task-controller.js";
+import { ScheduledTaskStore } from "../schedules/scheduled-task-store.js";
+import { AgentScheduledTaskRunner } from "../schedules/agent-scheduled-task-runner.js";
+import { app, BrowserWindow, nativeTheme, shell } from "electron";
+import { ChatGptPlanAuth } from "../model/chatgpt-plan-auth.js";
+import { ChatGptPlanStore } from "../model/chatgpt-plan-store.js";
+import { ComputerUseConfigurationStore } from "../settings/computer-use-configuration-store.js";
+import { WindowsComputerController } from "../computer-use/windows-computer-controller.js";
+import { ComputerUseTool } from "../computer-use/computer-use-tool.js";
+import { ComputerApplicationPermissions } from "../computer-use/computer-application-permissions.js";
+import { requestComputerApplicationAccess } from "../computer-use/computer-application-dialog.js";
+import { BrowserPasswordStore } from "../settings/browser-password-store.js";
 import { existsSync, readFileSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
-import { ARCHIVED_CONVERSATION_RETENTION_DAYS } from "@agent/protocol";
+import {
+  APPLICATION_HOME_ENVIRONMENT_VARIABLE,
+  APPLICATION_STORAGE_ID,
+  ARCHIVED_CONVERSATION_RETENTION_DAYS,
+  LEGACY_APPLICATION_HOME_ENVIRONMENT_VARIABLE,
+  conversationRunEventSchema,
+} from "@agent/protocol";
 
 import { AgentRuntime } from "../agent/agent-runtime.js";
+import { ConversationTitleGenerator } from "../agent/conversation-title-generator.js";
+import { PreviewInspector } from "../preview/preview-inspector.js";
+import { HtmlPresentationTool, resolveHtmlPresentationSource } from "../tools/html-presentation-tool.js";
+import { resolveMessageCodeBlock } from "@agent/protocol";
+import { ModelAdapterRegistry } from "../model/model-adapter-registry.js";
+import { backupLegacyTeamChatDatabase, TeamChatJournal } from "../storage/team-chat-journal.js";
 import { SkillRuntime } from "../agent/skill-runtime.js";
+import { SYSTEM_SKILLS } from "../agent/prompts/prompt-assets.js";
 import { reportMainError, toMainAgentError } from "../errors/agent-error.js";
 import { registerMainIpcHandlers } from "../ipc/register-main-ipc.js";
+import { ConversationStreamSubscriptions } from "../ipc/conversation-stream-subscriptions.js";
 import { ModelCatalogStore } from "../model/model-catalog-store.js";
 import { ModelCredentialStore } from "../model/model-credential-store.js";
 import {
@@ -15,28 +42,61 @@ import {
   loadRenderer
 } from "../security/renderer-policy.js";
 import { ProjectRegistry } from "../projects/project-registry.js";
-import { PluginCatalog } from "../plugins/plugin-catalog.js";
+import { PluginCatalog, migrateLegacyPluginSettings } from "../plugins/plugin-catalog.js";
 import { AgentDatabase } from "../storage/agent-database.js";
-import { initializeAgentHome } from "../storage/agent-home.js";
+import { ApplicationStorageLocationStore } from "../storage/application-storage-location-store.js";
+import {
+  initializeAgentHome,
+  initializeElectronUserDataPath,
+} from "../storage/agent-home.js";
 import { ConversationAttachmentStore } from "../storage/conversation-attachment-store.js";
 import { ConversationDeletionService } from "../storage/conversation-deletion-service.js";
 import { ConversationLifecycleService } from "../storage/conversation-lifecycle-service.js";
 import { EventProjector } from "../storage/event-projector.js";
 import { NodeSqliteCheckpointSaver } from "../storage/node-sqlite-checkpoint-saver.js";
 import { ThreadLog } from "../storage/thread-log.js";
+import { ThreadLogReader } from "../storage/thread-log-reader.js";
+import { unpackedExecutablePath } from "../tools/bundled-executable-path.js";
 import { ThreadLogLegacyImporter } from "../storage/thread-log-legacy-importer.js";
 import { IntegrationConfigurationStore } from "../settings/integration-configuration-store.js";
 import { ApplicationSettingsStore } from "../settings/application-settings-store.js";
 import { ContextCompressionConfigurationStore } from "../settings/context-compression-configuration-store.js";
+import { BrowserConfigurationStore } from "../settings/browser-configuration-store.js";
 import { SkillDocumentStore } from "../settings/skill-document-store.js";
 import { ConfigurationWorkspaceStore } from "../settings/configuration-workspace-store.js";
 import { TerminalConfigurationStore } from "../settings/terminal-configuration-store.js";
+import { SettingsJsoncFile } from "../settings/settings-jsonc-file.js";
+import { TeamWorkItemRuntime } from "../teams/team-work-item-runtime.js";
 import { ProjectToolRegistry } from "../tools/project-tool-registry.js";
-import { createMainWindow } from "../windows/main-window.js";
+import { GitReviewReader } from "../tools/git-review-reader.js";
+import { TerminalSessionController } from "../tools/terminal-session-controller.js";
+import { WorkspaceTerminalTabController } from "../tools/workspace-terminal-tab-controller.js";
+import { WorkspaceBrowserTabController } from "../tools/workspace-browser-tab-controller.js";
+import { BrowserToolPlugin } from "../plugins/browser-tool-plugin.js";
+import { createMainWindow, getAppUserModelId } from "../windows/main-window.js";
+import { WindowCloseController } from "../windows/window-close-controller.js";
+import { publishConversationAttentionEvent } from "../windows/conversation-attention.js";
+import { attachNativeConversationAttention } from "../windows/native-conversation-attention.js";
+import { ManagedBrowserController } from "../windows/managed-browser-controller.js";
+import { NativeOverlayController } from "../windows/native-overlay-controller.js";
+import { parseBackendSendCommand } from "./backend-command.js";
+import { dispatchBackendSendCommand as submitBackendSendCommand } from "./backend-command-dispatch.js";
+import { ConversationControl } from "../control/conversation-control.js";
+import { LocalControlServer } from "../control/local-control-server.js";
+import { stopDesktopWork } from "./desktop-work-lifecycle.js";
+import { AppUpdateController } from "../updates/app-update-controller.js";
+import { ResumableNsisUpdater } from "../updates/resumable-nsis-updater.js";
 
 type DesktopServices = {
+  appUpdates: AppUpdateController;
+  htmlPreviews: HtmlPreviewServer;
+  scheduledTasks: ScheduledTaskController;
   agentRuntime: AgentRuntime;
+  applicationStorageLocation: ApplicationStorageLocationStore;
   applicationSettings: ApplicationSettingsStore;
+  browserConfiguration: BrowserConfigurationStore;
+  computerUseConfiguration: ComputerUseConfigurationStore;
+  computerUse: WindowsComputerController;
   attachments: ConversationAttachmentStore;
   conversationDeletion: ConversationDeletionService;
   conversationLifecycle: ConversationLifecycleService;
@@ -44,24 +104,98 @@ type DesktopServices = {
   pluginCatalog: PluginCatalog;
   credentials: ModelCredentialStore;
   database: AgentDatabase;
+  eventProjector: EventProjector;
+  conversationReads: ThreadLogReader;
   integrationConfiguration: IntegrationConfigurationStore;
   contextCompression: ContextCompressionConfigurationStore;
   graphCheckpointer: NodeSqliteCheckpointSaver;
+  gitReview: GitReviewReader;
   configurationWorkspaces: ConfigurationWorkspaceStore;
   skillDocuments: SkillDocumentStore;
   skillRuntime: SkillRuntime;
   terminalConfiguration: TerminalConfigurationStore;
+  teamWorkItems: TeamWorkItemRuntime;
+  terminalSessions: TerminalSessionController;
+  workspaceTerminalTabs: WorkspaceTerminalTabController;
+  workspaceBrowserTabs: WorkspaceBrowserTabController;
+  managedBrowser: ManagedBrowserController;
   projectRegistry: ProjectRegistry;
   threadLogLegacyImporter: ThreadLogLegacyImporter;
   tools: ProjectToolRegistry;
 };
 
 let mainWindow: BrowserWindow | undefined;
+let windowCloseController: WindowCloseController | undefined;
 let disposeIpcHandlers: (() => void) | undefined;
 let services: DesktopServices | undefined;
+let localControl: LocalControlServer | undefined;
 let archivedConversationCleanupTimer: ReturnType<typeof setInterval> | undefined;
+let stoppingDesktopWork: Promise<void> | undefined;
+let shutdownPromise: Promise<void> | undefined;
+let shutdownComplete = false;
+
+function stopOwnedDesktopWork(): Promise<void> {
+  if (stoppingDesktopWork !== undefined) return stoppingDesktopWork;
+  if (services === undefined) return Promise.resolve();
+  stoppingDesktopWork = stopDesktopWork(services).finally(() => { stoppingDesktopWork = undefined; });
+  return stoppingDesktopWork;
+}
+
+async function shutdownDesktop(): Promise<void> {
+  disposeIpcHandlers?.();
+  disposeIpcHandlers = undefined;
+  if (archivedConversationCleanupTimer !== undefined) {
+    clearInterval(archivedConversationCleanupTimer);
+    archivedConversationCleanupTimer = undefined;
+  }
+  const closingControl = localControl;
+  localControl = undefined;
+  const results = await Promise.allSettled([closingControl?.close(), stopOwnedDesktopWork(), services?.appUpdates.dispose()]);
+  for (const result of results) {
+    if (result.status === "rejected") reportUnhandledError(result.reason, "desktop.shutdown");
+  }
+  await services?.conversationReads.dispose();
+  try {
+    services?.eventProjector.checkpointInactiveConversations();
+  } catch (error) {
+    reportMainError(toMainAgentError(error, { operation: "thread_log.shutdown_checkpoint" }), error);
+  }
+  services?.graphCheckpointer.close();
+  services?.htmlPreviews.dispose();
+  services?.computerUse.stop();
+  services?.database.close();
+  services = undefined;
+}
+
 
 const ARCHIVED_CONVERSATION_CLEANUP_INTERVAL_MS = 24 * 60 * 60 * 1_000;
+loadLocalEnvironment();
+const applicationStorageLocation = new ApplicationStorageLocationStore({
+  configurationPath: path.join(
+    app.getPath("appData"),
+    APPLICATION_STORAGE_ID,
+    "storage-location.json",
+  ),
+  environment: process.env,
+  homeDirectory: os.homedir(),
+});
+const startupStorageLocation = applicationStorageLocation.getLocation();
+const preferredStoragePath = startupStorageLocation.source === "custom"
+  ? startupStorageLocation.activePath
+  : undefined;
+const legacyUserDataPath = app.commandLine.hasSwitch("user-data-dir")
+  ? path.join(app.getPath("appData"), app.getName())
+  : app.getPath("userData");
+const legacyPackageUserDataPath = path.join(app.getPath("appData"), "@agent", "desktop");
+const electronUserDataPath = initializeElectronUserDataPath({
+  environment: process.env,
+  legacyRootPath: legacyUserDataPath,
+  ...(preferredStoragePath === undefined ? {} : { preferredPath: preferredStoragePath }),
+});
+if (path.resolve(app.getPath("userData")) !== path.resolve(electronUserDataPath)) {
+  app.setPath("userData", electronUserDataPath);
+}
+const hasSingleInstanceLock = app.requestSingleInstanceLock();
 
 function parseLocalEnvironmentFile(contents: string): Map<string, string> {
   const entries = new Map<string, string>();
@@ -69,7 +203,9 @@ function parseLocalEnvironmentFile(contents: string): Map<string, string> {
     "AGENT_MODEL_BASE_URL",
     "AGENT_MODEL_API_KEY",
     "AGENT_MODEL_ID",
-    "AGENT_HOME",
+    "ASTER_CONTROL_ENABLED",
+    LEGACY_APPLICATION_HOME_ENVIRONMENT_VARIABLE,
+    APPLICATION_HOME_ENVIRONMENT_VARIABLE,
   ]);
 
   for (const line of contents.split(/\r?\n/)) {
@@ -119,35 +255,105 @@ function loadLocalEnvironment(): void {
 }
 
 async function initializeServices(): Promise<DesktopServices> {
-  loadLocalEnvironment();
+  const appUpdates: AppUpdateController = new AppUpdateController(
+    new ResumableNsisUpdater((progress) => appUpdates.reportProgress(progress)), path.join(app.getPath("userData"), "update-downloads"),
+    app.getVersion(), app.isPackaged && process.platform === "win32");
   const agentHome = await initializeAgentHome({
-    legacyRootPath: app.getPath("userData"),
+    additionalLegacyRootPaths: [legacyPackageUserDataPath],
+    environment: process.env,
+    legacyRootPath: legacyUserDataPath,
+    migrateLegacy: process.env.AGENT_HOME_SKIP_LEGACY_MIGRATION !== "1",
+    ...(preferredStoragePath === undefined ? {} : { preferredPath: preferredStoragePath }),
   });
-  const database = new AgentDatabase(agentHome.paths.agentDatabasePath);
-  const pluginCatalog = new PluginCatalog(database, agentHome.paths.pluginsPath);
+  const settings = new SettingsJsoncFile(agentHome.paths.settingsPath);
+  settings.ensureFile();
+  migrateLegacyPluginSettings(settings, agentHome.paths.databasePath);
+  await backupLegacyTeamChatDatabase(agentHome.paths.databasePath);
+  const database = new AgentDatabase(agentHome.paths.databasePath,
+    new TeamChatJournal(path.join(agentHome.paths.rootPath, "team-chats")));
+  database.importLegacyCheckpointDatabases(agentHome.legacyCheckpointDatabasePaths);
+  const pluginCatalog = new PluginCatalog(settings, agentHome.paths.pluginsPath);
   await pluginCatalog.synchronize();
   const graphCheckpointer = new NodeSqliteCheckpointSaver(
-    agentHome.paths.graphCheckpointPath,
+    agentHome.paths.databasePath,
+    { initializeSchema: false },
   );
   const credentials = new ModelCredentialStore(
+    settings,
     agentHome.paths.credentialsPath,
+    new ChatGptPlanAuth(new ChatGptPlanStore(path.join(agentHome.paths.rootPath, "chatgpt-authorization.json")),
+      { openExternal: (url) => shell.openExternal(url) }),
   );
   credentials.importFromEnvironment();
   const modelCatalog = new ModelCatalogStore(
+    settings,
     agentHome.paths.modelCatalogPath,
   );
   modelCatalog.ensureFile();
-  const projectRegistry = new ProjectRegistry(database);
+  const projectRegistry = new ProjectRegistry(database, agentHome.paths.workspacesPath);
   const attachments = new ConversationAttachmentStore(
     database,
     projectRegistry,
-    agentHome.paths.conversationFilesPath,
+    agentHome.paths.conversationsPath,
   );
+  await attachments.migrateLegacyManagedRoots([
+    agentHome.paths.conversationFilesPath,
+    ...agentHome.legacyConversationFilesPaths,
+  ]);
+  const threadLog = new ThreadLog(agentHome.paths.conversationsPath);
+  const conversationReads = new ThreadLogReader(unpackedExecutablePath(path.join(__dirname, "storage", "thread-log-reader-worker.cjs")));
+  const eventProjector = new EventProjector(
+    database,
+    threadLog,
+    (attachment) => attachments.resolveThreadLogPaths(attachment),
+    conversationReads,
+  );
+  const conversationLifecycle = new ConversationLifecycleService(
+    database,
+    threadLog,
+    eventProjector,
+    credentials,
+  );
+  const threadLogLegacyImporter = new ThreadLogLegacyImporter(
+    database,
+    threadLog,
+    eventProjector,
+  );
+  try {
+    const alreadyFinalized = database.isJsonlConversationStorageFinalized();
+    if (!alreadyFinalized) {
+      threadLogLegacyImporter.recoverUnreadableConversationLogs();
+      threadLogLegacyImporter.importMissingConversationLogs();
+      database.activateVolatileConversationProjection();
+    }
+    eventProjector.projectAllConversationLogs({ releaseHistory: true });
+    // Public file links retain the publishing member's default workspace across restarts.
+    // Registration only restores authorization metadata; it does not create or copy files.
+    for (const conversation of database.listConversationHierarchy()) {
+      if (conversation.teamId !== null && conversation.projectId === null && conversation.workspaceRootPath === null) {
+        projectRegistry.registerDefaultConversationWorkspace(conversation.id);
+      }
+    }
+    if (!alreadyFinalized) database.finalizeJsonlConversationStorage();
+    for (const recovered of database.interruptRecoveredThreadLogRuns()) {
+      eventProjector.projectEvent(recovered.conversationId,
+        threadLog.append(recovered.conversationId, recovered.event));
+    }
+    eventProjector.checkpointInactiveConversations();
+    eventProjector.releaseInactiveConversationHistories();
+  } catch (error) {
+    reportMainError(
+      toMainAgentError(error, { operation: "thread_log.startup_projection" }),
+      error,
+    );
+    throw error;
+  }
   const conversationDeletion = new ConversationDeletionService(
     database,
     attachments,
     projectRegistry,
     graphCheckpointer,
+    threadLog,
   );
   await conversationDeletion.resumeIncompleteTasks();
   await conversationDeletion.deleteExpiredArchivedConversations(
@@ -169,17 +375,23 @@ async function initializeServices(): Promise<DesktopServices> {
     }
   }
   const integrationConfiguration = new IntegrationConfigurationStore(
+    settings,
     agentHome.paths.integrationSettingsPath,
   );
   const applicationSettings = new ApplicationSettingsStore(
+    settings,
     agentHome.paths.applicationSettingsPath,
   );
   applicationSettings.ensureFile();
-  database.syncTeamDirectory(applicationSettings.getConfiguration().agentDirectory);
+  const initialApplicationSettings = applicationSettings.getConfiguration();
+  nativeTheme.themeSource = initialApplicationSettings.appearance.themeMode;
+  database.syncTeamDirectory(initialApplicationSettings.agentDirectory);
   applicationSettings.onChanged((configuration) => {
+    nativeTheme.themeSource = configuration.appearance.themeMode;
     database.syncTeamDirectory(configuration.agentDirectory);
   });
   const contextCompression = new ContextCompressionConfigurationStore(
+    settings,
     agentHome.paths.contextCompressionSettingsPath,
   );
   contextCompression.ensureFile();
@@ -187,6 +399,13 @@ async function initializeServices(): Promise<DesktopServices> {
     integrationConfiguration,
     agentHome.paths.skillsPath,
   );
+  for (const content of SYSTEM_SKILLS) {
+    try {
+      skillDocuments.ensureManagedDocument(content);
+    } catch (error) {
+      console.warn("Built-in Skill could not be installed.", error);
+    }
+  }
   skillDocuments.discoverDocuments();
   const skillRuntime = new SkillRuntime(skillDocuments, integrationConfiguration);
   const configurationWorkspaces = new ConfigurationWorkspaceStore(
@@ -197,84 +416,125 @@ async function initializeServices(): Promise<DesktopServices> {
     integrationConfiguration.getConfiguration(),
   );
   const terminalConfiguration = new TerminalConfigurationStore(
+    settings,
     agentHome.paths.terminalSettingsPath,
   );
+  const browserConfiguration = new BrowserConfigurationStore(
+    settings,
+    agentHome.paths.browserSettingsPath,
+  );
   const tools = new ProjectToolRegistry(projectRegistry, terminalConfiguration);
-  const threadLog = new ThreadLog(agentHome.paths.conversationsPath);
-  const eventProjector = new EventProjector(
-    database,
-    threadLog,
-    (attachment) => attachments.resolveThreadLogPaths(attachment),
+  const gitReview = new GitReviewReader(projectRegistry);
+  const terminalSessions = new TerminalSessionController(projectRegistry, terminalConfiguration);
+  const workspaceTerminalTabs = new WorkspaceTerminalTabController();
+  const workspaceBrowserTabs = new WorkspaceBrowserTabController();
+  const htmlPreviews = new HtmlPreviewServer(async (conversationId) => {
+    const conversation = database.getConversation(conversationId);
+    return (await projectRegistry.ensureWorkspaceRoot(conversation.projectId ?? conversation.id)).rootPath;
+  }, (conversationId, reference) => resolveMessageCodeBlock(eventProjector.listTimeline(conversationId)
+    .filter(item => item.kind === "message"), reference));
+  const managedBrowser = new ManagedBrowserController(
+    () => mainWindow,
+    browserConfiguration,
+    undefined,
+    new BrowserPasswordStore(path.join(agentHome.paths.rootPath, "browser-passwords.json")),
   );
-  const conversationLifecycle = new ConversationLifecycleService(
-    database,
-    threadLog,
-    eventProjector,
-    credentials,
-  );
-  const threadLogLegacyImporter = new ThreadLogLegacyImporter(
-    database,
-    threadLog,
-    eventProjector,
-  );
-  try {
-    threadLogLegacyImporter.recoverUnreadableConversationLogs();
-    threadLogLegacyImporter.importMissingConversationLogs();
-    eventProjector.projectAllConversationLogs();
-    database.interruptRecoveredThreadLogRuns();
-    const inconsistent = eventProjector
-      .verifyAllConversationLogs()
-      .find((result) => !result.isConsistent);
-    if (inconsistent !== undefined) {
-      throw new Error("ThreadLog event index is inconsistent with its JSONL source.");
-    }
-  } catch (error) {
-    reportMainError(
-      toMainAgentError(error, { operation: "thread_log.startup_projection" }),
-      error,
-    );
-  }
+  const browserToolPlugin = new BrowserToolPlugin(managedBrowser, workspaceBrowserTabs);
+  const computerUseConfiguration = new ComputerUseConfigurationStore(settings);
+  const computerPermissions = new ComputerApplicationPermissions(computerUseConfiguration,
+    (application, signal) => requestComputerApplicationAccess(() => mainWindow ?? null, application, signal));
+  const computerUse = new WindowsComputerController(computerUseConfiguration, computerPermissions);
+  await attachments.resumeCancelledPendingMessageAttachmentCleanup();
+  eventProjector.releaseInactiveConversationHistories();
 
-  return {
-    agentRuntime: new AgentRuntime(
-      database,
-      credentials,
-      projectRegistry,
-      tools,
-      undefined,
-      undefined,
-      contextCompression,
-        null,
-        attachments,
-        {
-          getConfiguration: () => applicationSettings.getConfiguration().agentDirectory,
-        },
-        skillRuntime,
-        graphCheckpointer,
-        undefined,
-      applicationSettings,
-       threadLog,
-       eventProjector,
-       threadLogLegacyImporter,
-       pluginCatalog,
-      ),
+  const agentRuntime = new AgentRuntime(
+    database,
+    credentials,
+    projectRegistry,
+    tools,
+    undefined,
+    undefined,
+    contextCompression,
+    null,
+    attachments,
+    {
+      getConfiguration: () => applicationSettings.getConfiguration().agentDirectory,
+    },
+    skillRuntime,
+    graphCheckpointer,
+    undefined,
     applicationSettings,
+    threadLog,
+    eventProjector,
+    threadLogLegacyImporter,
+    pluginCatalog,
+    workspaceTerminalTabs,
+    terminalSessions,
+    browserToolPlugin,
+    { generateTurnSummaries: true },
+    conversationLifecycle,
+    new ComputerUseTool(computerUse, computerUseConfiguration),
+    new ConversationTitleGenerator(new ModelAdapterRegistry()),
+    new HtmlPresentationTool(async conversationId => {
+      const conversation = database.getConversation(conversationId);
+      return (await projectRegistry.ensureWorkspaceRoot(conversation.projectId ?? conversation.id)).rootPath;
+    }, new PreviewInspector(htmlPreviews, managedBrowser), (conversationId, reference) => resolveHtmlPresentationSource(
+      database.listTimeline(conversationId).filter(item => item.kind === "tool" || item.kind === "message"), reference),
+      () => mainWindow?.getContentBounds() ?? { width: 1280, height: 800 }),
+  );
+  const teamWorkItems = new TeamWorkItemRuntime(
+    database,
+    conversationLifecycle,
+    agentRuntime,
+    credentials,
+    projectRegistry,
+    { getConfiguration: () => applicationSettings.getConfiguration().agentDirectory },
+  );
+  agentRuntime.setTeamWorkItemDispatcher(teamWorkItems);
+  applicationSettings.onChanged(() => {
+    teamWorkItems.resumeQueued(sendConversationRunEvent);
+  });
+  database.blockInterruptedTeamWorkItems();
+
+  const scheduledTasks = new ScheduledTaskController(
+    new ScheduledTaskStore(path.join(agentHome.paths.rootPath, "scheduled-tasks.json")),
+    new AgentScheduledTaskRunner(conversationLifecycle, agentRuntime, database, projectRegistry, applicationSettings),
+    sendConversationRunEvent, (error) => reportMainError(toMainAgentError(error, { operation: "scheduled_task.execute" }), error),
+  );
+  return {
+    appUpdates,
+    scheduledTasks,
+    agentRuntime,
+    applicationStorageLocation,
+    applicationSettings,
+    browserConfiguration,
+    computerUseConfiguration,
+    computerUse,
     attachments,
     conversationDeletion,
     conversationLifecycle,
     credentials,
     contextCompression,
     graphCheckpointer,
+    gitReview,
     configurationWorkspaces,
     modelCatalog,
     pluginCatalog,
     database,
+    eventProjector,
     integrationConfiguration,
+    conversationReads,
     projectRegistry,
     threadLogLegacyImporter,
     skillDocuments,
     skillRuntime,
     terminalConfiguration,
+    teamWorkItems,
+    terminalSessions,
+    workspaceTerminalTabs,
+    workspaceBrowserTabs,
+    managedBrowser,
+    htmlPreviews,
     tools,
   };
 }
@@ -286,12 +546,45 @@ function getServices(): DesktopServices {
   return services;
 }
 
+const conversationEventStreams = new ConversationStreamSubscriptions();
+
+function sendConversationRunEvent(event: unknown): void {
+  const validated = conversationRunEventSchema.parse(event);
+  localControl?.publish(validated);
+  publishConversationAttentionEvent(validated);
+  const window = mainWindow;
+  conversationEventStreams.publish(window === undefined || window.isDestroyed() ? undefined : window.webContents, validated);
+  if (window === undefined || window.isDestroyed()) return;
+  if (validated.type === "conversation.open_requested") {
+    if (window.isMinimized()) window.restore();
+    window.show();
+    window.focus();
+  }
+}
+
 async function openMainWindow(): Promise<void> {
+  getServices().agentRuntime.resumeAfterWindowOpen();
   const window = createMainWindow();
   let rendererRecoveryAttempted = false;
   mainWindow = window;
-  disposeIpcHandlers = registerMainIpcHandlers(() => mainWindow, getServices());
-  const rendererTarget = applyRendererSecurityPolicy(window);
+  windowCloseController = new WindowCloseController(window, getServices().applicationSettings,
+    (error) => reportUnhandledError(error, "desktop.window_close"));
+  const disposeAttention = attachNativeConversationAttention(window, getServices().database);
+  window.once("closed", disposeAttention);
+  const detachBrowserRenderer = getServices().managedBrowser.attachRenderer(window,
+    (error) => reportUnhandledError(error, "browser.renderer_cleanup"));
+  window.once("closed", detachBrowserRenderer);
+  disposeIpcHandlers = registerMainIpcHandlers(() => mainWindow, getServices(), {
+    resumePendingMessages: process.env.AGENT_SKIP_PENDING_RUN_RESUMPTION !== "1",
+    emitConversationRunEvent: sendConversationRunEvent,
+    eventStreams: conversationEventStreams,
+  });
+  const nativeOverlay = new NativeOverlayController(window);
+  const rendererTarget = applyRendererSecurityPolicy(window, nativeOverlay);
+
+  window.webContents.on("console-message", (details) => {
+    if (details.level === "error") reportUnhandledError(new Error(details.message), "electron.renderer_console");
+  });
 
   window.webContents.on("preload-error", (_event, preloadPath, error) => {
     reportUnhandledError(error, "electron.preload", { preloadPath });
@@ -321,14 +614,21 @@ async function openMainWindow(): Promise<void> {
   });
 
   window.once("closed", () => {
+    nativeOverlay.dispose();
     if (mainWindow === window) {
+      windowCloseController?.beginQuit();
+      windowCloseController = undefined;
       disposeIpcHandlers?.();
       disposeIpcHandlers = undefined;
       mainWindow = undefined;
+      void stopOwnedDesktopWork().catch((error: unknown) => reportUnhandledError(error, "desktop.window_closed"));
     }
   });
 
   window.once("ready-to-show", () => window.show());
+  window.webContents.once("did-finish-load", () => {
+    services?.teamWorkItems.resumeQueued(sendConversationRunEvent);
+  });
   await loadRenderer(window, rendererTarget);
 }
 
@@ -348,10 +648,51 @@ function reportStartupError(error: unknown): void {
   reportUnhandledError(error, "electron.startup");
 }
 
+function focusMainWindow(): void {
+  const window = mainWindow;
+  if (window === undefined || window.isDestroyed()) return;
+  if (window.isMinimized()) window.restore();
+  window.show();
+  window.focus();
+}
+
+function dispatchBackendSendCommand(commandLine: readonly string[]): void {
+  if (shutdownPromise !== undefined || stoppingDesktopWork !== undefined) return;
+  const command = parseBackendSendCommand(commandLine);
+  if (command === undefined || services === undefined) return;
+  try {
+    console.log(`[backend-command] submitted ${submitBackendSendCommand(command, services.agentRuntime, sendConversationRunEvent)}`);
+  } catch (error) {
+    reportUnhandledError(error, "backend_command.send_message");
+  }
+}
+
+if (hasSingleInstanceLock) {
+  app.on("second-instance", (_event, commandLine) => {
+    if (shutdownPromise !== undefined) return;
+    focusMainWindow();
+    dispatchBackendSendCommand(commandLine);
+  });
+}
+
 async function bootstrap(): Promise<void> {
+  if (!hasSingleInstanceLock) {
+    app.quit();
+    return;
+  }
   await app.whenReady();
-  app.setAppUserModelId("com.agent.workbench");
+  app.setAppUserModelId(getAppUserModelId());
   services = await initializeServices();
+  if (process.env.ASTER_CONTROL_ENABLED === "1") {
+    const control = new ConversationControl(services.database, services.conversationLifecycle,
+      services.agentRuntime, services.eventProjector, services.applicationSettings,
+      services.teamWorkItems, sendConversationRunEvent, services.credentials, services.computerUse);
+    localControl = new LocalControlServer((command) => control.execute(command),
+      (error) => reportUnhandledError(error, "local_control.command"));
+    const connectionPath = path.join(app.getPath("userData"), "local-control.json");
+    await localControl.start(connectionPath);
+    console.log(`[local-control] connection file: ${connectionPath}`);
+  }
   archivedConversationCleanupTimer = setInterval(() => {
     const currentServices = services;
     if (currentServices === undefined) return;
@@ -371,10 +712,18 @@ async function bootstrap(): Promise<void> {
   archivedConversationCleanupTimer.unref();
 
   await openMainWindow();
+  services.appUpdates.start();
+  services.scheduledTasks.start();
+  dispatchBackendSendCommand(process.argv);
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) {
-      void openMainWindow().catch(reportStartupError);
+      void (async () => {
+        await stoppingDesktopWork;
+        if (shutdownPromise !== undefined) return;
+        await openMainWindow();
+        services?.scheduledTasks.start();
+      })().catch(reportStartupError);
     }
   });
 
@@ -384,14 +733,14 @@ async function bootstrap(): Promise<void> {
     }
   });
 
-  app.once("before-quit", () => {
-    if (archivedConversationCleanupTimer !== undefined) {
-      clearInterval(archivedConversationCleanupTimer);
-      archivedConversationCleanupTimer = undefined;
-    }
-    services?.graphCheckpointer.close();
-    services?.database.close();
-    services = undefined;
+  app.on("before-quit", (event) => {
+    if (shutdownComplete) return;
+    windowCloseController?.beginQuit();
+    conversationEventStreams.dispose();
+    event.preventDefault();
+    shutdownPromise ??= shutdownDesktop()
+      .catch((error: unknown) => reportUnhandledError(error, "desktop.shutdown"))
+      .finally(() => { shutdownComplete = true; app.quit(); });
   });
 }
 

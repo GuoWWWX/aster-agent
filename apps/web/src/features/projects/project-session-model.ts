@@ -1,28 +1,174 @@
 import type {
+  AgentProfile,
+  AgentTeam,
   ConversationSummary,
+  ConversationRunEvent,
   ConversationRunStatus,
   ConversationThreadKind,
+  TeamInstanceView,
+  TeamWorkItemView,
 } from "@agent/protocol";
 
 export type ProjectSession = {
+  coordinationTeamInstanceId?: string | undefined;
+  activeSideConversationCount?: number;
   activeSubagentCount?: number;
   activeRunId: string | null;
   agentId: string | null;
+  avatarIcon?: ConversationSummary["avatarIcon"];
+  hasFailedUnreadSideConversationResult?: boolean;
   hasUnreadResult: boolean;
+  hasUnreadSideConversationResult?: boolean;
   id: string;
   isArchived: boolean;
   isPinned: boolean;
   lastRunStatus: ConversationRunStatus | null;
   modelSelection: ConversationSummary["modelSelection"];
   parentConversationId: string | null;
+  permissionMode?: ConversationSummary["permissionMode"];
+  coordinationMode?: ConversationSummary["coordinationMode"];
   pinOrder?: number | null;
   projectId: string | null;
   subagentTaskStatus?: ConversationSummary["subagentTaskStatus"];
   teamId: string | null;
+  teamWorkItemId?: ConversationSummary["teamWorkItemId"];
   threadKind: ConversationThreadKind;
   title: string;
+  updatedAt?: string;
   workspaceRootPath: string | null;
 };
+
+export type TeamNavigatorUsage = {
+  lead: ProjectSession;
+  members: ProjectSession[];
+  sourceSession: ProjectSession | null;
+};
+
+export type TeamNavigatorGroup = {
+  configuredMembers: AgentProfile[];
+  dedicatedUsages: TeamNavigatorUsage[];
+  sharedUsages: TeamNavigatorUsage[];
+  team: AgentTeam;
+};
+
+export type TeamInstanceNavigatorMember = {
+  profile: AgentProfile;
+  session: ProjectSession | null;
+};
+
+export type TeamInstanceNavigatorGroup = {
+  instance: TeamInstanceView;
+  members: TeamInstanceNavigatorMember[];
+  team: AgentTeam;
+};
+
+type SessionRunEvent = Extract<
+  ConversationRunEvent,
+  { type: "run.finished" | "run.started" }
+>;
+
+function hasActiveRun(session: ProjectSession): boolean {
+  return session.activeRunId !== null;
+}
+
+export function isProjectSessionRunning(session: ProjectSession): boolean {
+  return (session.activeSideConversationCount ?? 0) > 0
+    || (session.activeSubagentCount ?? 0) > 0
+    || session.activeRunId !== null;
+}
+
+export function aggregateSideConversationState(
+  sessions: readonly ProjectSession[],
+): ProjectSession[] {
+  const sideConversationsByParent = new Map<string, ProjectSession[]>();
+  const sessionsById = new Map(sessions.map((session) => [session.id, session]));
+  for (const session of sessions) {
+    if (session.threadKind === "agent" && session.teamId !== null && session.teamWorkItemId == null
+      && session.parentConversationId !== null && sessionsById.get(session.parentConversationId)?.threadKind === "team_lead") continue;
+    const rootId = session.teamWorkItemId !== null && session.teamWorkItemId !== undefined
+      ? resolveConversationRootId(session, sessionsById)
+      : session.parentConversationId;
+    if (
+      rootId === null
+      || (session.threadKind !== "agent"
+        && (session.teamWorkItemId === null || session.teamWorkItemId === undefined))
+    ) continue;
+    const siblings = sideConversationsByParent.get(rootId) ?? [];
+    siblings.push(session);
+    sideConversationsByParent.set(rootId, siblings);
+  }
+
+  return sessions.map((session) => {
+    if (session.parentConversationId !== null) return session;
+    const sideConversations = sideConversationsByParent.get(session.id) ?? [];
+    return {
+      ...session,
+      activeSideConversationCount: sideConversations.filter(hasActiveRun).length,
+      hasFailedUnreadSideConversationResult: sideConversations.some(
+        (sideConversation) => sideConversation.hasUnreadResult
+          && sideConversation.lastRunStatus === "failed",
+      ),
+      hasUnreadSideConversationResult: sideConversations.some(
+        (sideConversation) => sideConversation.hasUnreadResult,
+      ),
+    };
+  });
+}
+
+export function getSessionFamilyResultIds(
+  sessions: readonly ProjectSession[],
+  sessionId: string,
+): string[] {
+  const selected = sessions.find((session) => session.id === sessionId);
+  if (
+    selected === undefined
+    || selected.threadKind === "subagent"
+    || selected.threadKind === "team_lead"
+    || (selected.threadKind === "agent" && selected.teamId !== null && sessions.some(parent => parent.id === selected.parentConversationId && parent.threadKind === "team_lead"))
+    || (selected.teamWorkItemId !== null && selected.teamWorkItemId !== undefined)
+  ) return [sessionId];
+  const parentId = selected.parentConversationId ?? selected.id;
+  const sessionsById = new Map(sessions.map((session) => [session.id, session]));
+  return sessions.flatMap((session) => {
+    const isOrdinaryResultGroupMember = session.id === parentId
+      || (
+        session.parentConversationId === parentId
+        && session.threadKind === "agent"
+        && (session.teamWorkItemId === null || session.teamWorkItemId === undefined)
+      );
+    const isManagedTeamConversation = selected.id === parentId
+      && session.teamWorkItemId !== null
+      && session.teamWorkItemId !== undefined
+      && resolveConversationRootId(session, sessionsById) === parentId;
+    return isOrdinaryResultGroupMember || isManagedTeamConversation ? [session.id] : [];
+  });
+}
+
+export function updateSessionRunState(
+  sessions: ProjectSession[],
+  event: SessionRunEvent,
+): ProjectSession[] {
+  if (!sessions.some((session) => session.id === event.conversationId)) {
+    return sessions;
+  }
+  return sessions.map((session) => {
+    if (session.id !== event.conversationId) return session;
+    if (event.type === "run.started") {
+      return {
+        ...session,
+        activeRunId: event.runId,
+        hasUnreadResult: false,
+        lastRunStatus: "running",
+      };
+    }
+    return {
+      ...session,
+      activeRunId: null,
+      hasUnreadResult: event.status === "completed" || event.status === "failed",
+      lastRunStatus: event.status,
+    };
+  });
+}
 
 export function getProjectSessions(
   sessions: readonly ProjectSession[],
@@ -32,7 +178,9 @@ export function getProjectSessions(
     sessions.filter(
       (session) =>
         !session.isArchived
+        && session.coordinationTeamInstanceId === undefined
         && session.parentConversationId === null
+        && session.threadKind === "agent"
         && session.projectId === projectId,
     ),
   );
@@ -45,7 +193,9 @@ export function getTemporarySessions(
     sessions.filter(
       (session) =>
         !session.isArchived
+        && session.coordinationTeamInstanceId === undefined
         && session.parentConversationId === null
+        && session.threadKind === "agent"
         && session.projectId === null,
     ),
   );
@@ -58,7 +208,9 @@ export function getPinnedSessions(
     sessions.filter(
       (session) =>
         !session.isArchived
+        && session.coordinationTeamInstanceId === undefined
         && session.parentConversationId === null
+        && session.threadKind === "agent"
         && session.isPinned,
     ),
   );
@@ -76,12 +228,191 @@ export function getSubagentSessions(
   );
 }
 
+export function groupSubagentSessionsByParent(
+  sessions: readonly ProjectSession[],
+  teamWorkItems: readonly Pick<
+    TeamWorkItemView,
+    "executionScope" | "participantConversationIds" | "sourceConversationId"
+  >[] = [],
+): Map<string, ProjectSession[]> {
+  const grouped = new Map<string, ProjectSession[]>();
+  const sessionsById = new Map(sessions.map((session) => [session.id, session]));
+  const conversationParticipantsBySource = new Map<string, Set<string>>();
+  for (const workItem of teamWorkItems) {
+    if (
+      workItem.executionScope !== "conversation"
+      || workItem.sourceConversationId === null
+    ) continue;
+    const participants = conversationParticipantsBySource.get(
+      workItem.sourceConversationId,
+    ) ?? new Set<string>();
+    for (const conversationId of workItem.participantConversationIds ?? []) {
+      participants.add(conversationId);
+    }
+    conversationParticipantsBySource.set(workItem.sourceConversationId, participants);
+  }
+  for (const session of sessions) {
+    if (session.parentConversationId === null || session.isArchived) continue;
+    if (session.teamWorkItemId !== null && session.teamWorkItemId !== undefined) {
+      const rootId = resolveConversationRootId(session, sessionsById);
+      if (rootId === null) continue;
+      const visibleParticipants = conversationParticipantsBySource.get(rootId);
+      if (visibleParticipants !== undefined && !visibleParticipants.has(session.id)) {
+        continue;
+      }
+      const members = grouped.get(rootId) ?? [];
+      members.push(session);
+      grouped.set(rootId, members);
+      continue;
+    }
+    if (session.threadKind !== "subagent") continue;
+    const subagents = grouped.get(session.parentConversationId) ?? [];
+    subagents.push(session);
+    grouped.set(session.parentConversationId, subagents);
+  }
+  return grouped;
+}
+
+export function getTeamNavigatorGroups(
+  teams: readonly AgentTeam[],
+  sessions: readonly ProjectSession[],
+  agents: readonly AgentProfile[],
+): TeamNavigatorGroup[] {
+  const sessionsById = new Map(sessions.map((session) => [session.id, session]));
+  const agentsById = new Map(agents.map((agent) => [agent.id, agent]));
+  const leadsByTeam = new Map<string, ProjectSession[]>();
+  for (const session of sessions) {
+    if (
+      session.isArchived
+      || session.threadKind !== "team_lead"
+      || session.teamId === null
+    ) continue;
+    const leads = leadsByTeam.get(session.teamId) ?? [];
+    leads.push(session);
+    leadsByTeam.set(session.teamId, leads);
+  }
+
+  return teams.map((team) => {
+    const usages = (leadsByTeam.get(team.id) ?? []).map((lead) => ({
+      lead,
+      members: sessions.filter(
+        (session) =>
+          !session.isArchived
+          && session.parentConversationId === lead.id
+          && session.teamId === team.id,
+      ),
+      sourceSession: lead.parentConversationId === null
+        ? null
+        : sessionsById.get(lead.parentConversationId) ?? null,
+    }));
+    const sharedUsages = usages.filter((usage) =>
+      usage.lead.parentConversationId === null
+      && usage.lead.projectId === null
+      && (
+        usage.lead.teamWorkItemId === null
+        || usage.lead.teamWorkItemId === undefined
+      ),
+    );
+    return {
+      configuredMembers: team.memberIds.flatMap((memberId) => {
+        const member = agentsById.get(memberId);
+        return member === undefined ? [] : [member];
+      }),
+      dedicatedUsages: usages.filter((usage) => !sharedUsages.includes(usage)),
+      sharedUsages,
+      team,
+    };
+  });
+}
+
+export function getTeamInstanceNavigatorGroups(
+  instances: readonly TeamInstanceView[],
+  teams: readonly AgentTeam[],
+  sessions: readonly ProjectSession[],
+  agents: readonly AgentProfile[],
+  workItems: readonly Pick<
+    TeamWorkItemView,
+    "participantConversationIds" | "teamInstanceId"
+  >[],
+): TeamInstanceNavigatorGroup[] {
+  const teamsById = new Map(teams.map((team) => [team.id, team]));
+  const agentsById = new Map(agents.map((agent) => [agent.id, agent]));
+  const sessionsById = new Map(sessions.map((session) => [session.id, session]));
+
+  return instances.flatMap((instance) => {
+    const team = teamsById.get(instance.teamId);
+    if (team === undefined) return [];
+    const root = instance.rootConversationId === null
+      ? null
+      : sessionsById.get(instance.rootConversationId) ?? null;
+    const participantIds = instance.scope !== "conversation" ? null
+      : new Set(workItems.flatMap((workItem) =>
+        workItem.teamInstanceId === instance.id
+          ? workItem.participantConversationIds ?? []
+          : [],
+      ));
+
+    return [{
+      instance,
+      members: team.memberIds.flatMap<TeamInstanceNavigatorGroup["members"][number]>((agentId) => {
+        const profile = agentsById.get(agentId);
+        if (profile === undefined) return [];
+        const workers = sessions.filter(session => !session.isArchived && session.agentId === agentId
+          && (session.id === root?.id || session.parentConversationId === root?.id)
+          && (participantIds === null || participantIds.has(session.id)));
+        if (workers.length === 0) return participantIds === null ? [{ profile, session: null }] : [];
+        return workers.map(session => ({ profile: workers.length === 1 ? profile : {
+          ...profile, name: session.title.endsWith(` · ${instance.name}`)
+            ? session.title.slice(0, -(` · ${instance.name}`.length)) : session.title,
+        }, session }));
+      }),
+      team,
+    }];
+  });
+}
+
+export function getTeamSharedMemberSession(
+  group: TeamNavigatorGroup,
+  agentId: string,
+  activeProjectId: string | null = null,
+): ProjectSession | null {
+  const projectUsage = activeProjectId === null
+    ? []
+    : group.dedicatedUsages.filter((usage) =>
+        usage.lead.projectId === activeProjectId
+        && usage.lead.parentConversationId === null,
+      );
+  for (const usage of [...projectUsage, ...group.sharedUsages]) {
+    if (agentId === group.team.leadAgentId) return usage.lead;
+    const member = usage.members.find((session) => session.agentId === agentId);
+    if (member !== undefined) return member;
+  }
+  return null;
+}
+
+function resolveConversationRootId(
+  session: ProjectSession,
+  sessionsById: ReadonlyMap<string, ProjectSession>,
+): string | null {
+  let current = session;
+  const visited = new Set<string>();
+  while (current.parentConversationId !== null) {
+    if (visited.has(current.id)) return null;
+    visited.add(current.id);
+    const parent = sessionsById.get(current.parentConversationId);
+    if (parent === undefined) return null;
+    current = parent;
+  }
+  return current.threadKind === "agent" ? current.id : null;
+}
+
 export function getArchivedSessions(
   sessions: readonly ProjectSession[],
 ): ProjectSession[] {
   return sortPinnedSessions(
     sessions.filter(
-      (session) => session.isArchived && session.parentConversationId === null,
+      (session) => session.isArchived && session.parentConversationId === null
+        && session.threadKind === "agent" && session.coordinationTeamInstanceId === undefined,
     ),
   );
 }
@@ -107,6 +438,7 @@ export function createProjectSession(
     activeSubagentCount: 0,
     activeRunId: null,
     agentId: null,
+    avatarIcon: null,
     hasUnreadResult: false,
     id,
     isArchived: false,
@@ -114,9 +446,11 @@ export function createProjectSession(
     lastRunStatus: null,
     modelSelection: null,
     parentConversationId: null,
+    permissionMode: "ask_before_changes",
     pinOrder: null,
     projectId,
     teamId: null,
+    teamWorkItemId: null,
     threadKind: "agent",
     title: nextSessionNumber === 1 ? "新会话" : `新会话 ${nextSessionNumber}`,
     workspaceRootPath: null,

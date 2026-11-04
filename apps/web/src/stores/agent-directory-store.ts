@@ -10,6 +10,7 @@ import { create } from "zustand";
 export type {
   AgentAvatar,
   AgentAvatarIcon,
+  AgentAvatarPreset,
   AgentCapabilityScope,
   AgentDirectoryConfiguration,
   AgentPermissionRule,
@@ -21,26 +22,14 @@ export type {
   AgentTeamMemberConfiguration,
 } from "@agent/protocol";
 
-export const AVAILABLE_SKILLS = [
-  { id: "code-review", name: "代码审查" },
-  { id: "browser", name: "浏览器验证" },
-  { id: "documents", name: "文档处理" },
-  { id: "release", name: "发布检查" },
-] as const;
-
-export const AVAILABLE_MCP_SERVERS = [
-  { id: "openai-docs", name: "OpenAI Docs" },
-  { id: "browser-tools", name: "Browser Tools" },
-  { id: "figma", name: "Figma" },
-  { id: "project-knowledge", name: "项目知识库" },
-] as const;
-
 type AgentDirectoryState = AgentDirectoryConfiguration & {
   addAgent: () => string;
   addAgentToTeam: (teamId: string, agentId: string) => void;
   addTeam: () => string;
   hydrate: (configuration: AgentDirectoryConfiguration) => void;
   removeAgentFromTeam: (teamId: string, agentId: string) => void;
+  removeAgent: (agentId: string) => void;
+  removeTeam: (teamId: string) => void;
   updateAgent: (agentId: string, patch: Partial<AgentProfile>) => void;
   updateTeam: (teamId: string, patch: Partial<AgentTeam>) => void;
   updateTeamMemberConfiguration: (
@@ -115,6 +104,27 @@ export const useAgentDirectoryStore = create<AgentDirectoryState>()((set) => ({
         }
       : team),
   })),
+  removeAgent: (agentId) => set((state) => {
+    if (state.agents.find((agent) => agent.id === agentId)?.isDefault) return state;
+    const agents = state.agents.filter((agent) => agent.id !== agentId);
+    const fallbackId = agents.find((agent) => agent.isDefault)?.id ?? agents[0]?.id;
+    if (fallbackId === undefined && state.teams.some((team) => team.memberIds.includes(agentId))) return state;
+    return {
+      agents,
+      teams: state.teams.map((team) => {
+        if (!team.memberIds.includes(agentId)) return team;
+        const members = team.memberIds.filter((id) => id !== agentId);
+        const memberIds = members.length > 0 ? members : [fallbackId!];
+        return {
+          ...team,
+          leadAgentId: team.leadAgentId === agentId ? memberIds[0]! : team.leadAgentId,
+          memberConfigurations: Object.fromEntries(Object.entries(team.memberConfigurations).filter(([id]) => id !== agentId)),
+          memberIds,
+        };
+      }),
+    };
+  }),
+  removeTeam: (teamId) => set((state) => ({ teams: state.teams.filter((team) => team.id !== teamId) })),
   updateAgent: (agentId, patch) => set((state) => ({
     agents: state.agents.map((agent) => agent.id === agentId
       ? { ...agent, ...patch, id: agent.id, isDefault: agent.isDefault }
