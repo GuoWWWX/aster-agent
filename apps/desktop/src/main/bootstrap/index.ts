@@ -73,7 +73,7 @@ import { TerminalSessionController } from "../tools/terminal-session-controller.
 import { WorkspaceTerminalTabController } from "../tools/workspace-terminal-tab-controller.js";
 import { WorkspaceBrowserTabController } from "../tools/workspace-browser-tab-controller.js";
 import { BrowserToolPlugin } from "../plugins/browser-tool-plugin.js";
-import { createMainWindow } from "../windows/main-window.js";
+import { createMainWindow, getAppUserModelId } from "../windows/main-window.js";
 import { publishConversationAttentionEvent } from "../windows/conversation-attention.js";
 import { attachNativeConversationAttention } from "../windows/native-conversation-attention.js";
 import { ManagedBrowserController } from "../windows/managed-browser-controller.js";
@@ -675,7 +675,7 @@ async function bootstrap(): Promise<void> {
     return;
   }
   await app.whenReady();
-  app.setAppUserModelId("com.agent.workbench");
+  app.setAppUserModelId(getAppUserModelId());
   services = await initializeServices();
   if (process.env.ASTER_CONTROL_ENABLED === "1") {
     const control = new ConversationControl(services.database, services.conversationLifecycle,

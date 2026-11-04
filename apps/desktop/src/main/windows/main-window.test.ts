@@ -10,6 +10,7 @@ vi.mock("electron", () => ({
   },
   BrowserWindow: class MockBrowserWindow {
     public webContents = { on: vi.fn() };
+    public setAppDetails = vi.fn();
     public constructor(public readonly options: Record<string, unknown>) {}
   },
 }));
@@ -21,9 +22,14 @@ describe("createMainWindow", () => {
     electronState.appPath = path.resolve("fixture", "desktop-app");
     electronState.isPackaged = isPackaged;
     try {
-      const window = createMainWindow() as unknown as { options: Record<string, unknown> };
+      const window = createMainWindow() as unknown as { options: Record<string, unknown>; setAppDetails: ReturnType<typeof vi.fn> };
       const iconDirectory = isPackaged ? "renderer" : "../web/public";
-      expect(window.options.icon).toBe(path.resolve(electronState.appPath, iconDirectory, "aster-logo.png"));
+      const iconPath = path.resolve(electronState.appPath, iconDirectory, process.platform === "win32" ? "aster-logo.ico" : "aster-logo.png");
+      expect(window.options.icon).toBe(iconPath);
+      if (process.platform === "win32") expect(window.setAppDetails).toHaveBeenCalledWith({
+        appId: isPackaged ? "com.agent.workbench" : "com.agent.workbench.development",
+        appIconPath: isPackaged ? process.execPath : iconPath,
+      });
     } finally {
       electronState.isPackaged = false;
     }

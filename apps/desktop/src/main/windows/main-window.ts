@@ -27,6 +27,10 @@ function getPreloadPath(): string {
   return path.resolve(__dirname, "../preload/index.cjs");
 }
 
+export function getAppUserModelId(): string {
+  return app.isPackaged ? "com.agent.workbench" : "com.agent.workbench.development";
+}
+
 export function createMainWindow(): BrowserWindow {
   const webPreferences: SecuredWebPreferences = {
     backgroundThrottling: false,
@@ -39,11 +43,13 @@ export function createMainWindow(): BrowserWindow {
     webSecurity: true
   };
 
+  const iconPath = path.resolve(app.getAppPath(), app.isPackaged ? "renderer" : "../web/public",
+    process.platform === "win32" ? "aster-logo.ico" : "aster-logo.png");
   const options: BrowserWindowConstructorOptions = {
     backgroundColor: WINDOW_BACKGROUND_COLOR,
     frame: false,
     height: WINDOW_START_HEIGHT,
-    icon: path.resolve(app.getAppPath(), app.isPackaged ? "renderer" : "../web/public", "aster-logo.png"),
+    icon: iconPath,
     minHeight: WINDOW_MIN_HEIGHT,
     minWidth: WINDOW_MIN_WIDTH,
     show: false,
@@ -57,6 +63,9 @@ export function createMainWindow(): BrowserWindow {
   }
 
   const window = new BrowserWindow(options);
+  if (process.platform === "win32") {
+    window.setAppDetails({ appId: getAppUserModelId(), appIconPath: app.isPackaged ? process.execPath : iconPath });
+  }
   installTextContextMenu(window);
 
   return window;

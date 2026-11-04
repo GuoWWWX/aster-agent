@@ -10,6 +10,19 @@ let root: Root | null = null;
 beforeEach(() => { Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true }); });
 afterEach(() => { act(() => root?.unmount()); root = null; document.body.replaceChildren(); });
 
+it("keeps the check button visible with an explanation when updates are unavailable", async () => {
+  const client = {
+    getRuntimeInfo: vi.fn().mockResolvedValue({ appVersion: "0.1.0" }),
+    getAppUpdateState: vi.fn().mockResolvedValue({ status: "unavailable", currentVersion: "0.1.0", availableVersion: null,
+      progress: null, message: "自动更新仅在已安装的 Windows 版本中可用。" }),
+  } as unknown as AgentClient;
+  const element = document.createElement("div"); document.body.append(element); root = createRoot(element);
+  await act(() => Promise.resolve().then(() => { root?.render(<AboutSettings agentClient={client} />); }));
+  const button = [...element.querySelectorAll("button")].find((item) => item.textContent === "检查更新");
+  expect(button?.disabled).toBe(true);
+  expect(element.textContent).toContain("自动更新仅在已安装的 Windows 版本中可用。");
+});
+
 it("shows the repository, update progress, and pause action", async () => {
   const available: AppUpdateState = { status: "available", currentVersion: "0.1.0", availableVersion: "0.2.0", progress: null, message: null };
   let notify: ((state: AppUpdateState) => void) | undefined;
