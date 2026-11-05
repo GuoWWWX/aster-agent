@@ -1,4 +1,5 @@
 import { safeStorage } from "electron";
+import { copyFileSync, constants } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { readJsonConfiguration, writeJsonDocument } from "../settings/json-configuration-file.js";
@@ -23,8 +24,22 @@ const dataSchema = z.object({
 }).strict();
 const fileSchema = z.object({ version: z.literal(1), encryptedData: z.string() }).strict();
 
+class AuthorizationStorageError extends Error {
+  public readonly code = "AUTHORIZATION_STORAGE_UNREADABLE";
+  public constructor(cause: unknown) { super("登录信息已失效，请重新登录。", { cause }); }
+}
+
 export class ChatGptPlanStore {
   public constructor(private readonly filePath: string) {}
+
+  public prepareSignIn(): void {
+    try { this.read(); } catch (error) {
+      if (!(error instanceof AuthorizationStorageError)) throw error;
+      // Preserve inaccessible credentials before starting a new registration.
+      copyFileSync(this.filePath, `${this.filePath}.unreadable-${randomUUID()}`, constants.COPYFILE_EXCL);
+      this.write({ hostId: `urn:uuid:${randomUUID()}`, connections: [] });
+    }
+  }
 
   public hostId(): string {
     return this.read().hostId;
@@ -51,7 +66,10 @@ export class ChatGptPlanStore {
     }
     const file = readJsonConfiguration(this.filePath, fileSchema, { version: 1, encryptedData: "" });
     if (file.encryptedData !== "") {
-      return dataSchema.parse(JSON.parse(safeStorage.decryptString(Buffer.from(file.encryptedData, "base64"))));
+      let plaintext: string;
+      try { plaintext = safeStorage.decryptString(Buffer.from(file.encryptedData, "base64")); }
+      catch (error) { throw new AuthorizationStorageError(error); }
+      return dataSchema.parse(JSON.parse(plaintext));
     }
     const state = { hostId: `urn:uuid:${randomUUID()}`, connections: [] };
     this.write(state);

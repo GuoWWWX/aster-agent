@@ -10,6 +10,7 @@ export type SettingsSearchItem = {
 
 // Index setting names and aliases, never configuration values or credentials.
 export const SETTINGS_SEARCH_ITEMS: readonly SettingsSearchItem[] = [
+  { section: "accounts", label: "账号管理", selector: '[aria-label="授权账号管理"]', keywords: "登录 授权 ChatGPT 账号 断开" },
   { section: "general", label: "关闭时隐藏到托盘", selector: '[aria-label="关闭时隐藏到托盘"]', keywords: "退出 关闭 窗口 系统托盘" },
   { section: "about", label: "软件更新", selector: "#about-update-heading", keywords: "检查 下载 版本 更新 补丁" },
   { section: "about", label: "GitHub 项目", selector: "#about-app-heading", keywords: "关于 仓库 源码 发布" },

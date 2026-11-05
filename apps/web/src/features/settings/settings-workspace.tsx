@@ -17,6 +17,7 @@ import { PermissionsSettings } from "./permissions/permissions-settings-page.js"
 import { BrowserSettings } from "./browser/browser-settings-page.js";
 import { TerminalSettings } from "./terminal/terminal-settings-page.js";
 import { AppearanceSettings } from "./appearance/appearance-settings-page.js";
+import { AccountSettings } from "./accounts/account-settings-page.js";
 import { AboutSettings } from "./about/about-settings-page.js";
 
 type SettingsNavItem = {
@@ -30,6 +31,7 @@ const SETTINGS_NAVIGATION: readonly SettingsNavItem[] = [
   { id: "general", label: "常规设置", icon: SlidersHorizontal, group: "应用" },
   { id: "appearance", label: "外观", icon: MonitorCog, group: "应用" },
   { id: "permissions", label: "权限", icon: ShieldCheck, group: "应用" },
+  { id: "accounts", label: "账号管理", icon: UsersRound, group: "智能体" },
   { id: "models", label: "模型配置", icon: Boxes, group: "智能体" },
   { id: "reasoning", label: "推理程度", icon: SlidersHorizontal, group: "智能体" },
   { id: "agents", label: "Agent 与团队", icon: UsersRound, group: "智能体" },
@@ -186,6 +188,7 @@ export function SettingsWorkspace({ agentClient }: { agentClient: AgentClient })
           ) : null}
           {activeSection === "general" ? <GeneralSettings agentClient={agentClient} /> : null}
           {activeSection === "about" ? <AboutSettings agentClient={agentClient} /> : null}
+          {activeSection === "accounts" ? <AccountSettings agentClient={agentClient} /> : null}
           {activeSection === "models" ? (
             <ModelsSettings agentClient={agentClient} />
           ) : null}

@@ -7,7 +7,8 @@ import { ModelProviderDirectory } from "./model-provider-directory.js";
 import { ModelProviderConfiguration } from "./model-provider-configuration.js";
 import { ProviderModelList } from "./provider-model-list.js";
 import { ModelConnectionTestDialog } from "./model-connection-test-dialog.js";
-import { ChatGptProviderPanel } from "./chatgpt-provider-panel.js";
+import { ProviderAuthenticationSettings } from "./provider-authentication-settings.js";
+import { ModelAccountSelector } from "./model-account-selector.js";
 
 export function ModelsSettings({ agentClient }: { agentClient: AgentClient }): ReactElement {
   const controller = useModelSettingsController({ agentClient });
@@ -46,8 +47,15 @@ export function ModelsSettings({ agentClient }: { agentClient: AgentClient }): R
             }
           />
           <div className="settings-provider-editor__body">
-            <ChatGptProviderPanel agentClient={agentClient} onModelsChanged={controller.applyChatGptStatus} />
-            <ModelProviderConfiguration controller={controller} />
+            <ProviderAuthenticationSettings
+              key={controller.selectedProviderId ?? "new"}
+              initialMode={controller.activeProvider?.authentication === undefined ? "api-key" : "account"}
+              onApiKeyMode={() => {
+                if (controller.activeProvider?.authentication !== undefined) controller.createProvider();
+              }}
+              apiKey={<ModelProviderConfiguration controller={controller} />}
+              account={<ModelAccountSelector agentClient={agentClient} selectedProviderId={controller.selectedProviderId} onModelsChanged={controller.applyAccountStatus} />}
+            />
 
             <ProviderModelList controller={controller} />
 

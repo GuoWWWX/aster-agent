@@ -4,7 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChatGptConnection, ModelRuntimeStatus } from "@agent/protocol";
 import { MockAgentClient } from "../../../runtime/mock-agent-client.js";
-import { ChatGptProviderPanel } from "./chatgpt-provider-panel.js";
+import { ProviderAccountsPanel } from "./provider-accounts-panel.js";
 
 const providerId = "00000000-0000-4000-8000-000000000001";
 let root: Root | null = null;
@@ -23,9 +23,10 @@ describe("ChatGPT provider settings", () => {
       syncChatGptModels: vi.fn(() => Promise.resolve(status)),
       disconnectChatGpt: vi.fn(() => Promise.resolve(true)),
     });
+    attachAccounts(client);
     const onModelsChanged = vi.fn();
     const container = document.createElement("div"); document.body.append(container);
-    await act(async () => { root = createRoot(container); root.render(<ChatGptProviderPanel agentClient={client} onModelsChanged={onModelsChanged} />); await Promise.resolve(); });
+    await act(async () => { root = createRoot(container); root.render(<ProviderAccountsPanel agentClient={client} onModelsChanged={onModelsChanged} />); await Promise.resolve(); });
     const connect = [...container.querySelectorAll("button")].find((button) => button.textContent?.includes("Continue with ChatGPT"));
     expect(connect).toBeDefined();
     await act(async () => { connect?.click(); await Promise.resolve(); });
@@ -33,7 +34,7 @@ describe("ChatGPT provider settings", () => {
     expect(client.syncChatGptModels).toHaveBeenCalledWith(providerId);
     expect(onModelsChanged).toHaveBeenCalledWith(status, providerId);
     expect(container.textContent).toContain("user@example.test");
-    expect(container.textContent).toContain("已授权使用 ChatGPT 套餐");
+    expect(container.textContent).toContain("已连接");
     expect(container.querySelector('a[href="https://chatgpt.com/settings/usage"]')).not.toBeNull();
     expect(document.querySelector('[role="dialog"]')?.textContent).toContain("正在使用 ChatGPT 套餐");
     const open = vi.spyOn(window, "open").mockImplementation(() => null);
@@ -56,13 +57,26 @@ describe("ChatGPT provider settings", () => {
       syncChatGptModels: vi.fn(),
       disconnectChatGpt: vi.fn().mockResolvedValue(true),
     });
+    attachAccounts(client);
     const container = document.createElement("div"); document.body.append(container);
-    await act(async () => { root = createRoot(container); root.render(<ChatGptProviderPanel agentClient={client} onModelsChanged={vi.fn()} />); await Promise.resolve(); });
+    await act(async () => { root = createRoot(container); root.render(<ProviderAccountsPanel agentClient={client} onModelsChanged={vi.fn()} />); await Promise.resolve(); });
     const connect = [...container.querySelectorAll("button")].find((button) => button.textContent?.includes("Continue with ChatGPT"));
     await act(async () => { connect?.click(); await Promise.resolve(); });
     expect(client.syncChatGptModels).not.toHaveBeenCalled();
-    expect(container.textContent).toContain("尚未授权使用 ChatGPT 套餐");
+    expect(container.textContent).toContain("待授权");
     expect(container.textContent).toContain("启用套餐");
     expect(document.querySelector('[role="dialog"]')).toBeNull();
   });
 });
+
+function attachAccounts(client: { listChatGptConnections: () => Promise<ChatGptConnection[]>; connectChatGpt: (id?: string) => Promise<{ providerId: string; email: string | null; planEnabled: boolean }>; syncChatGptModels: (id: string) => Promise<ModelRuntimeStatus>; disconnectChatGpt: (id: string) => Promise<boolean> }): void {
+  Object.assign(client, { providerAccounts: async (request: import("@agent/protocol").ProviderAccountRequest) => {
+    switch (request.action) {
+      case "providers": return { action: "providers", providers: [{ kind: "chatgpt", name: "ChatGPT", signInLabel: "Continue with ChatGPT", usageUrl: "https://chatgpt.com/settings/usage" }] };
+      case "list": return { action: "list", connections: await client.listChatGptConnections() };
+      case "connect": { const result = await client.connectChatGpt(request.providerId); return { action: "connect", providerId: result.providerId, email: result.email, authorized: result.planEnabled }; }
+      case "sync": return { action: "sync", status: await client.syncChatGptModels(request.providerId) };
+      case "disconnect": return { action: "disconnect", revoked: await client.disconnectChatGpt(request.providerId) };
+    }
+  } });
+}

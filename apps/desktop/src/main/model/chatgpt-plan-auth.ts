@@ -140,6 +140,7 @@ export class ChatGptPlanAuth {
   }
 
   private async signInOnce(providerId?: string): Promise<{ providerId: string; email: string | null; planEnabled: boolean }> {
+    if (providerId === undefined) this.store.prepareSignIn();
     const saved = providerId === undefined
       ? this.store.list().find((item) => item.subject === null)
       : this.store.find(providerId);

@@ -295,3 +295,8 @@ describe("main agent errors", () => {
     consoleError.mockRestore();
   });
 });
+
+it("keeps account storage errors separate from API key errors", () => {
+  const reason = Object.assign(new Error("登录信息已失效，请重新登录。"), { code: "AUTHORIZATION_STORAGE_UNREADABLE" });
+  expect(toMainAgentError(reason, { operation: "ipc:model.provider_accounts" })).toMatchObject({ code: "MODEL_CONFIGURATION_INVALID", message: "登录信息已失效，请重新登录。" });
+});
