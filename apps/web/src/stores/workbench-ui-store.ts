@@ -15,6 +15,7 @@ import {
 export type ActivityView = "conversations" | "team" | "tasks" | "settings" | "schedules";
 
 export type SettingsSection =
+  | "accounts"
   | "about"
   | "general"
   | "models"

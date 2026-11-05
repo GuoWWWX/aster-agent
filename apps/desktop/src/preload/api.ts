@@ -385,6 +385,9 @@ export function createDesktopBridge(): DesktopBridge {
     discoverModels(input: DiscoverModelsInput) {
       return invoke<BridgeResult<"discoverModels">>(IPC_CHANNELS.modelDiscover, input);
     },
+    providerAccounts(request: import("@agent/protocol").ProviderAccountRequest) {
+      return invoke<BridgeResult<"providerAccounts">>(IPC_CHANNELS.modelProviderAccounts, request);
+    },
     listChatGptConnections() {
       return invoke<BridgeResult<"listChatGptConnections">>(IPC_CHANNELS.modelChatGptList);
     },

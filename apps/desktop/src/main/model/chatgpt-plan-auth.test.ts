@@ -1,3 +1,4 @@
+import { safeStorage } from "electron";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -187,4 +188,12 @@ describe("ChatGPT plan authorization", () => {
       .rejects.toThrow(/账号授权.*不支持/u);
     expect(discover).not.toHaveBeenCalled();
   });
+});
+
+it("opens the official sign-in flow after recovering an inaccessible registration", async () => {
+  const { auth, store, openExternal } = await fixture(); store.hostId();
+  vi.spyOn(safeStorage, "decryptString").mockImplementationOnce(() => { throw new Error("ciphertext"); });
+  const connected = await auth.signIn();
+  expect(connected.planEnabled).toBe(true); expect(openExternal).toHaveBeenCalledOnce();
+  expect(auth.listConnections()[0]?.connected).toBe(true);
 });

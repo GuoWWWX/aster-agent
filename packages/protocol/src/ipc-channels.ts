@@ -122,6 +122,7 @@ export const IPC_CHANNELS = {
   modelDeleteProvider: "model.delete_provider",
   modelGetCatalog: "model.get_catalog",
   modelGetStatus: "model.get_status",
+  modelProviderAccounts: "model.provider_accounts",
   modelChatGptList: "model.chatgpt_list",
   modelChatGptConnect: "model.chatgpt_connect",
   modelChatGptDisconnect: "model.chatgpt_disconnect",

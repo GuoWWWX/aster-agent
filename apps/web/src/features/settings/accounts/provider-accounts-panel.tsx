@@ -1,6 +1,6 @@
 import { KeyRound } from "lucide-react";
 import { useEffect, useState, type ReactElement } from "react";
-import type { ChatGptConnection, ModelRuntimeStatus } from "@agent/protocol";
+import type { AccountProvider, ProviderAccountRequest, ProviderAccountResponse, AccountConnection, ModelRuntimeStatus } from "@agent/protocol";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "../../../components/ui/dialog.js";
 import type { AgentClient } from "../../../runtime/index.js";
 import { errorMessage } from "../configuration-state.js";
@@ -12,37 +12,41 @@ function welcomeShown(): boolean {
   try { return window.localStorage.getItem(WELCOME_KEY) === "true"; } catch { return false; }
 }
 
-export function ChatGptProviderPanel({ agentClient, onModelsChanged }: {
+function ProviderAccountPanel({ agentClient, onModelsChanged, provider }: {
+  provider: AccountProvider;
   agentClient: AgentClient;
   onModelsChanged: (status: ModelRuntimeStatus, providerId: string) => void;
 }): ReactElement | null {
-  const [connections, setConnections] = useState<ChatGptConnection[]>([]);
+  const [connections, setConnections] = useState<AccountConnection[]>([]);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [welcomeOpen, setWelcomeOpen] = useState(false);
-  const available = agentClient.listChatGptConnections !== undefined && agentClient.connectChatGpt !== undefined
-    && agentClient.disconnectChatGpt !== undefined && agentClient.syncChatGptModels !== undefined;
+  const available = agentClient.providerAccounts !== undefined;
+  async function request(input: ProviderAccountRequest): Promise<ProviderAccountResponse> {
+    if (agentClient.providerAccounts === undefined) throw new Error("账号服务不可用。");
+    return agentClient.providerAccounts(input);
+  }
 
   useEffect(() => {
     let cancelled = false;
-    if (agentClient.listChatGptConnections !== undefined) {
-      void agentClient.listChatGptConnections().then((items) => {
-        if (!cancelled) setConnections(items);
+    if (agentClient.providerAccounts !== undefined) {
+      void agentClient.providerAccounts({ action: "list", kind: provider.kind }).then((result) => {
+        if (!cancelled && result.action === "list") setConnections(result.connections);
       }).catch((reason: unknown) => { if (!cancelled) setMessage(errorMessage(reason)); });
     }
     return () => { cancelled = true; };
-  }, [agentClient]);
+  }, [agentClient, provider.kind]);
 
   if (!available) return null;
 
   async function refresh(): Promise<void> {
-    if (agentClient.listChatGptConnections !== undefined) setConnections(await agentClient.listChatGptConnections());
+    const result = await request({ action: "list", kind: provider.kind });
+    if (result.action === "list") setConnections(result.connections);
   }
 
   async function sync(providerId: string): Promise<void> {
-    if (agentClient.syncChatGptModels === undefined) return;
-    const status = await agentClient.syncChatGptModels(providerId);
-    onModelsChanged(status, providerId);
+    const result = await request({ action: "sync", kind: provider.kind, providerId });
+    if (result.action === "sync") onModelsChanged(result.status, providerId);
   }
 
   async function perform(action: () => Promise<void>): Promise<void> {
@@ -53,14 +57,14 @@ export function ChatGptProviderPanel({ agentClient, onModelsChanged }: {
   }
 
   async function connect(providerId?: string): Promise<void> {
-    if (agentClient.connectChatGpt === undefined) return;
-    const connection = await agentClient.connectChatGpt(providerId);
+    const connection = await request({ action: "connect", kind: provider.kind, ...(providerId === undefined ? {} : { providerId }) });
+    if (connection.action !== "connect") throw new Error("登录结果无效，请重试。");
     await refresh();
-    if (!connection.planEnabled) {
-      setMessage("已登录，但尚未授权使用 ChatGPT 套餐。可选择启用套餐或使用其他供应商。");
+    if (!connection.authorized) {
+      setMessage("已登录，请完成使用授权。");
       return;
     }
-    if (!welcomeShown()) setWelcomeOpen(true);
+    if (provider.kind === "chatgpt" && !welcomeShown()) setWelcomeOpen(true);
     await sync(connection.providerId);
   }
 
@@ -70,20 +74,19 @@ export function ChatGptProviderPanel({ agentClient, onModelsChanged }: {
   }
 
   return (
-    <SettingsConfigurationGroup icon={KeyRound} title="ChatGPT 登录授权">
+    <SettingsConfigurationGroup icon={KeyRound} title={`${provider.name} 账号`}>
       <div className="grid min-w-0 gap-3 text-[length:var(--app-font-size-control)]">
-        <p className="text-[var(--app-muted-foreground)]">使用符合条件的 ChatGPT 套餐调用模型。登录和授权在 OpenAI 页面完成。</p>
         <div className="flex flex-wrap items-center gap-2">
-          <button className="settings-secondary-button" data-oai-siwc-button="" disabled={busy} type="button" onClick={() => void perform(() => connect())}>
-            Continue with ChatGPT
+          <button className="settings-secondary-button" data-oai-siwc-button={provider.kind === "chatgpt" ? "" : undefined} disabled={busy} type="button" onClick={() => void perform(() => connect())}>
+            {provider.signInLabel}
           </button>
-          <a className="text-[var(--app-accent)] underline" href="https://chatgpt.com/settings/usage" rel="noreferrer" target="_blank">管理用量</a>
+          {provider.usageUrl === null ? null : <a className="text-[var(--app-accent)] underline" href={provider.usageUrl} rel="noreferrer" target="_blank">管理用量</a>}
         </div>
         {connections.map((connection) => (
           <div key={connection.providerId} className="flex min-w-0 flex-wrap items-center gap-2 border-t border-[var(--app-border)] pt-2">
             <div className="min-w-0 flex-1">
               <div className="truncate font-medium">{connection.label}{connection.email === null ? "" : ` · ${connection.email}`}</div>
-              <div className="text-[var(--app-muted-foreground)]">{connection.connected ? "已授权使用 ChatGPT 套餐" : connection.signedIn ? "已登录，尚未授权使用 ChatGPT 套餐" : "未连接"}</div>
+              <div className="text-[var(--app-muted-foreground)]">{connection.connected ? "已连接" : connection.signedIn ? "待授权" : "未连接"}</div>
             </div>
             <button className="settings-secondary-button" disabled={busy} type="button" onClick={() => void perform(() => connect(connection.providerId))}>
               {connection.connected ? "重新授权" : connection.signedIn ? "启用套餐" : "登录"}
@@ -91,13 +94,13 @@ export function ChatGptProviderPanel({ agentClient, onModelsChanged }: {
             {connection.connected ? <button className="settings-secondary-button" disabled={busy} type="button" onClick={() => void perform(() => sync(connection.providerId))}>同步模型</button> : null}
             {connection.signedIn ? (
               <button className="settings-secondary-button" disabled={busy} type="button" onClick={() => void perform(async () => {
-                const revoked = await agentClient.disconnectChatGpt?.(connection.providerId);
-                if (revoked === false) setMessage("已在本机断开，但未能确认远端撤销；可在 ChatGPT 设置中断开应用。");
+                const result = await request({ action: "disconnect", kind: provider.kind, providerId: connection.providerId });
+                if (result.action === "disconnect" && !result.revoked) setMessage("已断开，请在账号设置中确认撤销授权。");
               })}>断开</button>
             ) : null}
           </div>
         ))}
-        {busy ? <p role="status">正在处理，请在浏览器中完成授权。</p> : null}
+        {busy ? <p role="status">正在处理…</p> : null}
         {message === null ? null : <p className="text-[var(--app-destructive)]" role="alert">{message}</p>}
       </div>
       <Dialog open={welcomeOpen} onOpenChange={(open) => { if (!open) dismissWelcome(); }}>
@@ -117,4 +120,23 @@ export function ChatGptProviderPanel({ agentClient, onModelsChanged }: {
       </Dialog>
     </SettingsConfigurationGroup>
   );
+}
+
+export function ProviderAccountsPanel(props: {
+  agentClient: AgentClient;
+  onModelsChanged: (status: ModelRuntimeStatus, providerId: string) => void;
+}): ReactElement | null {
+  const [providers, setProviders] = useState<AccountProvider[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    if (props.agentClient.providerAccounts !== undefined) {
+      void props.agentClient.providerAccounts({ action: "providers" }).then((result) => {
+        if (!cancelled && result.action === "providers") setProviders(result.providers);
+      }).catch((reason: unknown) => { if (!cancelled) setError(errorMessage(reason)); });
+    }
+    return () => { cancelled = true; };
+  }, [props.agentClient]);
+  if (error !== null) return <p role="alert">{error}</p>;
+  return <>{providers.map((provider) => <ProviderAccountPanel key={provider.kind} {...props} provider={provider} />)}</>;
 }

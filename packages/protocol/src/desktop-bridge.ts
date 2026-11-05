@@ -1,3 +1,4 @@
+import type { ProviderAccountRequest, ProviderAccountResponse } from "./provider-accounts.js";
 import type { TaskContextScope, TaskCompletionPolicy, SetTaskCompletionPolicyInput, ResolveChatReferencesInput, ChatReference, ListTaskContextsInput, TaskContextPage, TaskContextDetail, UpdateTaskContextInput, TaskContext, LinkTaskContextInput, MergeTaskContextsInput } from "./task-context.js";
 import type { ChatGptConnection, ChatGptConnectResult } from "./chatgpt-plan.js";
 import type { AppUpdateState } from "./app-update.js";
@@ -271,6 +272,7 @@ export interface DesktopBridge {
     input: DeleteConfigurationWorkspaceEntryInput
   ): Promise<void>;
   discoverModels(input: DiscoverModelsInput): Promise<DiscoveredModel[]>;
+  providerAccounts(request: ProviderAccountRequest): Promise<ProviderAccountResponse>;
   listChatGptConnections(): Promise<ChatGptConnection[]>;
   connectChatGpt(providerId?: string): Promise<ChatGptConnectResult>;
   disconnectChatGpt(providerId: string): Promise<boolean>;

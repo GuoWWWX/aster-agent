@@ -340,6 +340,10 @@ export class DesktopAgentClientAdapter implements AgentClient {
     return this.desktopBridge.discoverModels(input);
   }
 
+  public providerAccounts(request: import("@agent/protocol").ProviderAccountRequest): Promise<import("@agent/protocol").ProviderAccountResponse> {
+    return this.desktopBridge.providerAccounts(request);
+  }
+
   public listChatGptConnections(): Promise<ChatGptConnection[]> {
     return this.desktopBridge.listChatGptConnections();
   }
