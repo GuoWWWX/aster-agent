@@ -252,6 +252,7 @@ function classifyError(
   if (/model provider.+unavailable/iu.test(message)) {
     return classificationForCode("MODEL_PROVIDER_UNAVAILABLE");
   }
+  if (nodeCode === "AUTHORIZATION_STORAGE_UNREADABLE") return classificationForCode("MODEL_CONFIGURATION_INVALID");
   if (/decrypting the ciphertext|safeStorage.+decrypt/iu.test(message)) {
     return {
       code: "MODEL_CONFIGURATION_INVALID",

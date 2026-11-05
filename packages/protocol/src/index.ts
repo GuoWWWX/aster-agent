@@ -1,5 +1,6 @@
 export { htmlPreviewRequestSchema, htmlPreviewSchema, htmlPreviewResponseSchema, htmlPreviewResizeMessageSchema, presentHtmlInputSchema, presentHtmlToolInputSchema, htmlPresentationResultSchema, htmlPresentationPageSchema, codePreviewLanguageSchema, HTML_PREVIEW_MAX_HEIGHT, type CodePreviewLanguage, type HtmlPreviewRequest, type HtmlPreview, type HtmlPresentationPage } from "./html-preview.js";
 export { appUpdateProgressSchema, appUpdateStateSchema, type AppUpdateProgress, type AppUpdateState } from "./app-update.js";
+export { accountConnectionSchema, type AccountConnection, accountProviderSchema, providerAccountRequestSchema, providerAccountResponseSchema, type AccountProvider, type ProviderAccountRequest, type ProviderAccountResponse } from "./provider-accounts.js";
 export { chatGptConnectionSchema, chatGptConnectionListSchema, chatGptConnectResultSchema, chatGptProviderInputSchema, chatGptConnectInputSchema, type ChatGptConnection, type ChatGptConnectResult } from "./chatgpt-plan.js";
 export { capabilitySetSchema } from "./capability.js";
 export { MERMAID_THEME_IDS, MERMAID_DIAGRAM_IDS, DEFAULT_MERMAID_THEMES, mermaidThemeIdSchema, mermaidThemeSettingsSchema, type MermaidThemeId, type MermaidDiagramType, type MermaidThemeSettings, type MermaidThemePreset } from "./mermaid-theme-settings.js";

@@ -491,11 +491,13 @@ export function useModelSettingsController({ agentClient }: { agentClient: Agent
   }
 
   async function discoverModels(): Promise<void> {
-    if (activeProvider?.authentication === "chatgpt" && selectedProviderId !== null && agentClient.syncChatGptModels !== undefined) {
+    if (activeProvider?.authentication !== undefined && selectedProviderId !== null && agentClient.providerAccounts !== undefined) {
       setIsDiscovering(true);
       setOperationError(null);
       try {
-        setStatus(rememberModelStatus(agentClient, await agentClient.syncChatGptModels(selectedProviderId)));
+        const result = await agentClient.providerAccounts({ action: "sync", kind: activeProvider.authentication, providerId: selectedProviderId });
+        if (result.action !== "sync") throw new Error("模型同步失败，请重试。");
+        setStatus(rememberModelStatus(agentClient, result.status));
         setProviderSyncRevision((revision) => revision + 1);
       } catch (reason) {
         setOperationError(errorMessage(reason));
@@ -597,7 +599,7 @@ export function useModelSettingsController({ agentClient }: { agentClient: Agent
   }
   return {
     activeProvider,
-    applyChatGptStatus: (nextStatus: ModelRuntimeStatus, providerId: string) => {
+    applyAccountStatus: (nextStatus: ModelRuntimeStatus, providerId: string) => {
       rememberModelStatus(agentClient, nextStatus);
       setStatus(nextStatus);
       setActiveProviderId(providerId);

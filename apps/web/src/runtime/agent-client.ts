@@ -1,3 +1,4 @@
+import type { ProviderAccountRequest, ProviderAccountResponse } from "@agent/protocol";
 import type { TaskContextScope, TaskCompletionPolicy, SetTaskCompletionPolicyInput, ResolveChatReferencesInput, ChatReference, ListTaskContextsInput, TaskContextPage, TaskContextDetail, UpdateTaskContextInput, TaskContext, LinkTaskContextInput, MergeTaskContextsInput, ReadTeamChatInput, TeamChatPage, PostTeamChatInput, TeamChatMessage, TeamChatMember, MarkTeamChatReadInput } from "@agent/protocol";
 import type { ChatGptConnection, ChatGptConnectResult } from "@agent/protocol";
 import type { HtmlPreview, HtmlPreviewRequest } from "@agent/protocol";
@@ -229,6 +230,7 @@ export interface AgentClient {
     input: DeleteConfigurationWorkspaceEntryInput,
   ): Promise<void>;
   discoverModels(input: DiscoverModelsInput): Promise<DiscoveredModel[]>;
+  providerAccounts?(request: ProviderAccountRequest): Promise<ProviderAccountResponse>;
   listChatGptConnections?(): Promise<ChatGptConnection[]>;
   connectChatGpt?(providerId?: string): Promise<ChatGptConnectResult>;
   disconnectChatGpt?(providerId: string): Promise<boolean>;

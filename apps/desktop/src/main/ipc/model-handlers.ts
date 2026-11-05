@@ -1,3 +1,5 @@
+import { createProviderAccountService } from "../model/provider-account-service.js";
+import { providerAccountRequestSchema } from "@agent/protocol";
 import { z } from "zod";
 import {
   discoverModelsIpcArgumentsSchema,
@@ -28,6 +30,14 @@ export function registerModelHandlers(
   { ipcMain, getMainWindow }: IpcHandlerRegistrationContext,
   { credentials, modelCatalog }: Pick<MainIpcDependencies, "credentials" | "modelCatalog">,
 ): void {
+  const accounts = createProviderAccountService(credentials, () => modelCatalog.getCatalog());
+  ipcMain.handle(IPC_CHANNELS.modelProviderAccounts, async (event, ...args: unknown[]) => {
+    const window = getTrustedWindow(event, getMainWindow);
+    if (event.senderFrame !== window.webContents.mainFrame) throw new Error("Rejected account request from an untrusted frame.");
+    const [request] = z.tuple([providerAccountRequestSchema]).parse(args);
+    return accounts.execute(request);
+  });
+
   ipcMain.handle(IPC_CHANNELS.modelChatGptList, (event, ...args: unknown[]) => {
     getTrustedWindow(event, getMainWindow);
     parseNoArguments(args);
