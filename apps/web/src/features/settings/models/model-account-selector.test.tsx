@@ -15,11 +15,11 @@ it("selects existing accounts and opens account management without starting a lo
   const client = Object.assign(new MockAgentClient(), { providerAccounts });
   const container = document.createElement("div"); document.body.append(container); const root = createRoot(container);
   try {
-    await act(async () => root.render(<ModelAccountSelector agentClient={client} selectedProviderId={null} onModelsChanged={vi.fn()} />));
+    await act(() => root.render(<ModelAccountSelector agentClient={client} selectedProviderId={null} onModelsChanged={vi.fn()} />));
     expect(container.textContent).not.toContain("Continue with ChatGPT");
     expect(container.querySelector('[aria-label="授权账号"]')?.getAttribute("disabled")).not.toBeNull();
-    await act(async () => container.querySelector("button.settings-secondary-button")!.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    await act(() => container.querySelector("button.settings-secondary-button")!.dispatchEvent(new MouseEvent("click", { bubbles: true })));
     expect(useWorkbenchUiStore.getState().settingsSection).toBe("accounts");
     expect(providerAccounts.mock.calls.map(([request]) => request.action)).toEqual(["providers", "list"]);
-  } finally { await act(async () => root.unmount()); container.remove(); }
+  } finally { await act(() => root.unmount()); container.remove(); }
 });
